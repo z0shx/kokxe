@@ -10,6 +10,7 @@ from typing import Optional, Dict, List
 from database.db import get_db
 from database.models import TradingPlan, TrainingRecord, PredictionData, KlineData
 from utils.logger import setup_logger
+from utils.timezone_helper import format_datetime_full_beijing, format_time_range_utc8
 from sqlalchemy import and_
 
 logger = setup_logger(__name__, "inference_service.log")
@@ -673,8 +674,8 @@ class InferenceService:
 
                     # 格式化日期范围显示
                     if data_start_time and data_end_time:
-                        date_range = f"{data_start_time.strftime('%m-%d')} ~ {data_end_time.strftime('%m-%d')}"
-                        datetime_range = f"{data_start_time.strftime('%Y-%m-%d %H:%M')} ~ {data_end_time.strftime('%Y-%m-%d %H:%M')}"
+                        date_range = format_time_range_utc8(data_start_time, data_end_time, '%m-%d')
+                        datetime_range = format_time_range_utc8(data_start_time, data_end_time, '%Y-%m-%d %H:%M')
                     else:
                         date_range = "N/A"
                         datetime_range = "N/A"

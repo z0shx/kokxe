@@ -8,6 +8,7 @@ from api.okx_client import OKXClient
 from api.okx_websocket_client import OKXWebSocketClient
 from services.agent_tools import get_tool, validate_tool_params, ToolCategory
 from utils.logger import setup_logger
+from utils.timezone_helper import format_datetime_full_beijing, format_datetime_short_beijing, format_time_range_utc8, format_datetime_beijing
 
 logger = setup_logger(__name__, "agent_tool_executor.log")
 
@@ -432,7 +433,7 @@ class AgentToolExecutor:
                 formatted_data = []
                 for pred in predictions[:50]:  # 限制最多返回50条
                     formatted_data.append({
-                        "时间": pred['timestamp'].strftime('%Y-%m-%d %H:%M'),
+                        "时间": format_datetime_beijing(pred['timestamp'], '%Y-%m-%d %H:%M'),
                         "开盘价": f"{pred['open']:.2f}",
                         "最高价": f"{pred['high']:.2f}",
                         "最低价": f"{pred['low']:.2f}",
@@ -463,9 +464,9 @@ class AgentToolExecutor:
                 formatted_batches.append({
                     "批次ID": batch['inference_batch_id'][:16] + "...",  # 缩短显示
                     "完整批次ID": batch['inference_batch_id'],
-                    "推理时间": batch['inference_time'].strftime('%Y-%m-%d %H:%M:%S'),
+                    "推理时间": format_datetime_full_beijing(batch['inference_time']),
                     "预测数量": f"{batch['predictions_count']}条",
-                    "预测时间范围": f"{time_range['start'].strftime('%m-%d %H:%M')} ~ {time_range['end'].strftime('%m-%d %H:%M')}"
+                    "预测时间范围": format_time_range_utc8(time_range['start'], time_range['end'], '%m-%d %H:%M')
                 })
 
             return {

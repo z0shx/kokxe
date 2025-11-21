@@ -6,6 +6,7 @@ import asyncio
 from services.plan_service import PlanService
 from ui.base_ui import BaseUIComponent, DatabaseMixin, UIHelper, ValidationHelper
 from utils.logger import setup_logger
+from utils.timezone_helper import format_datetime_full_beijing
 
 logger = setup_logger(__name__, "plan_list_ui.log")
 
@@ -61,7 +62,7 @@ class PlanListUI(BaseUIComponent, DatabaseMixin):
                     f"{status_emoji} {plan.status}",
                     "✅" if plan.ws_connected else "❌",
                     "模拟盘" if plan.is_demo else "实盘",
-                    plan.created_at.strftime("%Y-%m-%d %H:%M:%S") if plan.created_at else ""
+                    format_datetime_full_beijing(plan.created_at) if plan.created_at else ""
                 ])
 
             return data

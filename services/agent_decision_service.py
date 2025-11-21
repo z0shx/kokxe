@@ -125,13 +125,7 @@ class AgentDecisionService:
                     agent_prompt=plan.agent_prompt
                 )
 
-                # 解析工具调用
-                tool_calls, tool_results = cls._execute_tools(
-                    plan=plan,
-                    llm_response=llm_response
-                )
-
-                # 创建决策记录
+                # 先创建决策记录（用于关联工具确认）
                 decision = AgentDecision(
                     plan_id=plan_id,
                     training_record_id=training_id,
@@ -141,15 +135,30 @@ class AgentDecisionService:
                     llm_model=llm_config.model_name if llm_config else 'default',
                     llm_input=decision_context,
                     llm_output=json.dumps(llm_response, ensure_ascii=False),  # 转换为JSON字符串
-                    tool_calls=tool_calls,
-                    tool_results=tool_results,
+                    tool_calls=[],  # 稍后填充
+                    tool_results=[],  # 稍后填充
                     order_ids=[],  # 从tool_results中提取
-                    status='completed' if tool_results else 'no_action'
+                    status='processing'  # 初始状态为处理中
                 )
 
                 db.add(decision)
                 db.commit()
                 db.refresh(decision)
+
+                logger.info(f"决策记录已创建: decision_id={decision.id}")
+
+                # 执行工具调用（集成确认流程）
+                tool_calls, tool_results = await cls._execute_tools(
+                    plan=plan,
+                    llm_response=llm_response,
+                    agent_decision_id=decision.id
+                )
+
+                # 更新决策记录
+                decision.tool_calls = tool_calls
+                decision.tool_results = tool_results
+                decision.status = 'completed' if tool_results else 'no_action'
+                db.commit()
 
                 logger.info(
                     f"决策记录已保存: decision_id={decision.id}, "
@@ -880,53 +889,221 @@ class AgentDecisionService:
             }
 
     @classmethod
-    def _execute_tools(cls, plan: TradingPlan, llm_response: Dict) -> tuple:
+    async def _execute_tools(cls, plan: TradingPlan, llm_response: Dict, agent_decision_id: int) -> tuple:
         """
-        执行工具调用
+        执行工具调用（集成确认流程）
 
         Args:
             plan: 交易计划
             llm_response: LLM响应
+            agent_decision_id: Agent决策记录ID
 
         Returns:
             (tool_calls, tool_results)
         """
+        from services.agent_confirmation_service import confirmation_service
+
         tool_calls = llm_response.get('tool_calls', [])
         tool_results = []
 
         if not tool_calls:
             return [], []
 
-        # 创建交易工具实例
-        from services.trading_tools import OKXTradingTools
+        logger.info(f"处理工具调用: {len(tool_calls)}个工具")
 
-        try:
-            trading_tools = OKXTradingTools(
-                api_key=plan.okx_api_key,
-                secret_key=plan.okx_secret_key,
-                passphrase=plan.okx_passphrase,
-                is_demo=plan.is_demo
-            )
-        except Exception as e:
-            logger.error(f"创建交易工具失败: {e}")
-            # 降级到模拟模式
-            trading_tools = None
-
-        logger.info(f"执行工具调用: {len(tool_calls)}个工具")
+        # 获取确认模式
+        confirmation_mode = confirmation_service.get_confirmation_mode(plan)
+        logger.info(f"计划 {plan.id} 确认模式: {confirmation_mode.value}")
 
         for tool_call in tool_calls:
             tool_name = tool_call.get('name', 'unknown')
             tool_args = tool_call.get('arguments', {})
 
-            logger.info(f"  执行工具: {tool_name}, 参数: {tool_args}")
+            logger.info(f"  处理工具: {tool_name}, 参数: {tool_args}")
 
-            # 执行工具
-            if tool_name == 'place_order' and trading_tools:
-                result = cls._execute_place_order(trading_tools, plan, tool_args)
-            elif tool_name == 'place_limit_order' and trading_tools:
-                result = cls._execute_place_order(trading_tools, plan, tool_args)
-            elif tool_name == 'place_stop_loss_order' and trading_tools:
-                result = cls._execute_stop_loss_order(trading_tools, plan, tool_args)
+            # 生成预期效果和风险提示
+            expected_effect, risk_warning = cls._generate_tool_info(tool_name, tool_args, plan)
+
+            if confirmation_mode.value == "auto":
+                # 自动执行模式
+                logger.info(f"  自动执行工具: {tool_name}")
+                result = await cls._execute_tool_directly(plan, tool_name, tool_args)
+                tool_results.append(result)
+
+            elif confirmation_mode.value == "manual":
+                # 手动确认模式 - 创建待确认工具
+                logger.info(f"  创建待确认工具: {tool_name}")
+                try:
+                    pending_tool_id = await confirmation_service.create_pending_tool_call(
+                        plan_id=plan.id,
+                        agent_decision_id=agent_decision_id,
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        expected_effect=expected_effect,
+                        risk_warning=risk_warning
+                    )
+
+                    result = {
+                        'tool_name': tool_name,
+                        'success': True,
+                        'message': f'工具调用已创建待确认记录，ID: {pending_tool_id}',
+                        'pending_tool_id': pending_tool_id,
+                        'status': 'pending_confirmation',
+                        'requires_confirmation': True
+                    }
+                    tool_results.append(result)
+
+                except Exception as e:
+                    logger.error(f"  创建待确认工具失败: {e}")
+                    result = {
+                        'tool_name': tool_name,
+                        'success': False,
+                        'error': f'创建待确认失败: {str(e)}',
+                        'status': 'error'
+                    }
+                    tool_results.append(result)
+
+            else:  # disabled
+                # 禁用工具调用
+                logger.info(f"  工具调用已禁用: {tool_name}")
+                result = {
+                    'tool_name': tool_name,
+                    'success': False,
+                    'error': '工具调用已禁用',
+                    'status': 'disabled'
+                }
+                tool_results.append(result)
+
+        return tool_calls, tool_results
+
+    @classmethod
+    def _generate_tool_info(cls, tool_name: str, tool_args: Dict, plan: TradingPlan) -> Tuple[str, str]:
+        """
+        生成工具的预期效果和风险提示
+
+        Args:
+            tool_name: 工具名称
+            tool_args: 工具参数
+            plan: 交易计划
+
+        Returns:
+            (预期效果, 风险提示)
+        """
+        expected_effect = ""
+        risk_warning = ""
+
+        try:
+            if tool_name in ['place_order', 'place_limit_order']:
+                side = tool_args.get('side', 'unknown')
+                size = tool_args.get('size', 0)
+                price = tool_args.get('price', 'market')
+                inst_id = tool_args.get('inst_id', plan.inst_id)
+
+                expected_effect = f"执行{side}订单，交易对{inst_id}，数量{size}，价格{price}"
+                risk_warning = "⚠️ 市场风险：订单执行后可能产生盈亏，请确认交易参数"
+
+            elif tool_name == 'place_stop_loss_order':
+                side = tool_args.get('side', 'sell')
+                size = tool_args.get('size', 0)
+                stop_price = tool_args.get('stop_price', 0)
+                inst_id = tool_args.get('inst_id', plan.inst_id)
+
+                expected_effect = f"设置止损订单，交易对{inst_id}，{side}方向，数量{size}，止损价格{stop_price}"
+                risk_warning = "⚠️ 止损风险：止损订单触发时将以市价执行，可能与预期价格有差异"
+
+            elif tool_name == 'cancel_order':
+                order_id = tool_args.get('order_id', 'unknown')
+                expected_effect = f"取消订单 {order_id}"
+                risk_warning = "ℹ️ 取消操作：取消未成交的订单，无直接资金风险"
+
+            elif tool_name == 'get_positions':
+                expected_effect = "查询当前持仓信息"
+                risk_warning = "ℹ️ 查询操作：仅获取信息，无资金风险"
+
+            elif tool_name == 'get_current_price':
+                inst_id = tool_args.get('inst_id', plan.inst_id)
+                expected_effect = f"获取 {inst_id} 当前价格"
+                risk_warning = "ℹ️ 查询操作：仅获取价格信息，无资金风险"
+
+            else:
+                expected_effect = f"执行工具 {tool_name}"
+                risk_warning = "⚠️ 请仔细确认工具参数和风险"
+
+        except Exception as e:
+            logger.error(f"生成工具信息失败: {e}")
+            expected_effect = f"执行工具 {tool_name}"
+            risk_warning = "⚠️ 请仔细确认工具参数和风险"
+
+        return expected_effect, risk_warning
+
+    @classmethod
+    async def _execute_tool_directly(cls, plan: TradingPlan, tool_name: str, tool_args: Dict) -> Dict[str, Any]:
+        """
+        直接执行工具（自动模式）
+
+        Args:
+            plan: 交易计划
+            tool_name: 工具名称
+            tool_args: 工具参数
+
+        Returns:
+            执行结果
+        """
+        try:
+            from services.trading_tools import OKXTradingTools
+
+            # 创建交易工具实例
+            trading_tools = OKXTradingTools(
+                api_key=plan.okx_api_key,
+                secret_key=plan.okx_secret_key,
+                passphrase=plan.okx_passphrase,
+                is_demo=plan.is_demo,
+                trading_limits=plan.trading_limits
+            )
+
+            # 执行具体工具
+            if tool_name == 'place_order':
+                result = await trading_tools.place_order(**tool_args)
+            elif tool_name == 'place_limit_order':
+                result = await trading_tools.place_limit_order(**tool_args)
+            elif tool_name == 'place_stop_loss_order':
+                result = await trading_tools.place_stop_loss_order(**tool_args)
+            elif tool_name == 'cancel_order':
+                result = await trading_tools.cancel_order(**tool_args)
+            elif tool_name == 'get_positions':
+                result = await trading_tools.get_positions(**tool_args)
+            elif tool_name == 'get_current_price':
+                result = await trading_tools.get_current_price(**tool_args)
+            elif tool_name == 'get_trading_limits':
+                result = await trading_tools.get_trading_limits(**tool_args)
+            else:
+                result = {
+                    'success': False,
+                    'error': f'未知工具: {tool_name}'
+                }
+
+            # 记录自动执行结果
+            logger.info(f"自动执行工具完成: {tool_name}, result: {result.get('success', False)}")
+
+            return {
+                'tool_name': tool_name,
+                'success': result.get('success', False),
+                'result': result,
+                'status': 'executed',
+                'executed_at': datetime.utcnow(),
+                'execution_mode': 'auto'
+            }
+
+        except Exception as e:
+            logger.error(f"直接执行工具失败: {tool_name}, error: {e}")
+            return {
+                'tool_name': tool_name,
+                'success': False,
+                'error': str(e),
+                'status': 'error',
+                'executed_at': datetime.utcnow(),
+                'execution_mode': 'auto'
+            }
             elif tool_name == 'query_prediction_data':
                 result = cls._execute_query_prediction_data(plan, tool_args)
             elif tool_name == 'get_prediction_history':

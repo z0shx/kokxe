@@ -16,6 +16,9 @@ from database.db import get_db
 from database.models import TradingPlan, TrainingRecord, PredictionData, AgentDecision, KlineData
 from sqlalchemy import and_, desc, func
 from utils.logger import setup_logger
+from utils.timezone_helper import (format_datetime_full_beijing, format_datetime_short_beijing,
+                                   format_datetime_beijing, format_time_range_utc8)
+from services.agent_confirmation_service import confirmation_service
 
 logger = setup_logger(__name__, "plan_detail_ui.log")
 
@@ -110,7 +113,7 @@ class PlanDetailUI:
         latest_agent = data['latest_agent']
 
         training_version = latest_training.version if latest_training else "未训练"
-        agent_time = latest_agent.decision_time.strftime('%Y-%m-%d %H:%M:%S') if latest_agent else "无记录"
+        agent_time = format_datetime_full_beijing(latest_agent.decision_time) if latest_agent else "无记录"
 
         # 自动微调时间表
         schedule = plan.auto_finetune_schedule or []
@@ -137,7 +140,7 @@ class PlanDetailUI:
 
 **自动微调时间**: {schedule_str}
 
-**创建时间**: {plan.created_at.strftime('%Y-%m-%d %H:%M:%S')}
+**创建时间**: {format_datetime_full_beijing(plan.created_at)}
 
 ---
 """
@@ -290,7 +293,7 @@ class PlanDetailUI:
                     '启用': '✓' if record['is_active'] else '✗',
                     '数据量': record['data_count'] or 0,
                     '训练时长(秒)': record['train_duration'] or 0,  # 改为纯数字
-                    '创建时间': record['created_at'].strftime('%m-%d %H:%M')
+                    '创建时间': format_datetime_short_beijing(record['created_at'])
                 })
 
             return pd.DataFrame(df_data)
@@ -394,7 +397,7 @@ class PlanDetailUI:
                             PredictionData.training_record_id == record.id
                         ).order_by(PredictionData.created_at.asc()).first()
 
-                        inference_time_str = first_pred.created_at.strftime('%m-%d %H:%M') if first_pred else ''
+                        inference_time_str = format_datetime_short_beijing(first_pred.created_at) if first_pred else ''
 
                         # 格式：v1 (推理: 12-20 10:30)
                         display_text = f"{record.version} (推理: {inference_time_str})"
@@ -516,7 +519,7 @@ class PlanDetailUI:
                                         fig,
                                         predictions,
                                         record.id,
-                                        f"{record.version} (推理: {batch.inference_time.strftime('%m-%d %H:%M')})",
+                                        f"{record.version} (推理: {format_datetime_short_beijing(batch.inference_time)})",
                                         batch.inference_time,
                                         record_color,  # 相同训练版本使用相同颜色
                                         show_in_legend=show_in_legend
@@ -559,7 +562,7 @@ class PlanDetailUI:
                                         fig,
                                         predictions,
                                         record.id,
-                                        f"{record.version} (推理: {batch.inference_time.strftime('%m-%d %H:%M')})",
+                                        f"{record.version} (推理: {format_datetime_short_beijing(batch.inference_time)})",
                                         batch.inference_time,
                                         record_color,  # 相同训练版本使用相同颜色
                                         show_in_legend=show_in_legend
@@ -646,7 +649,7 @@ class PlanDetailUI:
             ))
 
         # 格式化推理时间
-        inference_time_str = inference_time.strftime('%m-%d %H:%M')
+        inference_time_str = format_datetime_short_beijing(inference_time)
 
         # 3. 平均值线条
         fig.add_trace(go.Scatter(
@@ -695,7 +698,7 @@ class PlanDetailUI:
 
                     df_data.append({
                         'ID': decision.id,
-                        '时间': decision.decision_time.strftime('%m-%d %H:%M:%S'),
+                        '时间': format_datetime_full_beijing(decision.decision_time),
                         '决策类型': decision.decision_type or 'N/A',
                         '状态': f"{status_emoji} {decision.status}",
                         '模型版本': f"v{decision.training_record_id}" if decision.training_record_id else 'N/A',
@@ -718,7 +721,7 @@ class PlanDetailUI:
             df_data = []
             for record in records:
                 has_pred_emoji = '✅' if record['has_predictions'] else '⚪'
-                inference_time_str = record['inference_time'].strftime('%m-%d %H:%M') if record['inference_time'] else 'N/A'
+                inference_time_str = format_datetime_short_beijing(record['inference_time']) if record['inference_time'] else 'N/A'
 
                 df_data.append({
                     'ID': record['training_record_id'],
@@ -726,7 +729,7 @@ class PlanDetailUI:
                     '推理时间': inference_time_str,
                     '预测数据': f"{has_pred_emoji} {record['predictions_count']}条",
                     '数据范围': record.get('date_range', 'N/A'),
-                    '训练完成': record['train_end_time'].strftime('%m-%d %H:%M') if record['train_end_time'] else 'N/A'
+                    '训练完成': format_datetime_short_beijing(record['train_end_time']) if record['train_end_time'] else 'N/A'
                 })
 
             return pd.DataFrame(df_data)
@@ -790,8 +793,8 @@ class PlanDetailUI:
                 ).count()
 
                 # 格式化时间范围显示
-                start_time = start_kline.timestamp.strftime('%Y-%m-%d %H:%M')
-                end_time = latest_kline.timestamp.strftime('%Y-%m-%d %H:%M')
+                start_time = format_datetime_beijing(start_kline.timestamp, '%Y-%m-%d %H:%M')
+                end_time = format_datetime_beijing(latest_kline.timestamp, '%Y-%m-%d %H:%M')
 
                 # 计算时间跨度
                 time_diff = latest_kline.timestamp - start_kline.timestamp
@@ -811,7 +814,7 @@ class PlanDetailUI:
 **⏱️ 时间跨度**: {time_span or '不足1小时'}
 **🔧 回看窗口**: {lookback_window}个数据点
 **📍 数据偏移**: {data_offset}个数据点
-**💡 最新数据**: {latest_kline.timestamp.strftime('%Y-%m-%d %H:%M:%S')}"""
+**💡 最新数据**: {format_datetime_full_beijing(latest_kline.timestamp)}"""
 
                 return range_info
 
@@ -836,14 +839,14 @@ class PlanDetailUI:
 **数据时间范围**: {latest_record.get('datetime_range')}
 
 **训练版本**: {latest_record.get('version', 'N/A')}
-**训练完成时间**: {latest_record.get('train_end_time').strftime('%Y-%m-%d %H:%M') if latest_record.get('train_end_time') else 'N/A'}
+**训练完成时间**: {format_datetime_beijing(latest_record.get('train_end_time'), '%Y-%m-%d %H:%M') if latest_record.get('train_end_time') else 'N/A'}
 **预测数据条数**: {latest_record.get('predictions_count', 0)}条"""
             else:
                 data_range_info = f"""**📊 Data输入信息**
 
 **数据时间范围**: 暂无数据
 **训练版本**: {latest_record.get('version', 'N/A')}
-**训练完成时间**: {latest_record.get('train_end_time').strftime('%Y-%m-%d %H:%M') if latest_record.get('train_end_time') else 'N/A'}
+**训练完成时间**: {format_datetime_beijing(latest_record.get('train_end_time'), '%Y-%m-%d %H:%M') if latest_record.get('train_end_time') else 'N/A'}
 **预测数据条数**: {latest_record.get('predictions_count', 0)}条"""
 
             return data_range_info
@@ -886,7 +889,7 @@ class PlanDetailUI:
                 detail = f"""
 ## 📋 Agent决策详情 (ID: {decision.id})
 
-**决策时间**: {decision.decision_time.strftime('%Y-%m-%d %H:%M:%S')}
+**决策时间**: {format_datetime_full_beijing(decision.decision_time)}
 **决策类型**: `{decision.decision_type}`
 **状态**: `{decision.status}`
 **使用模型**: v{decision.training_record_id} | **LLM**: {decision.llm_model or 'N/A'}
@@ -1009,7 +1012,7 @@ class PlanDetailUI:
                 if decision:
                     decision_output = f"""## 🤖 AI Agent 最新推理结果
 
-**决策时间**: {decision.decision_time.strftime('%Y-%m-%d %H:%M:%S')}
+**决策时间**: {format_datetime_full_beijing(decision.decision_time)}
 **决策类型**: {decision.decision_type or 'N/A'}
 **状态**: {decision.status}
 **使用模型**: v{decision.training_record_id} | **LLM**: {decision.llm_model or 'N/A'}
@@ -1105,8 +1108,8 @@ class PlanDetailUI:
                 logger.error(f"获取概率指标失败: {e}")
 
             # 时间范围
-            first_time = first_pred['timestamp'].strftime('%Y-%m-%d %H:%M') if hasattr(first_pred['timestamp'], 'strftime') else str(first_pred['timestamp'])[:16]
-            last_time = last_pred['timestamp'].strftime('%Y-%m-%d %H:%M') if hasattr(last_pred['timestamp'], 'strftime') else str(last_pred['timestamp'])[:16]
+            first_time = format_datetime_beijing(first_pred['timestamp'], '%Y-%m-%d %H:%M') if hasattr(first_pred['timestamp'], 'strftime') else str(first_pred['timestamp'])[:16]
+            last_time = format_datetime_beijing(last_pred['timestamp'], '%Y-%m-%d %H:%M') if hasattr(last_pred['timestamp'], 'strftime') else str(last_pred['timestamp'])[:16]
 
             # 价格统计
             close_prices = [p['close'] for p in predictions]
@@ -1192,7 +1195,7 @@ class PlanDetailUI:
 
             # 显示前10条详细数据
             for i, pred in enumerate(predictions[:10], 1):
-                timestamp_str = pred['timestamp'].strftime('%m-%d %H:%M') if hasattr(pred['timestamp'], 'strftime') else str(pred['timestamp'])[:16]
+                timestamp_str = format_datetime_short_beijing(pred['timestamp']) if hasattr(pred['timestamp'], 'strftime') else str(pred['timestamp'])[:16]
                 output += f"\n| {i} | {timestamp_str} | ${pred['open']:.2f} | ${pred['high']:.2f} | ${pred['low']:.2f} | ${pred['close']:.2f} |"
 
             if len(predictions) > 10:
@@ -1648,7 +1651,7 @@ class PlanDetailUI:
             lines.append(f"- 调度器运行状态: {scheduler_emoji}")
 
             if status.get('last_check_time'):
-                last_check = status['last_check_time'].strftime("%Y-%m-%d %H:%M:%S")
+                last_check = format_datetime_full_beijing(status['last_check_time'])
                 lines.append(f"- 最后检查时间: {last_check}")
 
             # 当前任务状态
@@ -1659,7 +1662,7 @@ class PlanDetailUI:
                 task_stage = current_task.get('stage', 'unknown')
                 task_start = current_task.get('start_time')
                 if task_start:
-                    start_str = task_start.strftime("%H:%M:%S")
+                    start_str = format_datetime_beijing(task_start, "%H:%M:%S")
                     lines.append(f"- 任务阶段: {task_stage}")
                     lines.append(f"- 开始时间: {start_str}")
                     lines.append(f"- 任务ID: {current_task.get('task_id', 'N/A')}")
@@ -1675,7 +1678,7 @@ class PlanDetailUI:
                 lines.append(f"- 训练ID: {latest_training['id']}")
                 lines.append(f"- 状态: {latest_training['status']}")
                 if latest_training['created_at']:
-                    training_time = latest_training['created_at'].strftime("%Y-%m-%d %H:%M")
+                    training_time = format_datetime_beijing(latest_training['created_at'], "%Y-%m-%d %H:%M")
                     lines.append(f"- 训练时间: {training_time}")
 
             # 时间表配置
@@ -1710,7 +1713,7 @@ class PlanDetailUI:
             lines.append(status_text)
 
             if last_check:
-                last_check_str = last_check.strftime("%Y-%m-%d %H:%M:%S")
+                last_check_str = format_datetime_full_beijing(last_check)
                 lines.append(f"最后检查: {last_check_str}")
 
             return "\n".join(lines)
@@ -1747,7 +1750,7 @@ class PlanDetailUI:
 
             data = []
             for tool in pending_tools:
-                decision_time = tool.get('decision_time', '').strftime("%Y-%m-%d %H:%M:%S") if tool.get('decision_time') else 'N/A'
+                decision_time = format_datetime_full_beijing(tool.get('decision_time')) if tool.get('decision_time') else 'N/A'
                 tool_name = tool.get('tool_name', 'N/A')
                 tool_args = str(tool.get('tool_args', {})) if tool.get('tool_args') else '{}'
                 status = tool.get('status', 'pending')
@@ -2048,13 +2051,13 @@ class PlanDetailUI:
 
 ---
 
-📅 **全部数据**: {min_date.strftime('%Y-%m-%d')} ~ {max_date.strftime('%Y-%m-%d')}
+📅 **全部数据**: {format_datetime_beijing(min_date, '%Y-%m-%d')} ~ {format_datetime_beijing(max_date, '%Y-%m-%d')}
 📊 **总数据点**: {total_count} 条
 """
                 else:
                     return f"""**数据统计**
 
-📅 **全部数据**: {min_date.strftime('%Y-%m-%d')} ~ {max_date.strftime('%Y-%m-%d')}
+📅 **全部数据**: {format_datetime_beijing(min_date, '%Y-%m-%d')} ~ {format_datetime_beijing(max_date, '%Y-%m-%d')}
 📊 **总数据点**: {total_count} 条
 
 ⚠️ **未配置训练范围**
@@ -2205,15 +2208,15 @@ class PlanDetailUI:
                 start_date = min_date
 
             info = f"""
-**数据范围**: {min_date.strftime('%Y-%m-%d')} 至 {max_date.strftime('%Y-%m-%d')} (共 {count} 条)
+**数据范围**: {format_datetime_beijing(min_date, '%Y-%m-%d')} 至 {format_datetime_beijing(max_date, '%Y-%m-%d')} (共 {count} 条)
 
-**已选择**: 最近 {days} 天 ({start_date.strftime('%Y-%m-%d')} 至 {max_date.strftime('%Y-%m-%d')})
+**已选择**: 最近 {days} 天 ({format_datetime_beijing(start_date, '%Y-%m-%d')} 至 {format_datetime_beijing(max_date, '%Y-%m-%d')})
 """
 
             return (
                 info,
-                start_date.strftime('%Y-%m-%d'),
-                max_date.strftime('%Y-%m-%d')
+                format_datetime_beijing(start_date, '%Y-%m-%d'),
+                format_datetime_beijing(max_date, '%Y-%m-%d')
             )
 
         except Exception as e:
@@ -2276,7 +2279,7 @@ class PlanDetailUI:
             # 构建返回结果
             result_md = f"""## ✅ AI Agent 推理完成
 
-**决策时间**: {decision.decision_time.strftime('%Y-%m-%d %H:%M:%S')}
+**决策时间**: {format_datetime_full_beijing(decision.decision_time)}
 
 **LLM**: {llm_config.provider} / {llm_config.model_name}
 
@@ -2352,8 +2355,8 @@ class PlanDetailUI:
         last_5 = predictions[-5:] if len(predictions) >= 5 else []
 
         # 时间范围
-        first_time = predictions[0]['timestamp'].strftime('%Y-%m-%d %H:%M') if hasattr(predictions[0]['timestamp'], 'strftime') else str(predictions[0]['timestamp'])[:16]
-        last_time = predictions[-1]['timestamp'].strftime('%Y-%m-%d %H:%M') if hasattr(predictions[-1]['timestamp'], 'strftime') else str(predictions[-1]['timestamp'])[:16]
+        first_time = format_datetime_beijing(predictions[0]['timestamp'], '%Y-%m-%d %H:%M') if hasattr(predictions[0]['timestamp'], 'strftime') else str(predictions[0]['timestamp'])[:16]
+        last_time = format_datetime_beijing(predictions[-1]['timestamp'], '%Y-%m-%d %H:%M') if hasattr(predictions[-1]['timestamp'], 'strftime') else str(predictions[-1]['timestamp'])[:16]
 
         # 价格统计
         close_prices = [p['close'] for p in predictions]
@@ -2383,14 +2386,14 @@ class PlanDetailUI:
 
 """
         for i, p in enumerate(first_5, 1):
-            timestamp_str = p['timestamp'].strftime('%Y-%m-%d %H:%M') if hasattr(p['timestamp'], 'strftime') else str(p['timestamp'])[:19]
+            timestamp_str = format_datetime_beijing(p['timestamp'], '%Y-%m-%d %H:%M') if hasattr(p['timestamp'], 'strftime') else str(p['timestamp'])[:19]
             message += f"{i}. **{timestamp_str}** - 开: ${p['open']:.2f}, 高: ${p['high']:.2f}, 低: ${p['low']:.2f}, 收: ${p['close']:.2f}\n"
 
         if last_5:
             message += "\n...\n\n### 预测数据（后5个周期）\n\n"
 
             for i, p in enumerate(last_5, 1):
-                timestamp_str = p['timestamp'].strftime('%Y-%m-%d %H:%M') if hasattr(p['timestamp'], 'strftime') else str(p['timestamp'])[:19]
+                timestamp_str = format_datetime_beijing(p['timestamp'], '%Y-%m-%d %H:%M') if hasattr(p['timestamp'], 'strftime') else str(p['timestamp'])[:19]
                 message += f"{i}. **{timestamp_str}** - 开: ${p['open']:.2f}, 高: ${p['high']:.2f}, 低: ${p['low']:.2f}, 收: ${p['close']:.2f}\n"
 
         message += f"""
@@ -2512,8 +2515,8 @@ class PlanDetailUI:
             last_pred = predictions[-1]
 
             # 时间范围
-            first_time = first_pred['timestamp'].strftime('%Y-%m-%d %H:%M') if hasattr(first_pred['timestamp'], 'strftime') else str(first_pred['timestamp'])[:16]
-            last_time = last_pred['timestamp'].strftime('%Y-%m-%d %H:%M') if hasattr(last_pred['timestamp'], 'strftime') else str(last_pred['timestamp'])[:16]
+            first_time = format_datetime_beijing(first_pred['timestamp'], '%Y-%m-%d %H:%M') if hasattr(first_pred['timestamp'], 'strftime') else str(first_pred['timestamp'])[:16]
+            last_time = format_datetime_beijing(last_pred['timestamp'], '%Y-%m-%d %H:%M') if hasattr(last_pred['timestamp'], 'strftime') else str(last_pred['timestamp'])[:16]
             text_lines.append(f"")
             text_lines.append(f"时间范围: {first_time} ~ {last_time}")
 
@@ -2542,7 +2545,7 @@ class PlanDetailUI:
 
             # 显示前10条详细数据
             for i, pred in enumerate(predictions[:10], 1):
-                timestamp_str = pred['timestamp'].strftime('%m-%d %H:%M') if hasattr(pred['timestamp'], 'strftime') else str(pred['timestamp'])[:16]
+                timestamp_str = format_datetime_short_beijing(pred['timestamp']) if hasattr(pred['timestamp'], 'strftime') else str(pred['timestamp'])[:16]
                 text_lines.append(
                     f"{i:2d}. {timestamp_str} | "
                     f"开: ${pred['open']:7.2f} | 高: ${pred['high']:7.2f} | "
@@ -2883,7 +2886,7 @@ class PlanDetailUI:
                 lines.append(f"**状态**: 🟢 已连接")
 
                 if last_update:
-                    lines.append(f"**更新时间**: {last_update.strftime('%H:%M:%S')}")
+                    lines.append(f"**更新时间**: {format_datetime_beijing(last_update, '%H:%M:%S')}")
 
                 lines.append("\n---\n")
 
@@ -2969,8 +2972,8 @@ class PlanDetailUI:
                     state_emoji = state_map.get(order['state'], f"❓ {order['state']}")
 
                     # 转换时间戳
-                    create_time = datetime.fromtimestamp(int(order['cTime']) / 1000).strftime('%m-%d %H:%M:%S')
-                    update_time = datetime.fromtimestamp(int(order['uTime']) / 1000).strftime('%m-%d %H:%M:%S')
+                    create_time = format_datetime_beijing(datetime.fromtimestamp(int(order['cTime']) / 1000), '%m-%d %H:%M:%S')
+                    update_time = format_datetime_beijing(datetime.fromtimestamp(int(order['uTime']) / 1000), '%m-%d %H:%M:%S')
 
                     df_data.append({
                         '订单ID': order['ordId'][:10] + '...',
@@ -3016,6 +3019,66 @@ class PlanDetailUI:
             import traceback
             traceback.print_exc()
             return f"❌ 清除失败: {str(e)}"
+
+    def get_pending_tools(self, plan_id: int) -> List[Dict]:
+        """获取待确认工具列表"""
+        try:
+            return confirmation_service.get_pending_tools(plan_id)
+        except Exception as e:
+            logger.error(f"获取待确认工具失败: {e}")
+            return []
+
+    def get_tool_confirmation_history(self, plan_id: int, limit: int = 20) -> List[Dict]:
+        """获取工具确认历史"""
+        try:
+            return confirmation_service.get_tool_execution_history(plan_id, limit)
+        except Exception as e:
+            logger.error(f"获取工具确认历史失败: {e}")
+            return []
+
+    async def confirm_tools(self, plan_id: int, selected_tools: str, action: str) -> str:
+        """确认工具调用"""
+        try:
+            if not selected_tools.strip():
+                return "❌ 请选择要操作的工具"
+
+            # 解析选择的工具ID
+            tool_ids = [int(tid.strip()) for tid in selected_tools.split(',') if tid.strip().isdigit()]
+
+            if not tool_ids:
+                return "❌ 未找到有效的工具ID"
+
+            approved = action == "approve"
+            confirmed_by = "user" if approved else "user_rejected"
+
+            # 批量确认
+            result = await confirmation_service.batch_confirm_tools(
+                pending_tool_ids=tool_ids,
+                approved=approved,
+                confirmed_by=confirmed_by
+            )
+
+            if result['success']:
+                action_text = "同意" if approved else "拒绝"
+                return f"✅ 已{action_text} {len(tool_ids)} 个工具调用：\n{result['message']}"
+            else:
+                return f"❌ 操作失败：{result.get('message', '未知错误')}"
+
+        except Exception as e:
+            logger.error(f"确认工具调用失败: {e}")
+            return f"❌ 确认失败：{str(e)}"
+
+    def cleanup_expired_tools(self, plan_id: int) -> str:
+        """清理过期工具"""
+        try:
+            result = confirmation_service.cleanup_expired_tools()
+            if result['success']:
+                return f"✅ {result['message']}"
+            else:
+                return f"❌ 清理失败：{result.get('error', '未知错误')}"
+        except Exception as e:
+            logger.error(f"清理过期工具失败: {e}")
+            return f"❌ 清理失败：{str(e)}"
 
     def build_ui(self, plan_id: int):
         """构建详情页UI"""
@@ -3088,6 +3151,65 @@ class PlanDetailUI:
                     )
 
                     agent_detail = gr.Markdown("点击记录查看详情")
+
+                    # 添加工具确认面板
+                    with gr.Accordion("🔧 工具确认管理", open=False):
+                        gr.Markdown("### ⏳ 待确认工具调用")
+
+                        # 待确认工具列表
+                        with gr.Row():
+                            pending_tools_df = gr.Dataframe(
+                                value=self.get_pending_tools(plan_id),
+                                headers=[
+                                    "ID", "工具名称", "工具参数", "预期效果",
+                                    "风险提示", "创建时间", "剩余时间"
+                                ],
+                                datatype=["number", "str", "str", "str", "str", "str", "str"],
+                                interactive=False,
+                                wrap=True,
+                                height=200
+                            )
+
+                        # 工具确认操作
+                        with gr.Row():
+                            selected_tools_input = gr.Textbox(
+                                label="选择工具ID (逗号分隔)",
+                                placeholder="例如: 1, 2, 3",
+                                scale=2
+                            )
+
+                            refresh_pending_btn = gr.Button("🔄 刷新", size="sm")
+                            cleanup_btn = gr.Button("🗑️ 清理过期", size="sm")
+
+                        with gr.Row():
+                            approve_btn = gr.Button(
+                                "✅ 同意执行",
+                                variant="primary",
+                                size="sm"
+                            )
+                            reject_btn = gr.Button(
+                                "❌ 拒绝执行",
+                                variant="stop",
+                                size="sm"
+                            )
+
+                        # 工具确认结果
+                        confirmation_result = gr.Markdown("等待操作...")
+
+                        gr.Markdown("### 📋 工具确认历史")
+
+                        # 确认历史列表
+                        history_df = gr.Dataframe(
+                            value=self.get_tool_confirmation_history(plan_id),
+                            headers=[
+                                "ID", "工具名称", "状态", "确认人",
+                                "确认时间", "执行结果"
+                            ],
+                            datatype=["number", "str", "str", "str", "str", "str"],
+                            interactive=False,
+                            wrap=True,
+                            height=150
+                        )
 
                     # 添加交易限制配置折叠面板
                     with gr.Accordion("💰 交易限制配置", open=False):
@@ -3415,22 +3537,7 @@ class PlanDetailUI:
                 automation_config_status = gr.Markdown("配置加载中...")
                 save_automation_config_btn = gr.Button("💾 保存自动化配置", variant="primary")
 
-                # 待执行工具管理
-                with gr.Accordion("📋 待执行工具管理", open=False):
-                    gr.Markdown("### 🔧 待确认的自动化工具执行")
-
-                    pending_tools_display = gr.DataFrame(
-                        headers=["决策时间", "工具名称", "工具参数", "状态"],
-                        datatype=["str", "str", "str", "str"],
-                        interactive=False,
-                        label="待执行工具列表"
-                    )
-
-                    with gr.Row():
-                        approve_tool_btn = gr.Button("✅ 批准执行", variant="primary")
-                        reject_tool_btn = gr.Button("❌ 拒绝执行", variant="stop")
-
-                    tool_action_result = gr.Markdown("选择工具记录后操作")
+                # 待执行工具管理（已移到右侧Agent面板中）
 
             # 控制面板Tab
             with gr.TabItem("🎛️ 控制面板"):
@@ -3787,31 +3894,48 @@ class PlanDetailUI:
                 outputs=[scheduler_status]
             )
 
-            # 工具操作事件绑定
-            def approve_tool_wrapper(selected_row):
-                return self.handle_pending_tool_action(plan_id, "approve", selected_row)
+            # 工具确认相关的事件绑定
+            async def approve_tools_wrapper(selected_tools):
+                return await self.confirm_tools(plan_id, selected_tools or "", "approve")
 
-            def reject_tool_wrapper(selected_row):
-                return self.handle_pending_tool_action(plan_id, "reject", selected_row)
+            async def reject_tools_wrapper(selected_tools):
+                return await self.confirm_tools(plan_id, selected_tools or "", "reject")
 
-            approve_tool_btn.click(
-                fn=approve_tool_wrapper,
-                inputs=[pending_tools_display],
-                outputs=[tool_action_result]
+            approve_btn.click(
+                fn=approve_tools_wrapper,
+                inputs=[selected_tools_input],
+                outputs=[confirmation_result]
             ).then(
-                fn=self.get_pending_tools_data,
-                inputs=[],
-                outputs=[pending_tools_display]
+                fn=lambda: self.get_pending_tools(plan_id),
+                outputs=[pending_tools_df]
+            ).then(
+                fn=lambda: self.get_tool_confirmation_history(plan_id),
+                outputs=[history_df]
             )
 
-            reject_tool_btn.click(
-                fn=reject_tool_wrapper,
-                inputs=[pending_tools_display],
-                outputs=[tool_action_result]
+            reject_btn.click(
+                fn=reject_tools_wrapper,
+                inputs=[selected_tools_input],
+                outputs=[confirmation_result]
             ).then(
-                fn=self.get_pending_tools_data,
-                inputs=[],
-                outputs=[pending_tools_display]
+                fn=lambda: self.get_pending_tools(plan_id),
+                outputs=[pending_tools_df]
+            ).then(
+                fn=lambda: self.get_tool_confirmation_history(plan_id),
+                outputs=[history_df]
+            )
+
+            refresh_pending_btn.click(
+                fn=lambda: self.get_pending_tools(plan_id),
+                outputs=[pending_tools_df]
+            )
+
+            cleanup_btn.click(
+                fn=lambda: self.cleanup_expired_tools(plan_id),
+                outputs=[confirmation_result]
+            ).then(
+                fn=lambda: self.get_pending_tools(plan_id),
+                outputs=[pending_tools_df]
             )
 
             # 控制面板事件绑定

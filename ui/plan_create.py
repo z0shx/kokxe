@@ -19,6 +19,7 @@ from sqlalchemy import and_, func, desc
 from utils.logger import setup_logger
 from utils.data_checker import DataIntegrityChecker
 from utils.data_downloader import DataDownloader
+from utils.timezone_helper import format_datetime_full_beijing, format_datetime_short_beijing, format_time_range_utc8
 from ui.base_ui import BaseUIComponent, DatabaseMixin, UIHelper, ValidationHelper, ConfigManager
 
 logger = setup_logger(__name__, "plan_create_ui.log")
@@ -53,7 +54,7 @@ class PlanCreateUI(BaseUIComponent, DatabaseMixin):
 
             if status['exists'] and status['connected']:
                 # WebSocket 正在运行
-                last_time = status['last_data_time'].strftime('%Y-%m-%d %H:%M:%S') if status['last_data_time'] else '无'
+                last_time = format_datetime_full_beijing(status['last_data_time']) if status['last_data_time'] else '无'
                 return (
                     f"🟢 WebSocket 已连接（全局连接复用中）\n"
                     f"接收消息: {status['total_received']} 条\n"
@@ -267,15 +268,15 @@ class PlanCreateUI(BaseUIComponent, DatabaseMixin):
                 start_date = min_date
 
             info = f"""
-**数据范围**: {min_date.strftime('%Y-%m-%d')} 至 {max_date.strftime('%Y-%m-%d')} (共 {count} 条)
+**数据范围**: {format_datetime_beijing(min_date, '%Y-%m-%d')} 至 {format_datetime_beijing(max_date, '%Y-%m-%d')} (共 {count} 条)
 
-**已选择**: 最近 {days} 天 ({start_date.strftime('%Y-%m-%d')} 至 {max_date.strftime('%Y-%m-%d')})
+**已选择**: 最近 {days} 天 ({format_datetime_beijing(start_date, '%Y-%m-%d')} 至 {format_datetime_beijing(max_date, '%Y-%m-%d')})
 """
 
             return (
                 info,
-                start_date.strftime('%Y-%m-%d'),
-                max_date.strftime('%Y-%m-%d')
+                format_datetime_beijing(start_date, '%Y-%m-%d'),
+                format_datetime_beijing(max_date, '%Y-%m-%d')
             )
 
         except Exception as e:
@@ -308,7 +309,7 @@ class PlanCreateUI(BaseUIComponent, DatabaseMixin):
                 return "**数据范围**: 暂无数据，请先检查数据"
 
             return f"""
-**数据范围**: {min_date.strftime('%Y-%m-%d %H:%M')} 至 {max_date.strftime('%Y-%m-%d %H:%M')}
+**数据范围**: {format_datetime_beijing(min_date, '%Y-%m-%d %H:%M')} 至 {format_datetime_beijing(max_date, '%Y-%m-%d %H:%M')}
 
 **总数据量**: {count} 条
 """
@@ -361,7 +362,7 @@ class PlanCreateUI(BaseUIComponent, DatabaseMixin):
                 # 格式化时间范围
                 status_data = strategy['status']
                 if status_data['start_time'] and status_data['end_time']:
-                    time_range = f"{status_data['start_time'].strftime('%Y-%m-%d')} ~ {status_data['end_time'].strftime('%Y-%m-%d')}"
+                    time_range = format_time_range_utc8(status_data['start_time'], status_data['end_time'], '%Y-%m-%d')
                 else:
                     time_range = "N/A"
 
@@ -403,7 +404,7 @@ class PlanCreateUI(BaseUIComponent, DatabaseMixin):
 
             # 格式化时间范围
             if final_status['start_time'] and final_status['end_time']:
-                time_range = f"{final_status['start_time'].strftime('%Y-%m-%d')} ~ {final_status['end_time'].strftime('%Y-%m-%d')}"
+                time_range = format_time_range_utc8(final_status['start_time'], final_status['end_time'], '%Y-%m-%d')
             else:
                 time_range = "N/A"
 

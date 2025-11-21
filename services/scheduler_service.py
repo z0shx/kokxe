@@ -15,6 +15,7 @@ from database.db import get_db
 from database.models import TradingPlan, TaskExecution, TrainingRecord
 from services.training_service import TrainingService
 from services.inference_service import InferenceService
+from utils.timezone_helper import format_datetime_full_beijing
 
 logger = logging.getLogger(__name__)
 
@@ -479,14 +480,14 @@ class SchedulerService:
                         'task_name': task.task_name,
                         'status': task.status,
                         'priority': task.priority,
-                        'scheduled_time': task.scheduled_time.strftime('%Y-%m-%d %H:%M:%S') if task.scheduled_time else None,
-                        'started_at': task.started_at.strftime('%Y-%m-%d %H:%M:%S') if task.started_at else None,
-                        'completed_at': task.completed_at.strftime('%Y-%m-%d %H:%M:%S') if task.completed_at else None,
+                        'scheduled_time': format_datetime_full_beijing(task.scheduled_time) if task.scheduled_time else None,
+                        'started_at': format_datetime_full_beijing(task.started_at) if task.started_at else None,
+                        'completed_at': format_datetime_full_beijing(task.completed_at) if task.completed_at else None,
                         'duration_seconds': task.duration_seconds,
                         'trigger_type': task.trigger_type,
                         'progress_percentage': task.progress_percentage,
                         'error_message': task.error_message,
-                        'created_at': task.created_at.strftime('%Y-%m-%d %H:%M:%S')
+                        'created_at': format_datetime_full_beijing(task.created_at)
                     }
 
                     # 添加状态显示
