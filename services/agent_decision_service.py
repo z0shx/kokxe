@@ -5,7 +5,7 @@ AI Agent 决策服务
 import asyncio
 import json
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple, Any
 from database.db import get_db
 from database.models import TradingPlan, TrainingRecord, PredictionData, AgentDecision, LLMConfig
 from utils.logger import setup_logger
@@ -147,8 +147,8 @@ class AgentDecisionService:
 
                 logger.info(f"决策记录已创建: decision_id={decision.id}")
 
-                # 执行工具调用（集成确认流程）
-                tool_calls, tool_results = await cls._execute_tools(
+                # 执行工具调用（同步版本）
+                tool_calls, tool_results = cls._execute_tools_sync(
                     plan=plan,
                     llm_response=llm_response,
                     agent_decision_id=decision.id
@@ -977,6 +977,163 @@ class AgentDecisionService:
         return tool_calls, tool_results
 
     @classmethod
+    def _execute_tools_sync(cls, plan: TradingPlan, llm_response: Dict, agent_decision_id: int) -> tuple:
+        """
+        执行工具调用（同步版本，集成确认流程）
+
+        Args:
+            plan: 交易计划
+            llm_response: LLM响应
+            agent_decision_id: Agent决策记录ID
+
+        Returns:
+            (tool_calls, tool_results)
+        """
+        from services.agent_confirmation_service import confirmation_service
+
+        tool_calls = llm_response.get('tool_calls', [])
+        tool_results = []
+
+        if not tool_calls:
+            return [], []
+
+        logger.info(f"处理工具调用(同步): {len(tool_calls)}个工具")
+
+        # 获取确认模式
+        confirmation_mode = confirmation_service.get_confirmation_mode(plan)
+        logger.info(f"计划 {plan.id} 确认模式: {confirmation_mode.value}")
+
+        for tool_call in tool_calls:
+            tool_name = tool_call.get('name', 'unknown')
+            tool_args = tool_call.get('arguments', {})
+
+            logger.info(f"  处理工具: {tool_name}, 参数: {tool_args}")
+
+            # 生成预期效果和风险提示
+            expected_effect, risk_warning = cls._generate_tool_info(tool_name, tool_args, plan)
+
+            if confirmation_mode.value == "auto":
+                # 自动执行模式 - 使用同步版本
+                logger.info(f"  自动执行工具: {tool_name}")
+                result = cls._execute_tool_directly_sync(plan, tool_name, tool_args)
+                tool_results.append(result)
+
+            elif confirmation_mode.value == "manual":
+                # 手动确认模式 - 创建待确认工具（同步）
+                logger.info(f"  创建待确认工具: {tool_name}")
+                try:
+                    pending_tool_id = asyncio.run(confirmation_service.create_pending_tool_call(
+                        plan_id=plan.id,
+                        agent_decision_id=agent_decision_id,
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        expected_effect=expected_effect,
+                        risk_warning=risk_warning
+                    ))
+
+                    result = {
+                        'tool_name': tool_name,
+                        'success': True,
+                        'message': f'工具调用已创建待确认记录，ID: {pending_tool_id}',
+                        'pending_tool_id': pending_tool_id,
+                        'status': 'pending_confirmation',
+                        'requires_confirmation': True
+                    }
+                    tool_results.append(result)
+
+                except Exception as e:
+                    logger.error(f"  创建待确认工具失败: {e}")
+                    result = {
+                        'tool_name': tool_name,
+                        'success': False,
+                        'error': f'创建待确认失败: {str(e)}',
+                        'status': 'error'
+                    }
+                    tool_results.append(result)
+
+            else:  # disabled
+                # 禁用工具调用
+                logger.info(f"  工具调用已禁用: {tool_name}")
+                result = {
+                    'tool_name': tool_name,
+                    'success': False,
+                    'error': '工具调用已禁用',
+                    'status': 'disabled'
+                }
+                tool_results.append(result)
+
+        return tool_calls, tool_results
+
+    @classmethod
+    def _execute_tool_directly_sync(cls, plan: TradingPlan, tool_name: str, tool_args: Dict) -> Dict[str, Any]:
+        """
+        直接执行工具（同步版本）
+
+        Args:
+            plan: 交易计划
+            tool_name: 工具名称
+            tool_args: 工具参数
+
+        Returns:
+            执行结果
+        """
+        try:
+            from services.trading_tools import OKXTradingTools
+
+            # 创建交易工具实例
+            trading_tools = OKXTradingTools(
+                api_key=plan.okx_api_key,
+                secret_key=plan.okx_secret_key,
+                passphrase=plan.okx_passphrase,
+                is_demo=plan.is_demo,
+                trading_limits=plan.trading_limits
+            )
+
+            # 执行具体工具（同步调用）
+            if tool_name == 'place_order':
+                result = asyncio.run(trading_tools.place_order(**tool_args))
+            elif tool_name == 'place_limit_order':
+                result = asyncio.run(trading_tools.place_limit_order(**tool_args))
+            elif tool_name == 'place_stop_loss_order':
+                result = asyncio.run(trading_tools.place_stop_loss_order(**tool_args))
+            elif tool_name == 'cancel_order':
+                result = asyncio.run(trading_tools.cancel_order(**tool_args))
+            elif tool_name == 'get_positions':
+                result = asyncio.run(trading_tools.get_positions(**tool_args))
+            elif tool_name == 'get_current_price':
+                result = asyncio.run(trading_tools.get_current_price(**tool_args))
+            elif tool_name == 'get_trading_limits':
+                result = asyncio.run(trading_tools.get_trading_limits(**tool_args))
+            else:
+                result = {
+                    'success': False,
+                    'error': f'未知工具: {tool_name}'
+                }
+
+            # 记录自动执行结果
+            logger.info(f"自动执行工具完成: {tool_name}, result: {result.get('success', False)}")
+
+            return {
+                'tool_name': tool_name,
+                'success': result.get('success', False),
+                'result': result,
+                'status': 'executed',
+                'executed_at': datetime.utcnow(),
+                'execution_mode': 'auto'
+            }
+
+        except Exception as e:
+            logger.error(f"直接执行工具失败: {tool_name}, error: {e}")
+            return {
+                'tool_name': tool_name,
+                'success': False,
+                'error': str(e),
+                'status': 'error',
+                'executed_at': datetime.utcnow(),
+                'execution_mode': 'auto'
+            }
+
+    @classmethod
     def _generate_tool_info(cls, tool_name: str, tool_args: Dict, plan: TradingPlan) -> Tuple[str, str]:
         """
         生成工具的预期效果和风险提示
@@ -1104,23 +1261,6 @@ class AgentDecisionService:
                 'executed_at': datetime.utcnow(),
                 'execution_mode': 'auto'
             }
-            elif tool_name == 'query_prediction_data':
-                result = cls._execute_query_prediction_data(plan, tool_args)
-            elif tool_name == 'get_prediction_history':
-                result = cls._execute_get_prediction_history(plan, tool_args)
-            else:
-                # 模拟执行
-                result = {
-                    'success': True,
-                    'message': f"模拟执行 {tool_name}",
-                    'simulated': True
-                }
-
-            tool_results.append({
-                'tool': tool_name,
-                'arguments': tool_args,
-                **result
-            })
 
         return tool_calls, tool_results
 
