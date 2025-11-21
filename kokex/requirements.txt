@@ -1,0 +1,56 @@
+# ============================================
+# Kronos 核心依赖 (推理和微调必需)
+# ============================================
+numpy
+pandas
+torch
+einops==0.8.1
+huggingface_hub==0.33.1
+matplotlib==3.9.3
+tqdm==4.67.1
+safetensors==0.6.2
+
+# ============================================
+# 微调配置相关依赖
+# ============================================
+pyyaml  # 用于读取 YAML 配置文件 (finetune_csv)
+
+# ============================================
+# Kokex 应用依赖
+# ============================================
+# Web UI
+gradio>=5.4.0
+
+# 数据库
+psycopg2-binary
+sqlalchemy>=2.0.0
+alembic
+
+# 配置和环境
+python-dotenv
+
+# HTTP/WebSocket 客户端
+requests
+websocket-client
+websockets
+aiohttp
+
+# 数据验证
+pydantic>=2.0.0
+
+# 可视化
+plotly>=5.0.0
+
+# 定时任务调度
+apscheduler>=3.10.0
+
+# LLM客户端
+anthropic  # Claude API
+openai  # OpenAI & Qwen (兼容) API
+
+# ============================================
+# 可选依赖 (根据需要安装)
+# ============================================
+# pytest  # 用于运行测试
+# pyqlib  # 用于 Qlib 相关的微调 (中国市场数据)
+# akshare  # 用于下载中国市场数据 (examples/prediction_cn_markets_day.py)
