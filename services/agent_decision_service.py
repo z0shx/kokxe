@@ -86,6 +86,28 @@ class AgentDecisionService:
                     PredictionData.training_record_id == training_id
                 ).order_by(PredictionData.timestamp).all()
 
+                # 如果指定的训练记录没有预测数据，查找最新的可用预测数据
+                if not predictions:
+                    logger.info(f"训练记录 {training_id} 没有预测数据，查找最新的可用预测数据...")
+
+                    # 查找该计划最新的预测数据
+                    latest_prediction = db.query(PredictionData).join(
+                        TrainingRecord, PredictionData.training_record_id == TrainingRecord.id
+                    ).filter(
+                        TrainingRecord.plan_id == plan_id,
+                        TrainingRecord.status == 'completed'
+                    ).order_by(PredictionData.timestamp.desc()).first()
+
+                    if not latest_prediction:
+                        return {'success': False, 'error': '无预测数据，请先执行推理生成预测数据'}
+
+                    # 获取该批次的所有预测数据
+                    predictions = db.query(PredictionData).filter(
+                        PredictionData.training_record_id == latest_prediction.training_record_id
+                    ).order_by(PredictionData.timestamp).all()
+
+                    logger.info(f"找到最新预测数据批次: training_record_id={latest_prediction.training_record_id}, 预测数量={len(predictions)}")
+
                 if not predictions:
                     return {'success': False, 'error': '无预测数据'}
 

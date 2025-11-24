@@ -2320,6 +2320,24 @@ class PlanDetailUI:
             traceback.print_exc()
             return f"❌ 推理失败: {str(e)}"
 
+    async def manual_inference_stream(self, plan_id: int):
+        """手动执行AI Agent推理（流式输出）"""
+        try:
+            # 先发送开始消息
+            yield [{"role": "assistant", "content": "🤖 正在启动 AI Agent 推理..."}]
+
+            # 调用异步推理方法
+            result = await self.manual_inference_async(plan_id)
+
+            # 发送最终结果
+            yield [{"role": "assistant", "content": result}]
+
+        except Exception as e:
+            logger.error(f"流式推理失败: {e}")
+            import traceback
+            traceback.print_exc()
+            yield [{"role": "assistant", "content": f"❌ 推理失败: {str(e)}"}]
+
     def _build_system_message(self, plan):
         """构建系统消息"""
         if plan.agent_prompt:
@@ -3079,3 +3097,59 @@ class PlanDetailUI:
         except Exception as e:
             logger.error(f"清理过期工具失败: {e}")
             return f"❌ 清理失败：{str(e)}"
+
+    def load_task_executions(self, plan_id: int) -> pd.DataFrame:
+        """加载任务执行记录"""
+        try:
+            from services.scheduler_service import scheduler_service
+
+            # 获取任务历史
+            task_history = scheduler_service.get_task_history(plan_id, limit=100)
+
+            if not task_history:
+                return pd.DataFrame(columns=[
+                    'ID', '任务类型', '任务名称', '状态', '计划时间', '开始时间',
+                    '完成时间', '执行时长(秒)', '触发方式', '进度(%)'
+                ]).astype({
+                    'ID': 'int',
+                    '执行时长(秒)': 'int',
+                    '进度(%)': 'int'
+                })
+
+            # 构建DataFrame
+            df_data = []
+            for task in task_history:
+                df_data.append({
+                    'ID': task['id'],
+                    '任务类型': task['type_display'],
+                    '任务名称': task['task_name'],
+                    '状态': task['status_display'],
+                    '计划时间': task['scheduled_time'] or '',
+                    '开始时间': task['started_at'] or '',
+                    '完成时间': task['completed_at'] or '',
+                    '执行时长(秒)': task['duration_seconds'] or 0,  # 确保数字类型
+                    '触发方式': task['trigger_type'],
+                    '进度(%)': task['progress_percentage'] or 0  # 确保数字类型
+                })
+
+            # 创建DataFrame
+            df = pd.DataFrame(df_data)
+
+            # 确保数字列的类型正确
+            if '执行时长(秒)' in df.columns:
+                df['执行时长(秒)'] = pd.to_numeric(df['执行时长(秒)'], errors='coerce').fillna(0).astype(int)
+            if '进度(%)' in df.columns:
+                df['进度(%)'] = pd.to_numeric(df['进度(%)'], errors='coerce').fillna(0).astype(int)
+
+            return df
+
+        except Exception as e:
+            logger.error(f"加载任务执行记录失败: {e}")
+            return pd.DataFrame(columns=[
+                    'ID', '任务类型', '任务名称', '状态', '计划时间', '开始时间',
+                    '完成时间', '执行时长(秒)', '触发方式', '进度(%)'
+                ]).astype({
+                    'ID': 'int',
+                    '执行时长(秒)': 'int',
+                    '进度(%)': 'int'
+                })

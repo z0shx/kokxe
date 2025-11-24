@@ -200,31 +200,67 @@ class TrainingService:
                 )
 
                 # 更新训练结果
-                with get_db() as db:
-                    train_end_time = datetime.utcnow()
-                    record = db.query(TrainingRecord).filter(
-                        TrainingRecord.id == training_id
-                    ).first()
+                try:
+                    with get_db() as db:
+                        train_end_time = datetime.utcnow()
+                        logger.info(f"准备更新训练结果: training_id={training_id}, success={result['success']}")
 
-                    record.status = 'completed' if result['success'] else 'failed'
-                    record.train_end_time = train_end_time
-                    record.train_duration = int((train_end_time - record.train_start_time).total_seconds())
-                    record.train_metrics = _convert_numpy_to_python(result.get('metrics', {}))
-                    record.tokenizer_path = result.get('tokenizer_path')
-                    record.predictor_path = result.get('predictor_path')
-                    record.error_message = result.get('error')
+                        record = db.query(TrainingRecord).filter(
+                            TrainingRecord.id == training_id
+                        ).first()
 
-                    db.commit()
+                        if not record:
+                            logger.error(f"训练记录不存在: training_id={training_id}")
+                            return
 
-                    # 如果成功，更新计划的最新训练记录ID
-                    if result['success']:
-                        db.query(TradingPlan).filter(
-                            TradingPlan.id == plan_id
-                        ).update({
-                            'latest_training_record_id': training_id,
-                            'last_finetune_time': train_end_time
-                        })
+                        logger.info(f"当前记录状态: status={record.status}, start_time={record.train_start_time}")
+
+                        # 更新字段
+                        record.status = 'completed' if result['success'] else 'failed'
+                        record.train_end_time = train_end_time
+                        record.train_duration = int((train_end_time - record.train_start_time).total_seconds())
+                        record.train_metrics = _convert_numpy_to_python(result.get('metrics', {}))
+                        record.tokenizer_path = result.get('tokenizer_path')
+                        record.predictor_path = result.get('predictor_path')
+                        record.error_message = result.get('error')
+
+                        logger.info(f"更新后状态: status={record.status}, duration={record.train_duration}")
+
+                        # 尝试提交
                         db.commit()
+                        logger.info(f"✅ 训练记录更新成功: training_id={training_id}")
+
+                        # 如果成功，更新计划的最新训练记录ID
+                        if result['success']:
+                            try:
+                                update_result = db.query(TradingPlan).filter(
+                                    TradingPlan.id == plan_id
+                                ).update({
+                                    'latest_training_record_id': training_id,
+                                    'last_finetune_time': train_end_time
+                                })
+                                db.commit()
+                                logger.info(f"✅ 计划信息更新成功: plan_id={plan_id}, 更新行数={update_result}")
+                            except Exception as plan_error:
+                                logger.error(f"❌ 更新计划信息失败: {plan_error}")
+                                db.rollback()
+
+                except Exception as db_error:
+                    logger.error(f"❌ 数据库更新失败: training_id={training_id}, error={db_error}")
+                    import traceback
+                    traceback.print_exc()
+                    # 尝试将状态标记为失败
+                    try:
+                        with get_db() as db:
+                            db.query(TrainingRecord).filter(
+                                TrainingRecord.id == training_id
+                            ).update({
+                                'status': 'failed',
+                                'error_message': f'数据库更新失败: {str(db_error)}'
+                            })
+                            db.commit()
+                    except:
+                        pass
 
                 logger.info(
                     f"训练完成: training_id={training_id}, "

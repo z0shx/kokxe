@@ -61,8 +61,10 @@ def export_schema():
     logger.info(f"数据库 schema 已导出到: {sql_file}")
 
 
+from contextlib import contextmanager
+
 @contextmanager
-def get_db() -> Session:
+def get_db():
     """
     获取数据库会话（上下文管理器）
 
