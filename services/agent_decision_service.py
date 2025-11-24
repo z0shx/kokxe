@@ -2845,7 +2845,7 @@ class AgentDecisionService:
                 # ReAct循环
                 # 从计划配置中获取ReAct参数
                 react_config = plan.react_config or {}
-                max_iterations = int(react_config.get('max_iterations', 10))
+                max_iterations = int(react_config.get('max_iterations', 3))
                 enable_thinking = bool(react_config.get('enable_thinking', True))
                 tool_approval = bool(react_config.get('tool_approval', False))
                 thinking_style = react_config.get('thinking_style', '详细')
@@ -2943,6 +2943,11 @@ class AgentDecisionService:
 
             logger.debug(f"_get_enabled_tools 调用，plan 类型: {type(plan)}, plan 值: {plan}")
 
+            # 添加调用堆栈以调试问题源头
+            import traceback
+            logger.debug(f"调用堆栈: {traceback.format_stack()[-3:-1]}")
+
+            # 确保 plan 是 TradingPlan 对象，而不是 plan_id
             if isinstance(plan, int):
                 # 如果传入了 plan_id，需要从数据库获取 plan 对象
                 logger.debug(f"传入的是 plan_id: {plan}，开始查询数据库")
@@ -2955,10 +2960,8 @@ class AgentDecisionService:
                     logger.debug(f"成功获取 plan 对象: {plan_obj}")
                     plan = plan_obj
             elif not isinstance(plan, TradingPlan):
-                logger.error(f"plan 参数类型错误: {type(plan)}, 期望 TradingPlan 或 int，plan 值: {plan}")
-                # 打印调用堆栈以帮助调试
-                import traceback
-                logger.error(f"调用堆栈: {traceback.format_exc()}")
+                logger.error(f"❌ plan 参数类型错误: {type(plan)}, 期望 TradingPlan 或 int，plan 值: {plan}")
+                logger.error(f"❌ 调用堆栈: {traceback.format_exc()}")
                 return {}
 
             logger.debug(f"最终 plan 对象类型: {type(plan)}")
@@ -3076,17 +3079,68 @@ class AgentDecisionService:
 
                                 # 完成工具调用
                                 if func_name:
-                                    # 添加到当前内容中
-                                    action_text = f"\n\n**Action:** {func_name}({func_args})"
+                                    # 添加到当前内容中，使用更醒目的格式
+                                    action_text = f"""
+
+**🔧 准备执行工具**
+- **工具名称:** `{func_name}`
+- **参数:** `{func_args}`
+"""
                                     current_content += action_text
                                     yield [{"role": "assistant", "content": current_content}]
 
-                                    # 这里应该等待用户确认
-                                    # 暂时模拟工具执行
-                                    result = await cls._simulate_tool_execution(func_name, func_args)
-                                    observation_text = f"\n\n**Observation:** {result}"
-                                    current_content += observation_text
-                                    yield [{"role": "assistant", "content": current_content}]
+                                    # 检查是否需要工具确认
+                                    from services.agent_confirmation_service import confirmation_service, ConfirmationMode
+
+                                    # 获取计划ID（从上下文中传递）
+                                    plan_id = getattr(cls, '_current_plan_id', None)
+                                    if plan_id:
+                                        # 需要获取 plan 对象，而不是只传递 plan_id
+                                        from database.models import TradingPlan
+                                        with get_db() as db:
+                                            plan_obj = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                                            if plan_obj:
+                                                confirmation_mode = confirmation_service.get_confirmation_mode(plan_obj)
+                                            else:
+                                                confirmation_mode = ConfirmationMode.DISABLED
+
+                                        if confirmation_mode == ConfirmationMode.MANUAL:
+                                            # 创建待确认工具调用
+                                            tool_call_id = await confirmation_service.create_pending_tool_call(
+                                                plan_id=plan_id,
+                                                agent_decision_id=0,  # 这里需要传递实际的决策ID
+                                                tool_name=func_name,
+                                                tool_args=cls._safe_parse_json(func_args) if func_args and func_args.strip() != "{}" else {},
+                                                expected_effect=f"执行工具 {func_name}",
+                                                risk_warning="请确认是否执行此工具调用",
+                                                timeout_minutes=5
+                                            )
+
+                                            # 生成确认消息，等待用户确认
+                                            confirmation_msg = f"""
+
+⏳ **等待工具确认**
+
+**🔧 工具调用:** {func_name}
+**📋 参数:** {func_args}
+
+此工具调用需要您的确认才能执行。
+
+请查看下方的 **"⏰ 待确认工具"** 面板：
+
+- ✅ **同意执行** - 在工具确认面板中点击"同意执行"或"全部同意"
+- ❌ **拒绝执行** - 在工具确认面板中点击"拒绝执行"或"全部拒绝"
+
+确认完成后，推理过程将自动继续...
+"""
+                                            yield [{"role": "assistant", "content": current_content + confirmation_msg}]
+                                            return  # 结束当前推理，等待确认后继续
+                                        else:
+                                            # 自动或禁用模式下直接执行
+                                            result = await cls._simulate_tool_execution(func_name, func_args)
+                                            observation_text = f"\n\n**📋 工具结果:** {result}"
+                                            current_content += observation_text
+                                            yield [{"role": "assistant", "content": current_content}]
 
         except Exception as e:
             logger.error(f"OpenAI ReAct调用失败: {e}")
@@ -3171,26 +3225,38 @@ class AgentDecisionService:
                                 func_args = tool_call.function.arguments or "{}"
 
                                 if func_name:
-                                    # 添加到当前内容中
-                                    action_text = f"\n\n**🔧 工具调用:** {func_name}({func_args})"
+                                    # 添加到当前内容中，使用更醒目的格式
+                                    action_text = f"""
+
+**🔧 准备执行工具**
+- **工具名称:** `{func_name}`
+- **参数:** `{func_args}`
+"""
                                     current_content += action_text
                                     yield [{"role": "assistant", "content": current_content}]
 
                                     # 检查是否需要工具确认
-                                    from services.agent_confirmation_service import confirmation_service
+                                    from services.agent_confirmation_service import confirmation_service, ConfirmationMode
 
                                     # 获取计划ID（从上下文中传递，这里需要修改）
                                     plan_id = getattr(cls, '_current_plan_id', None)
                                     if plan_id:
-                                        confirmation_mode = confirmation_service.get_confirmation_mode(plan_id)
+                                        # 需要获取 plan 对象，而不是只传递 plan_id
+                                        from database.models import TradingPlan
+                                        with get_db() as db:
+                                            plan_obj = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                                            if plan_obj:
+                                                confirmation_mode = confirmation_service.get_confirmation_mode(plan_obj)
+                                            else:
+                                                confirmation_mode = ConfirmationMode.DISABLED
 
-                                        if confirmation_mode == 'manual':
+                                        if confirmation_mode == ConfirmationMode.MANUAL:
                                             # 创建待确认工具调用
                                             tool_call_id = await confirmation_service.create_pending_tool_call(
                                                 plan_id=plan_id,
                                                 agent_decision_id=0,  # 这里需要传递实际的决策ID
                                                 tool_name=func_name,
-                                                tool_args=eval(func_args) if func_args != "{}" else {},
+                                                tool_args=cls._safe_parse_json(func_args) if func_args and func_args.strip() != "{}" else {},
                                                 expected_effect=f"执行工具 {func_name}",
                                                 risk_warning="请确认是否执行此工具调用",
                                                 timeout_minutes=5
@@ -3198,20 +3264,22 @@ class AgentDecisionService:
 
                                             # 生成确认消息，等待用户确认
                                             confirmation_msg = f"""
-⏳ **等待用户确认**
 
-发现工具调用需要您的确认：
+⏳ **等待工具确认**
 
-**工具名称:** {func_name}
-**参数:** {func_args}
+**🔧 工具调用:** {func_name}
+**📋 参数:** {func_args}
 
-请在工具确认面板中操作：
-- ✅ 同意执行：点击"同意执行"按钮
-- ❌ 拒绝执行：点击"拒绝执行"按钮
+此工具调用需要您的确认才能执行。
 
-系统将等待您的确认后继续执行...
+请查看下方的 **"⏰ 待确认工具"** 面板：
+
+- ✅ **同意执行** - 在工具确认面板中点击"同意执行"或"全部同意"
+- ❌ **拒绝执行** - 在工具确认面板中点击"拒绝执行"或"全部拒绝"
+
+确认完成后，推理过程将自动继续...
 """
-                                            yield [{"role": "assistant", "content": confirmation_msg}]
+                                            yield [{"role": "assistant", "content": current_content + confirmation_msg}]
                                             return  # 结束当前推理，等待确认后继续
                                         elif confirmation_mode == 'disabled':
                                             # 禁用确认模式，直接执行
@@ -3225,6 +3293,8 @@ class AgentDecisionService:
 
         except Exception as e:
             logger.error(f"Qwen ReAct调用失败: {e}")
+            import traceback
+            logger.error(f"完整错误堆栈: {traceback.format_exc()}")
             yield [{"role": "assistant", "content": f"❌ 调用失败: {str(e)}"}]
 
     @classmethod
@@ -3293,15 +3363,68 @@ class AgentDecisionService:
                                 func_args = tool_call.function.arguments or "{}"
 
                                 if func_name:
-                                    # 添加到当前内容中
-                                    action_text = f"\n\n**Action:** {func_name}({func_args})"
+                                    # 添加到当前内容中，使用更醒目的格式
+                                    action_text = f"""
+
+**🔧 准备执行工具**
+- **工具名称:** `{func_name}`
+- **参数:** `{func_args}`
+"""
                                     current_content += action_text
                                     yield [{"role": "assistant", "content": current_content}]
 
-                                    result = await cls._simulate_tool_execution(func_name, func_args)
-                                    observation_text = f"\n\n**Observation:** {result}"
-                                    current_content += observation_text
-                                    yield [{"role": "assistant", "content": current_content}]
+                                    # 检查是否需要工具确认
+                                    from services.agent_confirmation_service import confirmation_service, ConfirmationMode
+
+                                    # 获取计划ID（从上下文中传递）
+                                    plan_id = getattr(cls, '_current_plan_id', None)
+                                    if plan_id:
+                                        # 需要获取 plan 对象，而不是只传递 plan_id
+                                        from database.models import TradingPlan
+                                        with get_db() as db:
+                                            plan_obj = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                                            if plan_obj:
+                                                confirmation_mode = confirmation_service.get_confirmation_mode(plan_obj)
+                                            else:
+                                                confirmation_mode = ConfirmationMode.DISABLED
+
+                                        if confirmation_mode == ConfirmationMode.MANUAL:
+                                            # 创建待确认工具调用
+                                            tool_call_id = await confirmation_service.create_pending_tool_call(
+                                                plan_id=plan_id,
+                                                agent_decision_id=0,  # 这里需要传递实际的决策ID
+                                                tool_name=func_name,
+                                                tool_args=cls._safe_parse_json(func_args) if func_args and func_args.strip() != "{}" else {},
+                                                expected_effect=f"执行工具 {func_name}",
+                                                risk_warning="请确认是否执行此工具调用",
+                                                timeout_minutes=5
+                                            )
+
+                                            # 生成确认消息，等待用户确认
+                                            confirmation_msg = f"""
+
+⏳ **等待工具确认**
+
+**🔧 工具调用:** {func_name}
+**📋 参数:** {func_args}
+
+此工具调用需要您的确认才能执行。
+
+请查看下方的 **"⏰ 待确认工具"** 面板：
+
+- ✅ **同意执行** - 在工具确认面板中点击"同意执行"或"全部同意"
+- ❌ **拒绝执行** - 在工具确认面板中点击"拒绝执行"或"全部拒绝"
+
+确认完成后，推理过程将自动继续...
+"""
+                                            yield [{"role": "assistant", "content": current_content + confirmation_msg}]
+                                            return  # 结束当前推理，等待确认后继续
+                                        else:
+                                            # 自动或禁用模式下直接执行
+                                            result = await cls._simulate_tool_execution(func_name, func_args)
+                                            observation_text = f"\n\n**📋 工具结果:** {result}"
+                                            current_content += observation_text
+                                            yield [{"role": "assistant", "content": current_content}]
 
         except Exception as e:
             logger.error(f"Ollama ReAct调用失败: {e}")
@@ -3333,4 +3456,51 @@ class AgentDecisionService:
 
         except Exception as e:
             return f"工具执行失败: {str(e)}"
+
+    @classmethod
+    def _safe_parse_json(cls, json_str: str) -> dict:
+        """
+        安全解析JSON字符串
+
+        Args:
+            json_str: JSON字符串
+
+        Returns:
+            解析后的字典，失败时返回空字典
+        """
+        try:
+            import json
+            if not json_str or json_str.strip() in ["{}", "", "null"]:
+                return {}
+
+            # 尝试直接解析
+            try:
+                return json.loads(json_str)
+            except json.JSONDecodeError:
+                # 如果失败，尝试修复常见的JSON问题
+                fixed_str = json_str.strip()
+
+                # 如果不是以 { 开始，添加 {}
+                if not fixed_str.startswith('{'):
+                    if '=' in fixed_str:
+                        # 看起来像是查询参数格式，尝试转换
+                        params = {}
+                        for pair in fixed_str.split('&'):
+                            if '=' in pair:
+                                key, value = pair.split('=', 1)
+                                params[key.strip()] = value.strip().strip('"\'')
+                        return params
+                    else:
+                        # 单个值，返回空字典
+                        return {}
+
+                # 尝试修复未闭合的字符串
+                if fixed_str.count('"') % 2 != 0:
+                    fixed_str += '"'
+
+                return json.loads(fixed_str)
+
+        except Exception as e:
+            logger.warning(f"JSON解析失败: {json_str}, 错误: {e}")
+            return {}
 

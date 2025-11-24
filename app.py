@@ -529,7 +529,36 @@ def create_app():
                                 tool_cancel_order = gr.Checkbox(label="❌ cancel_order", value=True, info="撤销未成交的订单,冻结资金将立即释放")
                                 tool_modify_order = gr.Checkbox(label="✏️ modify_order", value=True, info="修改未成交订单的价格或数量")
                                 tool_stop_loss = gr.Checkbox(label="🛡️ place_stop_loss_order", value=True, info="设置止损订单,当价格达到指定比例时自动卖出")
-                            
+
+                            # ReAct配置
+                            gr.Markdown("**🧠 ReAct推理配置**")
+                            with gr.Row():
+                                max_iterations = gr.Number(
+                                    label="最大推理轮数",
+                                    value=3,
+                                    minimum=1,
+                                    maximum=10,
+                                    step=1,
+                                    info="AI Agent最多进行几轮推理分析"
+                                )
+                                enable_thinking = gr.Checkbox(
+                                    label="显示思考过程",
+                                    value=True,
+                                    info="在推理过程中显示AI的详细思考内容"
+                                )
+                            with gr.Row():
+                                thinking_style = gr.Dropdown(
+                                    label="思考风格",
+                                    choices=["详细", "简洁", "极简"],
+                                    value="详细",
+                                    info="控制思考内容的详细程度"
+                                )
+                                tool_approval = gr.Checkbox(
+                                    label="工具审批",
+                                    value=False,
+                                    info="启用后工具调用需要用户手动确认"
+                                )
+
                          # 保存按钮
                             with gr.Row():
                                 save_agent_config_btn = gr.Button("💾 保存配置", size="sm")
@@ -619,7 +648,42 @@ def create_app():
 
                         with gr.Row():
                             manual_inference_btn = gr.Button("🎯 执行推理", variant="primary")
+                            show_tool_history_btn = gr.Button("🛠️ 工具调用历史", size="sm")
                             clear_chat_btn = gr.Button("🗑️ 清空对话", size="sm")
+
+                        # 工具确认面板
+                        with gr.Accordion("⏰ 待确认工具", open=True):
+                            gr.Markdown("当AI Agent需要执行工具操作时，会在此处显示待确认的工具调用。")
+
+                            # 工具确认列表
+                            tool_confirmation_df = gr.Dataframe(
+                                headers=["ID", "工具名称", "参数", "创建时间", "状态"],
+                                datatype=["str", "str", "str", "str", "str"],
+                                interactive=False,
+                                wrap=True,
+                                label="待确认工具列表"
+                            )
+
+                            # 工具确认操作按钮
+                            with gr.Row():
+                                refresh_pending_tools_btn = gr.Button("🔄 刷新列表", size="sm")
+                                approve_selected_btn = gr.Button("✅ 同意执行", variant="primary", size="sm")
+                                reject_selected_btn = gr.Button("❌ 拒绝执行", variant="stop", size="sm")
+                                approve_all_btn = gr.Button("✅ 全部同意", size="sm")
+                                reject_all_btn = gr.Button("❌ 全部拒绝", variant="stop", size="sm")
+
+                            # 工具确认选择
+                            selected_tools_input = gr.Textbox(
+                                label="选中的工具ID (用逗号分隔，例如: 1,2,3)",
+                                placeholder="请输入要操作的工具ID，多个ID用逗号分隔",
+                                info="可以从上方工具列表的ID列中获取"
+                            )
+
+                            # 工具确认结果
+                            tool_confirmation_result = gr.Markdown("")
+
+                            # 自动刷新工具确认列表
+                            tool_confirmation_timer = gr.Timer(value=5.0, active=True)
 
                         # 清除推理记录
                         with gr.Accordion("📋 记录管理", open=False):
@@ -688,6 +752,7 @@ def create_app():
                             "### 💰 账户信息\n\n未加载",  # account_status
                             gr.DataFrame(),  # order_table
                             gr.DataFrame(),  # task_executions_df  # task_executions
+                            gr.DataFrame(), "", gr.Timer(active=False),  # tool_confirmation_df, tool_confirmation_result, tool_confirmation_timer
                             gr.Timer(active=False)  # account_timer
                         )
 
@@ -726,6 +791,9 @@ def create_app():
                     # 获取Agent配置
                     agent_config = detail_ui.get_agent_config(int(plan_id))
                     tools_config = agent_config.get('agent_tools_config', {})
+
+                    # 获取ReAct配置
+                    react_config = detail_ui.get_react_config(int(plan_id))
 
                     # 获取推理参数配置
                     inference_params = detail_ui.get_inference_params(int(plan_id))
@@ -798,6 +866,10 @@ def create_app():
                         tools_config.get('cancel_order', True),  # tool_cancel_order
                         tools_config.get('modify_order', True),  # tool_modify_order
                         tools_config.get('place_stop_loss_order', True),  # tool_stop_loss
+                        int(react_config.get('max_iterations', 3)),  # max_iterations
+                        bool(react_config.get('enable_thinking', True)),  # enable_thinking
+                        react_config.get('thinking_style', '详细'),  # thinking_style
+                        bool(react_config.get('tool_approval', False)),  # tool_approval
                         float(trading_limits['available_usdt_amount']),  # quick_usdt_amount
                         float(trading_limits['available_usdt_percentage']),  # quick_usdt_percentage
                         int(trading_limits['avg_order_count']),  # quick_avg_orders
@@ -813,7 +885,9 @@ def create_app():
                         account_info,  # account_status
                         orders_df,  # order_table
                         detail_ui.load_task_executions(int(plan_id)),  # task_executions_df
-                        gr.Timer(active=True)  # account_timer - 启动账户定时器
+                        detail_ui.get_pending_tools(int(plan_id)),  # tool_confirmation_df
+                        gr.Timer(active=True),  # account_timer - 启动账户定时器
+                        gr.Timer(active=True)  # tool_confirmation_timer - 启动工具确认定时器
                     )
 
                 # 保存参数函数
@@ -961,11 +1035,13 @@ def create_app():
                         tool_get_account, tool_get_positions, tool_get_pending_orders,
                         tool_query_prediction, tool_prediction_history, tool_place_order,  # 工具选择
                         tool_cancel_order, tool_modify_order, tool_stop_loss,
+                        max_iterations, enable_thinking, thinking_style, tool_approval,  # ReAct配置
                         quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss,  # 交易限制配置
                         training_df, kline_chart, probability_indicators_md,  # K线图和概率指标
                         inference_df, inference_data_range_info, prediction_data_preview, agent_df,
                         agent_chatbot,  # agent_chatbot
                         account_status, order_table, task_executions_df,  # 账户信息、订单记录和任务记录
+                        tool_confirmation_df, tool_confirmation_result, tool_confirmation_timer,  # 工具确认UI
                         account_timer  # 定时器
                     ]
                 ).then(
@@ -1037,6 +1113,7 @@ def create_app():
                         training_df, kline_chart, probability_indicators_md, inference_df, inference_data_range_info, prediction_data_preview, agent_df,
                         agent_chatbot,
                         account_status, order_table, task_executions_df,
+                        tool_confirmation_df, tool_confirmation_result, tool_confirmation_timer,
                         account_timer
                     ]
                 )
@@ -1204,7 +1281,7 @@ def create_app():
                 )
 
                 # Agent配置事件
-                def save_agent_config_wrapper(pid, llm_id, prompt, t1, t2, t3, t4, t5, t6, t7, t8, t9):
+                def save_agent_config_wrapper(pid, llm_id, prompt, t1, t2, t3, t4, t5, t6, t7, t8, t9, max_iter, enable_think, think_style, tool_approve):
                     if not pid:
                         return "❌ 请先选择计划"
                     tools_config = {
@@ -1218,7 +1295,19 @@ def create_app():
                         'modify_order': t8,
                         'place_stop_loss_order': t9
                     }
-                    return detail_ui.save_agent_config(int(pid), llm_id, prompt, tools_config)
+                    # 保存Agent配置
+                    agent_result = detail_ui.save_agent_config(int(pid), llm_id, prompt, tools_config)
+
+                    # 保存ReAct配置
+                    react_result = detail_ui.save_react_config(
+                        int(pid),
+                        int(max_iter),
+                        enable_think,
+                        tool_approve,
+                        think_style
+                    )
+
+                    return f"{agent_result}\n\n{react_result}"
 
                 save_agent_config_btn.click(
                     fn=save_agent_config_wrapper,
@@ -1226,7 +1315,8 @@ def create_app():
                         plan_id_input, llm_config_dropdown, agent_prompt_textbox,
                         tool_get_account, tool_get_positions, tool_get_pending_orders,
                         tool_query_prediction, tool_prediction_history, tool_place_order,
-                        tool_cancel_order, tool_modify_order, tool_stop_loss
+                        tool_cancel_order, tool_modify_order, tool_stop_loss,
+                        max_iterations, enable_thinking, thinking_style, tool_approval
                     ],
                     outputs=[agent_config_status]
                 )
@@ -1366,6 +1456,195 @@ def create_app():
                     outputs=[agent_chatbot],
                     show_progress="full",  # 显示完整进度
                     api_name="manual_inference_stream"  # 添加API名称
+                )
+
+                # 显示工具调用历史
+                def show_tool_history_wrapper(pid):
+                    """显示工具调用历史到chatbot"""
+                    if not pid:
+                        return [{"role": "assistant", "content": "❌ 请先选择计划"}]
+
+                    try:
+                        # 获取工具确认历史
+                        tool_history = detail_ui.get_tool_confirmation_history(int(pid), limit=10)
+
+                        if not tool_history:
+                            return [{"role": "user", "content": "工具调用历史"},
+                                   {"role": "assistant", "content": "暂无工具调用记录"}]
+
+                        # 格式化工具历史
+                        history_lines = ["## 🛠️ 工具调用历史\n"]
+
+                        for record in tool_history:
+                            status_emoji = "✅" if record.get('status') == 'approved' else "❌" if record.get('status') == 'rejected' else "⏳"
+                            tool_name = record.get('tool_name', 'unknown')
+                            tool_args = record.get('tool_args', {})
+                            created_time = record.get('created_at', 'N/A')
+                            confirmed_by = record.get('confirmed_by', 'N/A')
+                            risk_warning = record.get('risk_warning', '')
+
+                            history_lines.append(f"### {status_emoji} **{tool_name}**")
+                            history_lines.append(f"- **时间**: {created_time}")
+                            history_lines.append(f"- **参数**: `{tool_args}`")
+                            history_lines.append(f"- **状态**: {record.get('status', 'unknown')}")
+                            history_lines.append(f"- **操作人**: {confirmed_by}")
+                            if risk_warning:
+                                history_lines.append(f"- **风险提示**: {risk_warning}")
+                            history_lines.append("")
+
+                        return [
+                            {"role": "user", "content": "工具调用历史"},
+                            {"role": "assistant", "content": "\n".join(history_lines)}
+                        ]
+
+                    except Exception as e:
+                        logger.error(f"获取工具历史失败: {e}")
+                        return [{"role": "assistant", "content": f"❌ 获取工具历史失败: {str(e)}"}]
+
+                show_tool_history_btn.click(
+                    fn=show_tool_history_wrapper,
+                    inputs=[plan_id_input],
+                    outputs=[agent_chatbot]
+                )
+
+                # 工具确认相关事件
+                def refresh_pending_tools_wrapper(pid):
+                    """刷新待确认工具列表"""
+                    if not pid:
+                        return gr.DataFrame(), ""
+                    try:
+                        pending_tools = detail_ui.get_pending_tools(int(pid))
+                        # 格式化为DataFrame
+                        df_data = []
+                        for tool in pending_tools:
+                            df_data.append({
+                                'ID': tool.get('id', ''),
+                                '工具名称': tool.get('tool_name', ''),
+                                '参数': str(tool.get('tool_args', {})),
+                                '创建时间': tool.get('created_at', ''),
+                                '状态': tool.get('status', 'unknown')
+                            })
+                        df = pd.DataFrame(df_data) if df_data else pd.DataFrame()
+                        return df, ""
+                    except Exception as e:
+                        logger.error(f"刷新待确认工具失败: {e}")
+                        return gr.DataFrame(), f"❌ 刷新失败: {str(e)}"
+
+                refresh_pending_tools_btn.click(
+                    fn=refresh_pending_tools_wrapper,
+                    inputs=[plan_id_input],
+                    outputs=[tool_confirmation_df, tool_confirmation_result]
+                )
+
+                # 工具确认定时器自动刷新
+                tool_confirmation_timer.tick(
+                    fn=refresh_pending_tools_wrapper,
+                    inputs=[plan_id_input],
+                    outputs=[tool_confirmation_df, tool_confirmation_result]
+                )
+
+                def approve_tools_wrapper(pid, selected_tools):
+                    """同意执行工具"""
+                    if not pid or not selected_tools.strip():
+                        return "❌ 请先选择计划并输入工具ID"
+                    try:
+                        result = detail_ui.confirm_tools(int(pid), selected_tools, "approve")
+                        # 刷新工具列表
+                        refresh_result = refresh_pending_tools_wrapper(pid)
+                        return f"✅ {result}\n\n{refresh_result[1]}"
+                    except Exception as e:
+                        logger.error(f"同意工具执行失败: {e}")
+                        return f"❌ 操作失败: {str(e)}"
+
+                approve_selected_btn.click(
+                    fn=approve_tools_wrapper,
+                    inputs=[plan_id_input, selected_tools_input],
+                    outputs=[tool_confirmation_result]
+                ).then(
+                    fn=refresh_pending_tools_wrapper,
+                    inputs=[plan_id_input],
+                    outputs=[tool_confirmation_df, tool_confirmation_result]
+                )
+
+                def reject_tools_wrapper(pid, selected_tools):
+                    """拒绝执行工具"""
+                    if not pid or not selected_tools.strip():
+                        return "❌ 请先选择计划并输入工具ID"
+                    try:
+                        result = detail_ui.confirm_tools(int(pid), selected_tools, "reject")
+                        # 刷新工具列表
+                        refresh_result = refresh_pending_tools_wrapper(pid)
+                        return f"❌ {result}\n\n{refresh_result[1]}"
+                    except Exception as e:
+                        logger.error(f"拒绝工具执行失败: {e}")
+                        return f"❌ 操作失败: {str(e)}"
+
+                reject_selected_btn.click(
+                    fn=reject_tools_wrapper,
+                    inputs=[plan_id_input, selected_tools_input],
+                    outputs=[tool_confirmation_result]
+                ).then(
+                    fn=refresh_pending_tools_wrapper,
+                    inputs=[plan_id_input],
+                    outputs=[tool_confirmation_df, tool_confirmation_result]
+                )
+
+                def approve_all_tools_wrapper(pid):
+                    """同意所有待确认工具"""
+                    if not pid:
+                        return "❌ 请先选择计划"
+                    try:
+                        # 获取所有待确认工具的ID
+                        pending_tools = detail_ui.get_pending_tools(int(pid))
+                        if not pending_tools:
+                            return "⚠️ 没有待确认的工具"
+
+                        tool_ids = ",".join([str(tool.get('id', '')) for tool in pending_tools])
+                        result = detail_ui.confirm_tools(int(pid), tool_ids, "approve")
+                        # 刷新工具列表
+                        refresh_result = refresh_pending_tools_wrapper(pid)
+                        return f"✅ {result}\n\n{refresh_result[1]}"
+                    except Exception as e:
+                        logger.error(f"同意所有工具执行失败: {e}")
+                        return f"❌ 操作失败: {str(e)}"
+
+                approve_all_btn.click(
+                    fn=approve_all_tools_wrapper,
+                    inputs=[plan_id_input],
+                    outputs=[tool_confirmation_result]
+                ).then(
+                    fn=refresh_pending_tools_wrapper,
+                    inputs=[plan_id_input],
+                    outputs=[tool_confirmation_df, tool_confirmation_result]
+                )
+
+                def reject_all_tools_wrapper(pid):
+                    """拒绝所有待确认工具"""
+                    if not pid:
+                        return "❌ 请先选择计划"
+                    try:
+                        # 获取所有待确认工具的ID
+                        pending_tools = detail_ui.get_pending_tools(int(pid))
+                        if not pending_tools:
+                            return "⚠️ 没有待确认的工具"
+
+                        tool_ids = ",".join([str(tool.get('id', '')) for tool in pending_tools])
+                        result = detail_ui.confirm_tools(int(pid), tool_ids, "reject")
+                        # 刷新工具列表
+                        refresh_result = refresh_pending_tools_wrapper(pid)
+                        return f"❌ {result}\n\n{refresh_result[1]}"
+                    except Exception as e:
+                        logger.error(f"拒绝所有工具执行失败: {e}")
+                        return f"❌ 操作失败: {str(e)}"
+
+                reject_all_btn.click(
+                    fn=reject_all_tools_wrapper,
+                    inputs=[plan_id_input],
+                    outputs=[tool_confirmation_result]
+                ).then(
+                    fn=refresh_pending_tools_wrapper,
+                    inputs=[plan_id_input],
+                    outputs=[tool_confirmation_df, tool_confirmation_result]
                 )
 
                 # 清空对话
@@ -1579,7 +1858,7 @@ def create_app():
                 def refresh_tasks_wrapper(pid):
                     if not pid:
                         return pd.DataFrame()
-                    return load_task_executions(int(pid))
+                    return detail_ui.load_task_executions(int(pid))
 
                 task_refresh_btn.click(
                     fn=refresh_tasks_wrapper,
