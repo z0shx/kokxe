@@ -2753,6 +2753,9 @@ class AgentDecisionService:
             流式消息，包含思考过程、工具调用、工具结果等
         """
         try:
+            # 设置当前计划ID供工具确认使用
+            cls._current_plan_id = plan_id
+
             with get_db() as db:
                 plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
                 if not plan:
@@ -2885,6 +2888,19 @@ class AgentDecisionService:
             yield [{"role": "assistant", "content": f"❌ 推理过程出错: {str(e)}"}]
 
     @classmethod
+    def _format_thinking_content(cls, thinking_content: str, thinking_style: str = "详细") -> str:
+        """格式化思考内容为可显示的格式"""
+        if not thinking_content:
+            return ""
+
+        if thinking_style == "详细":
+            return f"🧔 **思考过程：**\n```\n{thinking_content}\n```"
+        elif thinking_style == "简洁":
+            return f"💭 **思考：** {thinking_content}"
+        else:  # 极简
+            return thinking_content
+
+    @classmethod
     def _build_react_prompt(cls, custom_prompt: str = "") -> str:
         """构建ReAct系统提示词"""
         base_prompt = """你是一个专业的量化交易AI助手，使用ReAct模式进行思考和工具调用。
@@ -2916,18 +2932,57 @@ class AgentDecisionService:
         return base_prompt
 
     @classmethod
-    def _get_enabled_tools(cls, plan: TradingPlan) -> Dict:
+    def _get_enabled_tools(cls, plan) -> Dict:
         """获取启用的工具"""
-        from services.agent_tools import AGENT_TOOLS
+        try:
+            from services.agent_tools import AGENT_TOOLS
 
-        tools_config = plan.agent_tools_config or {}
-        enabled_tools = {}
+            # 检查 plan 参数类型
+            from database.models import TradingPlan
+            from database.db import get_db
 
-        for tool_name, tool_def in AGENT_TOOLS.items():
-            if tools_config.get(tool_name, True):  # 默认启用
-                enabled_tools[tool_name] = tool_def
+            logger.debug(f"_get_enabled_tools 调用，plan 类型: {type(plan)}, plan 值: {plan}")
 
-        return enabled_tools
+            if isinstance(plan, int):
+                # 如果传入了 plan_id，需要从数据库获取 plan 对象
+                logger.debug(f"传入的是 plan_id: {plan}，开始查询数据库")
+
+                with get_db() as db:
+                    plan_obj = db.query(TradingPlan).filter(TradingPlan.id == plan).first()
+                    if not plan_obj:
+                        logger.error(f"找不到计划: plan_id={plan}")
+                        return {}
+                    logger.debug(f"成功获取 plan 对象: {plan_obj}")
+                    plan = plan_obj
+            elif not isinstance(plan, TradingPlan):
+                logger.error(f"plan 参数类型错误: {type(plan)}, 期望 TradingPlan 或 int，plan 值: {plan}")
+                # 打印调用堆栈以帮助调试
+                import traceback
+                logger.error(f"调用堆栈: {traceback.format_exc()}")
+                return {}
+
+            logger.debug(f"最终 plan 对象类型: {type(plan)}")
+            # 双重检查 plan 是否是正确的 TradingPlan 对象
+            if not hasattr(plan, 'agent_tools_config'):
+                logger.error(f"plan 对象没有 agent_tools_config 属性，plan: {plan}")
+                return {}
+
+            tools_config = plan.agent_tools_config or {}
+            enabled_tools = {}
+
+            for tool_name, tool_def in AGENT_TOOLS.items():
+                if tools_config.get(tool_name, True):  # 默认启用
+                    enabled_tools[tool_name] = tool_def
+
+            return enabled_tools
+
+        except Exception as e:
+            logger.error(f"获取启用工具失败: {e}")
+            import traceback
+            logger.error(f"详细错误信息: {traceback.format_exc()}")
+            # 返回默认工具配置
+            from services.agent_tools import AGENT_TOOLS
+            return AGENT_TOOLS
 
     @classmethod
     def _get_tool_descriptions(cls) -> str:
@@ -3084,18 +3139,30 @@ class AgentDecisionService:
 
             current_content = ""
             thinking_content = ""  # 用于累积思考内容
+            reasoning_content = ""  # 用于累积推理内容
 
             async for chunk in response:
                 if chunk.choices and len(chunk.choices) > 0:
                     delta = chunk.choices[0].delta
 
-                    if hasattr(delta, 'content') and delta.content:
+                    # 处理推理内容（思考过程）
+                    if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                        reasoning_piece = delta.reasoning_content
+                        reasoning_content += reasoning_piece
+                        # 累积输出完整的思考内容
+                        if enable_thinking:
+                            formatted_thinking = cls._format_thinking_content(reasoning_content, thinking_style)
+                            yield [{"role": "assistant", "content": formatted_thinking}]
+
+                    # 处理常规内容
+                    elif hasattr(delta, 'content') and delta.content:
                         content_piece = delta.content
                         current_content += content_piece
                         thinking_content += content_piece
 
-                        # 累积输出完整内容，而不是只输出最新片段
-                        yield [{"role": "assistant", "content": thinking_content}]
+                        # 如果没有推理内容，累积输出完整内容
+                        if not reasoning_content and enable_thinking:
+                            yield [{"role": "assistant", "content": thinking_content}]
 
                     elif hasattr(delta, 'tool_calls') and delta.tool_calls:
                         for tool_call in delta.tool_calls:
@@ -3105,12 +3172,54 @@ class AgentDecisionService:
 
                                 if func_name:
                                     # 添加到当前内容中
-                                    action_text = f"\n\n**Action:** {func_name}({func_args})"
+                                    action_text = f"\n\n**🔧 工具调用:** {func_name}({func_args})"
                                     current_content += action_text
                                     yield [{"role": "assistant", "content": current_content}]
 
+                                    # 检查是否需要工具确认
+                                    from services.agent_confirmation_service import confirmation_service
+
+                                    # 获取计划ID（从上下文中传递，这里需要修改）
+                                    plan_id = getattr(cls, '_current_plan_id', None)
+                                    if plan_id:
+                                        confirmation_mode = confirmation_service.get_confirmation_mode(plan_id)
+
+                                        if confirmation_mode == 'manual':
+                                            # 创建待确认工具调用
+                                            tool_call_id = await confirmation_service.create_pending_tool_call(
+                                                plan_id=plan_id,
+                                                agent_decision_id=0,  # 这里需要传递实际的决策ID
+                                                tool_name=func_name,
+                                                tool_args=eval(func_args) if func_args != "{}" else {},
+                                                expected_effect=f"执行工具 {func_name}",
+                                                risk_warning="请确认是否执行此工具调用",
+                                                timeout_minutes=5
+                                            )
+
+                                            # 生成确认消息，等待用户确认
+                                            confirmation_msg = f"""
+⏳ **等待用户确认**
+
+发现工具调用需要您的确认：
+
+**工具名称:** {func_name}
+**参数:** {func_args}
+
+请在工具确认面板中操作：
+- ✅ 同意执行：点击"同意执行"按钮
+- ❌ 拒绝执行：点击"拒绝执行"按钮
+
+系统将等待您的确认后继续执行...
+"""
+                                            yield [{"role": "assistant", "content": confirmation_msg}]
+                                            return  # 结束当前推理，等待确认后继续
+                                        elif confirmation_mode == 'disabled':
+                                            # 禁用确认模式，直接执行
+                                            pass
+
+                                    # 自动或禁用模式下直接执行
                                     result = await cls._simulate_tool_execution(func_name, func_args)
-                                    observation_text = f"\n\n**Observation:** {result}"
+                                    observation_text = f"\n\n**📋 工具结果:** {result}"
                                     current_content += observation_text
                                     yield [{"role": "assistant", "content": current_content}]
 

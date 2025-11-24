@@ -834,8 +834,11 @@ def create_app():
                 def save_automation_wrapper(pid, auto_ft, auto_inf, auto_ag, auto_tool):
                     if not pid:
                         return "❌ 请先选择计划"
+                    # 获取当前时间表
+                    current_schedule = detail_ui.get_finetune_schedule(int(pid))
+                    schedule_times_str = ",".join(current_schedule) if current_schedule else ""
                     return detail_ui.save_automation_config(
-                        int(pid), auto_ft, auto_inf, auto_ag, auto_tool
+                        int(pid), auto_ft, auto_inf, auto_ag, auto_tool, schedule_times_str
                     )
 
                 save_automation_btn.click(

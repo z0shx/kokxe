@@ -2323,20 +2323,103 @@ class PlanDetailUI:
     async def manual_inference_stream(self, plan_id: int):
         """手动执行AI Agent推理（流式输出）"""
         try:
-            # 先发送开始消息
-            yield [{"role": "assistant", "content": "🤖 正在启动 AI Agent 推理..."}]
+            # 发送开始消息
+            yield [{"role": "assistant", "content": "🤖 正在启动 AI Agent ReAct 推理..."}]
 
-            # 调用异步推理方法
-            result = await self.manual_inference_async(plan_id)
+            # 使用 ReAct+Tool Use 流式方法
+            from services.agent_decision_service import AgentDecisionService
+            from database.models import TrainingRecord
+            from database.db import get_db
+            from sqlalchemy import and_, desc
 
-            # 发送最终结果
-            yield [{"role": "assistant", "content": result}]
+            # 获取计划信息
+            with get_db() as db:
+                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                if not plan:
+                    yield [{"role": "assistant", "content": "❌ 计划不存在"}]
+                    return
+
+                # 获取最新的训练记录
+                latest_training = db.query(TrainingRecord).filter(
+                    and_(
+                        TrainingRecord.plan_id == plan_id,
+                        TrainingRecord.status == 'completed',
+                        TrainingRecord.is_active == True
+                    )
+                ).order_by(desc(TrainingRecord.created_at)).first()
+
+                if not latest_training:
+                    yield [{"role": "assistant", "content": "❌ 没有可用的训练记录，请先完成模型训练"}]
+                    return
+
+            # 使用 AgentDecisionService 的 ReAct+Tool Use 流式方法
+            async for message in AgentDecisionService.react_tool_use_stream(
+                plan_id=plan_id,
+                training_id=latest_training.id if latest_training else None
+            ):
+                yield message
 
         except Exception as e:
-            logger.error(f"流式推理失败: {e}")
+            logger.error(f"ReAct推理失败: {e}")
             import traceback
             traceback.print_exc()
-            yield [{"role": "assistant", "content": f"❌ 推理失败: {str(e)}"}]
+            yield [{"role": "assistant", "content": f"❌ 推理过程出错: {str(e)}"}]
+
+    async def continue_inference_stream(self, plan_id: int):
+        """继续AI Agent推理（用户确认工具后）"""
+        try:
+            # 发送继续消息
+            yield [{"role": "assistant", "content": "🔄 继续执行 AI Agent 推理..."}]
+
+            from services.agent_decision_service import AgentDecisionService
+            from services.agent_confirmation_service import confirmation_service
+
+            # 获取待确认的工具并执行
+            with get_db() as db:
+                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                if not plan:
+                    yield [{"role": "assistant", "content": "❌ 计划不存在"}]
+                    return
+
+                # 获取已确认的工具
+                confirmed_tools = confirmation_service.get_confirmed_tools(plan_id)
+
+                if not confirmed_tools:
+                    yield [{"role": "assistant", "content": "⚠️ 没有待执行的已确认工具"}]
+                    return
+
+                yield [{"role": "assistant", "content": f"📋 执行 {len(confirmed_tools)} 个已确认的工具调用..."}]
+
+                # 执行已确认的工具
+                for tool in confirmed_tools:
+                    tool_name = tool['tool_name']
+                    tool_args = tool['tool_args']
+
+                    yield [{"role": "assistant", "content": f"\n🔧 执行工具: {tool_name}"}]
+
+                    # 模拟工具执行（这里应该调用实际的工具执行）
+                    from services.agent_tool_executor import AgentToolExecutor
+                    executor = AgentToolExecutor(
+                        api_key="test",  # 这里应该从配置中获取
+                        secret_key="test",
+                        passphrase="test",
+                        is_demo=True
+                    )
+
+                    result = await executor.execute_tool(tool_name, tool_args)
+
+                    if result['success']:
+                        yield [{"role": "assistant", "content": f"✅ 工具执行成功: {result.get('message', 'OK')}"}]
+                    else:
+                        yield [{"role": "assistant", "content": f"❌ 工具执行失败: {result.get('error', 'Unknown error')}"}]
+
+                yield [{"role": "assistant", "content": "\n🎉 AI Agent 推理完成！"}]
+
+        except Exception as e:
+            logger.error(f"继续推理失败: {e}")
+            import traceback
+            traceback.print_exc()
+            yield [{"role": "assistant", "content": f"❌ 继续推理失败: {str(e)}"}]
 
     def _build_system_message(self, plan):
         """构建系统消息"""
