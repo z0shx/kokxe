@@ -913,7 +913,7 @@ class AgentDecisionService:
     @classmethod
     async def _execute_tools(cls, plan: TradingPlan, llm_response: Dict, agent_decision_id: int) -> tuple:
         """
-        执行工具调用（集成确认流程）
+        执行工具调用（直接执行模式）
 
         Args:
             plan: 交易计划
@@ -923,8 +923,6 @@ class AgentDecisionService:
         Returns:
             (tool_calls, tool_results)
         """
-        from services.agent_confirmation_service import confirmation_service
-
         tool_calls = llm_response.get('tool_calls', [])
         tool_results = []
 
@@ -933,66 +931,25 @@ class AgentDecisionService:
 
         logger.info(f"处理工具调用: {len(tool_calls)}个工具")
 
-        # 获取确认模式
-        confirmation_mode = confirmation_service.get_confirmation_mode(plan)
-        logger.info(f"计划 {plan.id} 确认模式: {confirmation_mode.value}")
-
         for tool_call in tool_calls:
             tool_name = tool_call.get('name', 'unknown')
             tool_args = tool_call.get('arguments', {})
 
-            logger.info(f"  处理工具: {tool_name}, 参数: {tool_args}")
+            logger.info(f"  执行工具: {tool_name}, 参数: {tool_args}")
 
-            # 生成预期效果和风险提示
-            expected_effect, risk_warning = cls._generate_tool_info(tool_name, tool_args, plan)
-
-            if confirmation_mode.value == "auto":
-                # 自动执行模式
-                logger.info(f"  自动执行工具: {tool_name}")
+            try:
+                # 直接执行工具
                 result = await cls._execute_tool_directly(plan, tool_name, tool_args)
                 tool_results.append(result)
+                logger.info(f"  工具执行完成: {tool_name}, 状态: {result.get('success', False)}")
 
-            elif confirmation_mode.value == "manual":
-                # 手动确认模式 - 创建待确认工具
-                logger.info(f"  创建待确认工具: {tool_name}")
-                try:
-                    pending_tool_id = await confirmation_service.create_pending_tool_call(
-                        plan_id=plan.id,
-                        agent_decision_id=agent_decision_id,
-                        tool_name=tool_name,
-                        tool_args=tool_args,
-                        expected_effect=expected_effect,
-                        risk_warning=risk_warning
-                    )
-
-                    result = {
-                        'tool_name': tool_name,
-                        'success': True,
-                        'message': f'工具调用已创建待确认记录，ID: {pending_tool_id}',
-                        'pending_tool_id': pending_tool_id,
-                        'status': 'pending_confirmation',
-                        'requires_confirmation': True
-                    }
-                    tool_results.append(result)
-
-                except Exception as e:
-                    logger.error(f"  创建待确认工具失败: {e}")
-                    result = {
-                        'tool_name': tool_name,
-                        'success': False,
-                        'error': f'创建待确认失败: {str(e)}',
-                        'status': 'error'
-                    }
-                    tool_results.append(result)
-
-            else:  # disabled
-                # 禁用工具调用
-                logger.info(f"  工具调用已禁用: {tool_name}")
+            except Exception as e:
+                logger.error(f"  工具执行失败: {tool_name}, 错误: {e}")
                 result = {
                     'tool_name': tool_name,
                     'success': False,
-                    'error': '工具调用已禁用',
-                    'status': 'disabled'
+                    'error': f'工具执行失败: {str(e)}',
+                    'status': 'error'
                 }
                 tool_results.append(result)
 
@@ -1001,7 +958,7 @@ class AgentDecisionService:
     @classmethod
     def _execute_tools_sync(cls, plan: TradingPlan, llm_response: Dict, agent_decision_id: int) -> tuple:
         """
-        执行工具调用（同步版本，集成确认流程）
+        执行工具调用（同步版本，直接执行模式）
 
         Args:
             plan: 交易计划
@@ -1011,8 +968,6 @@ class AgentDecisionService:
         Returns:
             (tool_calls, tool_results)
         """
-        from services.agent_confirmation_service import confirmation_service
-
         tool_calls = llm_response.get('tool_calls', [])
         tool_results = []
 
@@ -1021,66 +976,25 @@ class AgentDecisionService:
 
         logger.info(f"处理工具调用(同步): {len(tool_calls)}个工具")
 
-        # 获取确认模式
-        confirmation_mode = confirmation_service.get_confirmation_mode(plan)
-        logger.info(f"计划 {plan.id} 确认模式: {confirmation_mode.value}")
-
         for tool_call in tool_calls:
             tool_name = tool_call.get('name', 'unknown')
             tool_args = tool_call.get('arguments', {})
 
-            logger.info(f"  处理工具: {tool_name}, 参数: {tool_args}")
+            logger.info(f"  执行工具: {tool_name}, 参数: {tool_args}")
 
-            # 生成预期效果和风险提示
-            expected_effect, risk_warning = cls._generate_tool_info(tool_name, tool_args, plan)
-
-            if confirmation_mode.value == "auto":
-                # 自动执行模式 - 使用同步版本
-                logger.info(f"  自动执行工具: {tool_name}")
+            try:
+                # 直接执行工具（同步版本）
                 result = cls._execute_tool_directly_sync(plan, tool_name, tool_args)
                 tool_results.append(result)
+                logger.info(f"  工具执行完成: {tool_name}, 状态: {result.get('success', False)}")
 
-            elif confirmation_mode.value == "manual":
-                # 手动确认模式 - 创建待确认工具（同步）
-                logger.info(f"  创建待确认工具: {tool_name}")
-                try:
-                    pending_tool_id = asyncio.run(confirmation_service.create_pending_tool_call(
-                        plan_id=plan.id,
-                        agent_decision_id=agent_decision_id,
-                        tool_name=tool_name,
-                        tool_args=tool_args,
-                        expected_effect=expected_effect,
-                        risk_warning=risk_warning
-                    ))
-
-                    result = {
-                        'tool_name': tool_name,
-                        'success': True,
-                        'message': f'工具调用已创建待确认记录，ID: {pending_tool_id}',
-                        'pending_tool_id': pending_tool_id,
-                        'status': 'pending_confirmation',
-                        'requires_confirmation': True
-                    }
-                    tool_results.append(result)
-
-                except Exception as e:
-                    logger.error(f"  创建待确认工具失败: {e}")
-                    result = {
-                        'tool_name': tool_name,
-                        'success': False,
-                        'error': f'创建待确认失败: {str(e)}',
-                        'status': 'error'
-                    }
-                    tool_results.append(result)
-
-            else:  # disabled
-                # 禁用工具调用
-                logger.info(f"  工具调用已禁用: {tool_name}")
+            except Exception as e:
+                logger.error(f"  工具执行失败: {tool_name}, 错误: {e}")
                 result = {
                     'tool_name': tool_name,
                     'success': False,
-                    'error': '工具调用已禁用',
-                    'status': 'disabled'
+                    'error': f'工具执行失败: {str(e)}',
+                    'status': 'error'
                 }
                 tool_results.append(result)
 
@@ -1980,9 +1894,9 @@ class AgentDecisionService:
 
             # 执行工具调用
             tool_results = []
-            decision_id_temp = None  # 先保存决策ID，用于关联待确认工具
+            decision_id_temp = None  # 保存决策ID
 
-            # 先创建决策记录（以便关联待确认工具）
+            # 创建决策记录
             with get_db() as db:
                 decision = AgentDecision(
                     plan_id=plan_id,
@@ -2011,58 +1925,18 @@ class AgentDecisionService:
 
                 logger.info(f"处理工具调用: {tool_name}, 参数: {tool_args}")
 
-                # 检查是否启用自动执行
-                if not plan.auto_tool_execution_enabled:
-                    # 未启用自动执行，创建待确认工具记录
-                    logger.info(f"工具 {tool_name} 需要手动确认")
+                # 工具确认功能已废弃 - AI Agent现在可以直接使用启用的工具
+                # 直接执行工具
+                logger.info(f"执行工具: {tool_name}")
+                result = await cls._execute_single_tool_async(plan, tool_name, tool_args)
+                tool_results.append(result)
 
-                    from database.models import PendingToolCall
-                    from datetime import timedelta
-
-                    with get_db() as db:
-                        # 创建待确认工具记录
-                        pending_tool = PendingToolCall(
-                            plan_id=plan_id,
-                            agent_decision_id=decision_id_temp,
-                            tool_name=tool_name,
-                            tool_arguments=tool_args,
-                            expected_effect=f"将执行 {tool_name} 操作",
-                            risk_warning="请谨慎确认工具调用参数",
-                            status='pending',
-                            expires_at=datetime.utcnow() + timedelta(hours=24)  # 24小时后过期
-                        )
-                        db.add(pending_tool)
-                        db.commit()
-                        db.refresh(pending_tool)
-
-                        logger.info(f"已创建待确认工具: pending_tool_id={pending_tool.id}")
-
-                    result = {
-                        'tool_name': tool_name,
-                        'status': 'pending_confirmation',
-                        'message': '⏸️ 工具调用需要手动确认，请在气泡中点击确认按钮',
-                        'pending_tool_id': pending_tool.id
-                    }
-                    tool_results.append(result)
-
-                    yield {
-                        'type': 'tool_pending',
-                        'tool_name': tool_name,
-                        'tool_arguments': tool_args,
-                        'pending_tool_id': pending_tool.id,
-                        'tool_result': result
-                    }
-                else:
-                    # 自动执行
-                    logger.info(f"自动执行工具: {tool_name}")
-                    result = await cls._execute_single_tool_async(plan, tool_name, tool_args)
-                    tool_results.append(result)
-
-                    yield {
-                        'type': 'tool_result',
-                        'tool_name': tool_name,
-                        'tool_result': result
-                    }
+                yield {
+                    'type': 'tool_result',
+                    'tool_name': tool_name,
+                    'tool_arguments': tool_args,
+                    'tool_result': result
+                }
 
             # 更新决策记录
             with get_db() as db:
@@ -2737,7 +2611,6 @@ class AgentDecisionService:
         cls,
         plan_id: int,
         training_id: int = None,
-        manual_tool_approval: bool = True,
         progress=None
     ):
         """
@@ -2746,7 +2619,6 @@ class AgentDecisionService:
         Args:
             plan_id: 计划ID
             training_id: 训练记录ID（可选）
-            manual_tool_approval: 是否需要手动审批工具调用
             progress: Gradio进度条
 
         Yields:
@@ -3089,58 +2961,8 @@ class AgentDecisionService:
                                     current_content += action_text
                                     yield [{"role": "assistant", "content": current_content}]
 
-                                    # 检查是否需要工具确认
-                                    from services.agent_confirmation_service import confirmation_service, ConfirmationMode
-
-                                    # 获取计划ID（从上下文中传递）
-                                    plan_id = getattr(cls, '_current_plan_id', None)
-                                    if plan_id:
-                                        # 需要获取 plan 对象，而不是只传递 plan_id
-                                        from database.models import TradingPlan
-                                        with get_db() as db:
-                                            plan_obj = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
-                                            if plan_obj:
-                                                confirmation_mode = confirmation_service.get_confirmation_mode(plan_obj)
-                                            else:
-                                                confirmation_mode = ConfirmationMode.DISABLED
-
-                                        if confirmation_mode == ConfirmationMode.MANUAL:
-                                            # 创建待确认工具调用
-                                            tool_call_id = await confirmation_service.create_pending_tool_call(
-                                                plan_id=plan_id,
-                                                agent_decision_id=0,  # 这里需要传递实际的决策ID
-                                                tool_name=func_name,
-                                                tool_args=cls._safe_parse_json(func_args) if func_args and func_args.strip() != "{}" else {},
-                                                expected_effect=f"执行工具 {func_name}",
-                                                risk_warning="请确认是否执行此工具调用",
-                                                timeout_minutes=5
-                                            )
-
-                                            # 生成确认消息，等待用户确认
-                                            confirmation_msg = f"""
-
-⏳ **等待工具确认**
-
-**🔧 工具调用:** {func_name}
-**📋 参数:** {func_args}
-
-此工具调用需要您的确认才能执行。
-
-请查看下方的 **"⏰ 待确认工具"** 面板：
-
-- ✅ **同意执行** - 在工具确认面板中点击"同意执行"或"全部同意"
-- ❌ **拒绝执行** - 在工具确认面板中点击"拒绝执行"或"全部拒绝"
-
-确认完成后，推理过程将自动继续...
-"""
-                                            yield [{"role": "assistant", "content": current_content + confirmation_msg}]
-                                            return  # 结束当前推理，等待确认后继续
-                                        else:
-                                            # 自动或禁用模式下直接执行
-                                            result = await cls._simulate_tool_execution(func_name, func_args)
-                                            observation_text = f"\n\n**📋 工具结果:** {result}"
-                                            current_content += observation_text
-                                            yield [{"role": "assistant", "content": current_content}]
+                                    
+                                    # 工具确认功能已废弃 - AI Agent现在可以直接使用启用的工具
 
         except Exception as e:
             logger.error(f"OpenAI ReAct调用失败: {e}")
@@ -3234,61 +3056,9 @@ class AgentDecisionService:
                                     current_content += action_text
                                     yield [{"role": "assistant", "content": current_content}]
 
-                                    # 检查是否需要工具确认
-                                    from services.agent_confirmation_service import confirmation_service, ConfirmationMode
+                                    
 
-                                    # 获取计划ID（从上下文中传递，这里需要修改）
-                                    plan_id = getattr(cls, '_current_plan_id', None)
-                                    if plan_id:
-                                        # 需要获取 plan 对象，而不是只传递 plan_id
-                                        from database.models import TradingPlan
-                                        with get_db() as db:
-                                            plan_obj = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
-                                            if plan_obj:
-                                                confirmation_mode = confirmation_service.get_confirmation_mode(plan_obj)
-                                            else:
-                                                confirmation_mode = ConfirmationMode.DISABLED
-
-                                        if confirmation_mode == ConfirmationMode.MANUAL:
-                                            # 创建待确认工具调用
-                                            tool_call_id = await confirmation_service.create_pending_tool_call(
-                                                plan_id=plan_id,
-                                                agent_decision_id=0,  # 这里需要传递实际的决策ID
-                                                tool_name=func_name,
-                                                tool_args=cls._safe_parse_json(func_args) if func_args and func_args.strip() != "{}" else {},
-                                                expected_effect=f"执行工具 {func_name}",
-                                                risk_warning="请确认是否执行此工具调用",
-                                                timeout_minutes=5
-                                            )
-
-                                            # 生成确认消息，等待用户确认
-                                            confirmation_msg = f"""
-
-⏳ **等待工具确认**
-
-**🔧 工具调用:** {func_name}
-**📋 参数:** {func_args}
-
-此工具调用需要您的确认才能执行。
-
-请查看下方的 **"⏰ 待确认工具"** 面板：
-
-- ✅ **同意执行** - 在工具确认面板中点击"同意执行"或"全部同意"
-- ❌ **拒绝执行** - 在工具确认面板中点击"拒绝执行"或"全部拒绝"
-
-确认完成后，推理过程将自动继续...
-"""
-                                            yield [{"role": "assistant", "content": current_content + confirmation_msg}]
-                                            return  # 结束当前推理，等待确认后继续
-                                        elif confirmation_mode == 'disabled':
-                                            # 禁用确认模式，直接执行
-                                            pass
-
-                                    # 自动或禁用模式下直接执行
-                                    result = await cls._simulate_tool_execution(func_name, func_args)
-                                    observation_text = f"\n\n**📋 工具结果:**\n<span style=\"background-color: #28A745; color: white; padding: 2px 6px; border-radius: 4px; font-size: 12px;\">✅ 已执行</span> `{func_name}`\n\n{result}"
-                                    current_content += observation_text
-                                    yield [{"role": "assistant", "content": current_content}]
+                                        # 工具确认功能已废弃 - AI Agent现在可以直接使用启用的工具
 
         except Exception as e:
             logger.error(f"Qwen ReAct调用失败: {e}")
@@ -3372,58 +3142,8 @@ class AgentDecisionService:
                                     current_content += action_text
                                     yield [{"role": "assistant", "content": current_content}]
 
-                                    # 检查是否需要工具确认
-                                    from services.agent_confirmation_service import confirmation_service, ConfirmationMode
-
-                                    # 获取计划ID（从上下文中传递）
-                                    plan_id = getattr(cls, '_current_plan_id', None)
-                                    if plan_id:
-                                        # 需要获取 plan 对象，而不是只传递 plan_id
-                                        from database.models import TradingPlan
-                                        with get_db() as db:
-                                            plan_obj = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
-                                            if plan_obj:
-                                                confirmation_mode = confirmation_service.get_confirmation_mode(plan_obj)
-                                            else:
-                                                confirmation_mode = ConfirmationMode.DISABLED
-
-                                        if confirmation_mode == ConfirmationMode.MANUAL:
-                                            # 创建待确认工具调用
-                                            tool_call_id = await confirmation_service.create_pending_tool_call(
-                                                plan_id=plan_id,
-                                                agent_decision_id=0,  # 这里需要传递实际的决策ID
-                                                tool_name=func_name,
-                                                tool_args=cls._safe_parse_json(func_args) if func_args and func_args.strip() != "{}" else {},
-                                                expected_effect=f"执行工具 {func_name}",
-                                                risk_warning="请确认是否执行此工具调用",
-                                                timeout_minutes=5
-                                            )
-
-                                            # 生成确认消息，等待用户确认
-                                            confirmation_msg = f"""
-
-⏳ **等待工具确认**
-
-**🔧 工具调用:** {func_name}
-**📋 参数:** {func_args}
-
-此工具调用需要您的确认才能执行。
-
-请查看下方的 **"⏰ 待确认工具"** 面板：
-
-- ✅ **同意执行** - 在工具确认面板中点击"同意执行"或"全部同意"
-- ❌ **拒绝执行** - 在工具确认面板中点击"拒绝执行"或"全部拒绝"
-
-确认完成后，推理过程将自动继续...
-"""
-                                            yield [{"role": "assistant", "content": current_content + confirmation_msg}]
-                                            return  # 结束当前推理，等待确认后继续
-                                        else:
-                                            # 自动或禁用模式下直接执行
-                                            result = await cls._simulate_tool_execution(func_name, func_args)
-                                            observation_text = f"\n\n**📋 工具结果:** {result}"
-                                            current_content += observation_text
-                                            yield [{"role": "assistant", "content": current_content}]
+                                    
+                                    # 工具确认功能已废弃 - AI Agent现在可以直接使用启用的工具
 
         except Exception as e:
             logger.error(f"Ollama ReAct调用失败: {e}")

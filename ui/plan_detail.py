@@ -18,7 +18,6 @@ from sqlalchemy import and_, desc, func
 from utils.logger import setup_logger
 from utils.timezone_helper import (format_datetime_full_beijing, format_datetime_short_beijing,
                                    format_datetime_beijing, format_time_range_utc8)
-from services.agent_confirmation_service import confirmation_service
 
 logger = setup_logger(__name__, "plan_detail_ui.log")
 
@@ -1759,12 +1758,12 @@ class PlanDetailUI:
             finetune_status = "✅" if status.get('auto_finetune_enabled') else "❌"
             inference_status = "✅" if status.get('auto_inference_enabled') else "❌"
             agent_status = "✅" if status.get('auto_agent_enabled') else "❌"
-            tool_status = "✅" if status.get('auto_tool_execution_enabled') else "❌"
+            tool_status = "🚫"  # 工具确认功能已废弃
 
             lines.append(f"- 🧠 自动微调训练: {finetune_status}")
             lines.append(f"- 🔮 自动预测推理: {inference_status}")
             lines.append(f"- 🤖 自动Agent决策: {agent_status}")
-            lines.append(f"- ⚡ 自动工具执行: {tool_status}")
+            lines.append(f"- ⚡ 自动工具执行: {tool_status} (已废弃 - AI Agent直接调用工具)")
 
             # 调度器状态
             lines.append("")
@@ -2494,8 +2493,7 @@ class PlanDetailUI:
             yield [{"role": "assistant", "content": "🔄 继续执行 AI Agent 推理..."}]
 
             from services.agent_decision_service import AgentDecisionService
-            from services.agent_confirmation_service import confirmation_service
-
+            
             # 获取待确认的工具并执行
             with get_db() as db:
                 plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
@@ -2503,39 +2501,12 @@ class PlanDetailUI:
                     yield [{"role": "assistant", "content": "❌ 计划不存在"}]
                     return
 
-                # 获取已确认的工具
-                confirmed_tools = confirmation_service.get_confirmed_tools(plan_id)
+                # 工具确认功能已废弃 - AI Agent现在可以直接使用启用的工具
+                confirmed_tools = []  # 设为空，跳过后续逻辑
 
-                if not confirmed_tools:
-                    yield [{"role": "assistant", "content": "⚠️ 没有待执行的已确认工具"}]
-                    return
-
-                yield [{"role": "assistant", "content": f"📋 执行 {len(confirmed_tools)} 个已确认的工具调用..."}]
-
-                # 执行已确认的工具
-                for tool in confirmed_tools:
-                    tool_name = tool['tool_name']
-                    tool_args = tool['tool_args']
-
-                    yield [{"role": "assistant", "content": f"\n🔧 执行工具: {tool_name}"}]
-
-                    # 模拟工具执行（这里应该调用实际的工具执行）
-                    from services.agent_tool_executor import AgentToolExecutor
-                    executor = AgentToolExecutor(
-                        api_key="test",  # 这里应该从配置中获取
-                        secret_key="test",
-                        passphrase="test",
-                        is_demo=True
-                    )
-
-                    result = await executor.execute_tool(tool_name, tool_args)
-
-                    if result['success']:
-                        yield [{"role": "assistant", "content": f"✅ 工具执行成功: {result.get('message', 'OK')}"}]
-                    else:
-                        yield [{"role": "assistant", "content": f"❌ 工具执行失败: {result.get('error', 'Unknown error')}"}]
-
-                yield [{"role": "assistant", "content": "\n🎉 AI Agent 推理完成！"}]
+                # 由于工具确认功能已废弃，直接返回提示信息
+                yield [{"role": "assistant", "content": "⚠️ 工具确认功能已废弃\n\nAI Agent现在可以直接使用启用的工具，无需人工确认。工具调用记录会显示在Agent决策列表中。"}]
+                return
 
         except Exception as e:
             logger.error(f"继续推理失败: {e}")
@@ -2995,7 +2966,7 @@ class PlanDetailUI:
 
                 # 启动自动化调度器（如果配置了自动化）
                 automation_status = ""
-                if plan.auto_finetune_enabled or plan.auto_inference_enabled or plan.auto_agent_enabled or plan.auto_tool_execution_enabled:
+                if plan.auto_finetune_enabled or plan.auto_inference_enabled or plan.auto_agent_enabled:  # auto_tool_execution_enabled已废弃
                     try:
                         from services.automation_service import automation_service
                         automation_service.start_scheduler()
@@ -3242,118 +3213,6 @@ class PlanDetailUI:
             import traceback
             traceback.print_exc()
             return f"❌ 清除失败: {str(e)}"
-
-    def get_pending_tools(self, plan_id: int) -> pd.DataFrame:
-        """获取待确认工具列表"""
-        try:
-            tools = confirmation_service.get_pending_tools(plan_id)
-
-            if not tools:
-                return pd.DataFrame(columns=[
-                    'ID', '工具名称', '参数', '创建时间', '状态'
-                ])
-
-            # 构建DataFrame
-            df_data = []
-            for tool in tools:
-                # 格式化时间
-                created_at = tool.get('created_at', 'N/A')
-                if created_at != 'N/A':
-                    try:
-                        if hasattr(created_at, 'strftime'):
-                            created_at = created_at.strftime('%m-%d %H:%M:%S')
-                        else:
-                            created_at = str(created_at)
-                    except:
-                        created_at = str(created_at)
-
-                # 格式化参数
-                tool_args = tool.get('tool_args', {})
-                if isinstance(tool_args, dict):
-                    args_str = ', '.join([f"{k}: {v}" for k, v in tool_args.items()])
-                else:
-                    args_str = str(tool_args)
-
-                # 状态映射
-                status = tool.get('status', 'pending')
-                status_map = {
-                    'pending': '⏳ 待确认',
-                    'approved': '✅ 已批准',
-                    'rejected': '❌ 已拒绝',
-                    'executed': '✅ 已执行',
-                    'failed': '❌ 执行失败'
-                }
-                status_display = status_map.get(status, status)
-
-                df_data.append({
-                    'ID': tool.get('id', ''),
-                    '工具名称': tool.get('tool_name', 'N/A'),
-                    '参数': args_str,
-                    '创建时间': created_at,
-                    '状态': status_display
-                })
-
-            return pd.DataFrame(df_data)
-
-        except Exception as e:
-            logger.error(f"获取待确认工具失败: {e}")
-            import traceback
-            traceback.print_exc()
-            return pd.DataFrame(columns=[
-                'ID', '工具名称', '参数', '创建时间', '状态'
-            ])
-
-    def get_tool_confirmation_history(self, plan_id: int, limit: int = 20) -> List[Dict]:
-        """获取工具确认历史"""
-        try:
-            return confirmation_service.get_tool_execution_history(plan_id, limit)
-        except Exception as e:
-            logger.error(f"获取工具确认历史失败: {e}")
-            return []
-
-    async def confirm_tools(self, plan_id: int, selected_tools: str, action: str) -> str:
-        """确认工具调用"""
-        try:
-            if not selected_tools.strip():
-                return "❌ 请选择要操作的工具"
-
-            # 解析选择的工具ID
-            tool_ids = [int(tid.strip()) for tid in selected_tools.split(',') if tid.strip().isdigit()]
-
-            if not tool_ids:
-                return "❌ 未找到有效的工具ID"
-
-            approved = action == "approve"
-            confirmed_by = "user" if approved else "user_rejected"
-
-            # 批量确认
-            result = await confirmation_service.batch_confirm_tools(
-                pending_tool_ids=tool_ids,
-                approved=approved,
-                confirmed_by=confirmed_by
-            )
-
-            if result['success']:
-                action_text = "同意" if approved else "拒绝"
-                return f"✅ 已{action_text} {len(tool_ids)} 个工具调用：\n{result['message']}"
-            else:
-                return f"❌ 操作失败：{result.get('message', '未知错误')}"
-
-        except Exception as e:
-            logger.error(f"确认工具调用失败: {e}")
-            return f"❌ 确认失败：{str(e)}"
-
-    def cleanup_expired_tools(self, plan_id: int) -> str:
-        """清理过期工具"""
-        try:
-            result = confirmation_service.cleanup_expired_tools()
-            if result['success']:
-                return f"✅ {result['message']}"
-            else:
-                return f"❌ 清理失败：{result.get('error', '未知错误')}"
-        except Exception as e:
-            logger.error(f"清理过期工具失败: {e}")
-            return f"❌ 清理失败：{str(e)}"
 
     def load_task_executions(self, plan_id: int) -> pd.DataFrame:
         """加载任务执行记录"""

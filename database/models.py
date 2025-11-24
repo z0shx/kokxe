@@ -57,7 +57,7 @@ class TradingPlan(Base):
     auto_finetune_enabled = Column(Boolean, default=False, comment='是否启用自动微调')
     auto_inference_enabled = Column(Boolean, default=False, comment='是否启用自动推理')
     auto_agent_enabled = Column(Boolean, default=False, comment='是否启用自动Agent触发')
-    auto_tool_execution_enabled = Column(Boolean, default=False, comment='是否启用自动工具调用（Agent决策后自动执行交易工具）')
+    auto_tool_execution_enabled = Column(Boolean, default=False, comment='已废弃：自动工具调用功能已移除，AI Agent现在直接使用启用的工具')
     latest_training_record_id = Column(Integer, comment='最新的训练记录ID')
 
     # AI Agent 配置
@@ -392,49 +392,7 @@ class AgentDecision(Base):
         return f"<AgentDecision(plan_id={self.plan_id}, decision_type={self.decision_type}, time={self.decision_time})>"
 
 
-class PendingToolCall(Base):
-    """待确认工具调用表"""
-    __tablename__ = 'pending_tool_calls'
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    plan_id = Column(Integer, nullable=False, comment='关联的交易计划ID')
-    agent_decision_id = Column(Integer, comment='关联的Agent决策ID')
-
-    # 工具信息
-    tool_name = Column(String(100), nullable=False, comment='工具名称')
-    tool_arguments = Column(JSONB, nullable=False, comment='工具参数（JSON）')
-
-    # 预期效果和风险
-    expected_effect = Column(Text, comment='预期效果说明')
-    risk_warning = Column(Text, comment='风险提示')
-
-    # 状态
-    status = Column(String(20), default='pending', comment='状态：pending/confirmed/rejected/expired')
-
-    # 执行结果
-    execution_result = Column(JSONB, comment='执行结果（JSON）')
-    error_message = Column(Text, comment='错误信息')
-
-    # 操作信息
-    confirmed_at = Column(DateTime, comment='确认时间')
-    confirmed_by = Column(String(100), comment='确认人（系统/手动）')
-
-    # 超时设置
-    expires_at = Column(DateTime, comment='过期时间')
-
-    # 时间戳
-    created_at = Column(DateTime, default=datetime.utcnow, comment='创建时间')
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment='更新时间')
-
-    __table_args__ = (
-        Index('idx_pending_tool_plan_id', 'plan_id'),
-        Index('idx_pending_tool_status', 'status'),
-        Index('idx_pending_tool_created_at', 'created_at'),
-        Index('idx_pending_tool_expires_at', 'expires_at'),
-    )
-
-    def __repr__(self):
-        return f"<PendingToolCall(id={self.id}, plan_id={self.plan_id}, tool_name={self.tool_name}, status={self.status})>"
+# 工具确认功能已废弃 - PendingToolCall 模型已移除
 
 
 class TaskExecution(Base):

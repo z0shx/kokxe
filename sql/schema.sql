@@ -1,5 +1,5 @@
 -- KOKEX Database Schema
--- Generated at: 2025-11-24 16:31:42.501749
+-- Generated at: 2025-11-24 18:19:11.128912
 
 
 -- Table: agent_decisions
@@ -83,29 +83,6 @@ CREATE TABLE llm_configs (
 	updated_at TIMESTAMP WITHOUT TIME ZONE, 
 	PRIMARY KEY (id), 
 	UNIQUE (name)
-)
-
-;
-
--- Table: pending_tool_calls
-
-CREATE TABLE pending_tool_calls (
-	id SERIAL NOT NULL, 
-	plan_id INTEGER NOT NULL, 
-	agent_decision_id INTEGER, 
-	tool_name VARCHAR(100) NOT NULL, 
-	tool_arguments JSONB NOT NULL, 
-	expected_effect TEXT, 
-	risk_warning TEXT, 
-	status VARCHAR(20), 
-	execution_result JSONB, 
-	error_message TEXT, 
-	confirmed_at TIMESTAMP WITHOUT TIME ZONE, 
-	confirmed_by VARCHAR(100), 
-	expires_at TIMESTAMP WITHOUT TIME ZONE, 
-	created_at TIMESTAMP WITHOUT TIME ZONE, 
-	updated_at TIMESTAMP WITHOUT TIME ZONE, 
-	PRIMARY KEY (id)
 )
 
 ;

@@ -270,9 +270,6 @@ class RefreshService:
         try:
             # 这里应该调用实际的表格数据加载逻辑
             return {
-                'tool_confirmation_df': gr.DataFrame(),
-                'tool_confirmation_result': "",
-                'tool_confirmation_timer': gr.Timer(active=False),
                 'account_timer': gr.Timer(active=False),
                 'tables_status': "表格数据已刷新"
             }
@@ -390,9 +387,6 @@ class RefreshService:
 
     def _get_empty_tables(self) -> Dict[str, Any]:
         return {
-            'tool_confirmation_df': gr.DataFrame(),
-            'tool_confirmation_result': "",
-            'tool_confirmation_timer': gr.Timer(active=False),
             'account_timer': gr.Timer(active=False),
             'tables_status': "表格数据加载失败"
         }

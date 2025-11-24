@@ -350,48 +350,21 @@ class AutomationService:
                 del self.active_tasks[plan_id]
 
     async def _check_auto_tool_execution(self, plan_id: int, agent_decision_id: int):
-        """检查是否需要执行自动工具执行"""
+        """工具确认功能已废弃 - AI Agent现在直接使用启用的工具，无需确认"""
         try:
-            with get_db() as db:
-                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
-                if not plan or not plan.auto_tool_execution_enabled:
-                    logger.info(f"计划 {plan_id} 未启用自动工具执行，记录待执行工具")
-                    # 记录待执行工具，等待用户确认
-                    await self._record_pending_tools(plan_id, agent_decision_id)
-                    # 清理任务记录
-                    if plan_id in self.active_tasks:
-                        del self.active_tasks[plan_id]
-                    return
-
-                logger.info(f"开始自动工具执行: plan_id={plan_id}")
-
-                # 自动执行工具
-                execution_result = await AgentDecisionService.execute_pending_tools_async(
-                    agent_decision_id=agent_decision_id,
-                    auto_execute=True
-                )
-
-                if execution_result.get('success'):
-                    logger.info(f"自动工具执行成功: plan_id={plan_id}")
-                else:
-                    logger.error(f"自动工具执行失败: plan_id={plan_id}, error={execution_result.get('error')}")
+            logger.info(f"AI Agent已完成决策，工具将直接执行: plan_id={plan_id}")
+            # 工具确认功能已移除，AI Agent在推理过程中直接执行工具
+            # 此方法保留为兼容性，但不执行任何操作
 
         except Exception as e:
-            logger.error(f"检查自动工具执行失败: {e}")
+            logger.error(f"处理工具执行后状态失败: {e}")
 
         finally:
             # 清理任务记录
             if plan_id in self.active_tasks:
                 del self.active_tasks[plan_id]
 
-    async def _record_pending_tools(self, plan_id: int, agent_decision_id: int):
-        """记录待执行工具"""
-        try:
-            # 这里AgentDecisionService会自动记录待执行工具
-            logger.info(f"已记录待执行工具: plan_id={plan_id}, agent_decision_id={agent_decision_id}")
-
-        except Exception as e:
-            logger.error(f"记录待执行工具失败: {e}")
+    # _record_pending_tools 方法已移除 - 工具确认功能已废弃
 
     def get_automation_status(self, plan_id: int) -> Dict:
         """获取自动化状态"""
@@ -406,7 +379,7 @@ class AutomationService:
                     'auto_finetune_enabled': plan.auto_finetune_enabled or False,
                     'auto_inference_enabled': plan.auto_inference_enabled or False,
                     'auto_agent_enabled': plan.auto_agent_enabled or False,
-                    'auto_tool_execution_enabled': plan.auto_tool_execution_enabled or False,
+                    'auto_tool_execution_enabled': plan.auto_tool_execution_enabled or False,  # 已废弃字段
                     'auto_finetune_schedule': plan.auto_finetune_schedule or []
                 }
 

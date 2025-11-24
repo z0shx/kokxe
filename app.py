@@ -126,8 +126,6 @@ def initialize_app():
                         automation_status.append("自动推理")
                     if plan.auto_agent_enabled:
                         automation_status.append("自动Agent")
-                    if plan.auto_tool_execution_enabled:
-                        automation_status.append("自动工具执行")
 
                     if automation_status:
                         logger.info(f"计划 {plan.id} 启用的自动化功能: {', '.join(automation_status)}")
@@ -288,10 +286,6 @@ def create_app():
                         with gr.Row():
                             auto_agent_switch = gr.Checkbox(
                                 label="🤖 自动Agent决策（推理完成后自动触发Agent）",
-                                value=False
-                            )
-                            auto_tool_execution_switch = gr.Checkbox(
-                                label="🛠️ 自动工具执行（Agent决策后自动调用交易工具）",
                                 value=False
                             )
                         with gr.Row():
@@ -669,46 +663,7 @@ def create_app():
                             show_tool_history_btn = gr.Button("🛠️ 工具调用历史", size="sm")
                             clear_chat_btn = gr.Button("🗑️ 清空对话", size="sm")
 
-                        # 工具确认面板
-                        with gr.Accordion("⏰ 待确认工具", open=True):
-                            gr.Markdown("当AI Agent需要执行工具操作时，会在此处显示待确认的工具调用。")
-
-                            # 工具确认列表
-                            tool_confirmation_df = gr.Dataframe(
-                                headers=["ID", "工具名称", "参数", "创建时间", "状态"],
-                                datatype=["str", "str", "str", "str", "str"],
-                                interactive=True,
-                                wrap=True,
-                                label="待确认工具列表（点击行查看详情）"
-                            )
-
-                            # 工具确认操作按钮
-                            with gr.Row():
-                                refresh_pending_tools_btn = gr.Button("🔄 刷新列表", size="sm")
-                                approve_selected_btn = gr.Button("✅ 同意执行", variant="primary", size="sm")
-                                reject_selected_btn = gr.Button("❌ 拒绝执行", variant="stop", size="sm")
-                                approve_all_btn = gr.Button("✅ 全部同意", size="sm")
-                                reject_all_btn = gr.Button("❌ 全部拒绝", variant="stop", size="sm")
-
-                            # 工具确认选择
-                            selected_tools_input = gr.Textbox(
-                                label="选中的工具ID (用逗号分隔，例如: 1,2,3)",
-                                placeholder="请输入要操作的工具ID，多个ID用逗号分隔",
-                                info="可以从上方工具列表的ID列中获取"
-                            )
-
-                            # 工具确认结果
-                            tool_confirmation_result = gr.Markdown("")
-
-                            # 工具详情面板
-                            with gr.Accordion("🔧 工具详情", open=False) as tool_detail_modal:
-                                gr.Markdown("## 🔧 工具详情")
-                                tool_detail_content = gr.HTML("")
-                                tool_detail_close_btn = gr.Button("关闭", size="sm")
-
-                            # 自动刷新工具确认列表
-                            tool_confirmation_timer = gr.Timer(value=5.0, active=True)
-
+                        # 工具确认功能已废弃 - AI Agent现在可以直接使用启用的工具
                         # 清除推理记录
                         with gr.Accordion("📋 记录管理", open=False):
                             clear_agent_records_btn = gr.Button("🗑️ 清除推理记录", size="sm", variant="stop")
@@ -776,7 +731,6 @@ def create_app():
                             "### 💰 账户信息\n\n未加载",  # account_status
                             gr.DataFrame(),  # order_table
                             gr.DataFrame(),  # task_executions_df  # task_executions
-                            gr.DataFrame(), "", gr.Timer(active=False),  # tool_confirmation_df, tool_confirmation_result, tool_confirmation_timer
                             gr.Timer(active=False)  # account_timer
                         )
 
@@ -888,7 +842,6 @@ def create_app():
                         automation_config.get('auto_finetune_enabled', False),  # auto_finetune_switch
                         automation_config.get('auto_inference_enabled', False),  # auto_inference_switch
                         automation_config.get('auto_agent_enabled', False),  # auto_agent_switch
-                        automation_config.get('auto_tool_execution_enabled', False),  # auto_tool_execution_switch
                         "",  # automation_config_result
                         schedule_text,  # schedule_time_list
                         "",  # schedule_operation_result
@@ -910,8 +863,8 @@ def create_app():
                         safe_int(inference_params.get('sample_count'), 30),  # inference_sample_count
                         safe_int(inference_params.get('data_offset'), 0),  # inference_data_offset
                         "",  # inference_params_status
-                        gr.update(choices=llm_configs, value=int(agent_config.get('llm_config_id')) if agent_config.get('llm_config_id') is not None else None),  # llm_config_dropdown
-                        gr.update(choices=prompt_templates, value=None),  # prompt_template_dropdown
+                        gr.update(choices=llm_configs if isinstance(llm_configs, list) else [], value=int(agent_config.get('llm_config_id')) if agent_config.get('llm_config_id') is not None else None),  # llm_config_dropdown
+                        gr.update(choices=prompt_templates if isinstance(prompt_templates, list) else [], value=None),  # prompt_template_dropdown
                         agent_config.get('agent_prompt', ''),  # agent_prompt_textbox
                         tools_config.get('get_account_balance', True),  # tool_get_account
                         tools_config.get('get_positions', True),  # tool_get_positions
@@ -941,9 +894,6 @@ def create_app():
                         account_info,  # account_status
                         orders_df,  # order_table
                         detail_ui.load_task_executions(int(plan_id)),  # task_executions_df
-                        detail_ui.get_pending_tools(int(plan_id)),  # tool_confirmation_df
-                        "✅ 工具确认列表已刷新",  # tool_confirmation_result - 添加缺失的工具确认结果
-                        gr.Timer(active=True),  # tool_confirmation_timer - 启动工具确认定时器
                         gr.Timer(active=True)  # account_timer - 启动账户定时器
                     )
 
@@ -962,14 +912,14 @@ def create_app():
                     return detail_ui.save_finetune_params(int(plan_id), params)
 
                 # 自动化配置保存函数
-                def save_automation_wrapper(pid, auto_ft, auto_inf, auto_ag, auto_tool):
+                def save_automation_wrapper(pid, auto_ft, auto_inf, auto_ag):
                     if not pid:
                         return "❌ 请先选择计划"
                     # 获取当前时间表
                     current_schedule = detail_ui.get_finetune_schedule(int(pid))
                     schedule_times_str = ",".join(current_schedule) if current_schedule else ""
                     return detail_ui.save_automation_config(
-                        int(pid), auto_ft, auto_inf, auto_ag, auto_tool, schedule_times_str
+                        int(pid), auto_ft, auto_inf, auto_ag, False, schedule_times_str  # auto_tool固定为False
                     )
 
                 save_automation_btn.click(
@@ -978,8 +928,7 @@ def create_app():
                         plan_id_input,
                         auto_finetune_switch,
                         auto_inference_switch,
-                        auto_agent_switch,
-                        auto_tool_execution_switch
+                        auto_agent_switch
                     ],
                     outputs=[automation_config_result]
                 )
@@ -1080,7 +1029,7 @@ def create_app():
                         ws_status_md, plan_status_md,  # 状态显示
                         ws_start_btn, ws_stop_btn, plan_start_btn, plan_stop_btn,  # 按钮状态
                         auto_finetune_switch, auto_inference_switch,  # 自动化开关
-                        auto_agent_switch, auto_tool_execution_switch,
+                        auto_agent_switch,  # auto_tool_execution_switch已移除
                         automation_config_result,  # 自动化配置结果
                         schedule_time_list, schedule_operation_result,  # 时间表管理
                         lookback_window, predict_window, batch_size,
@@ -1098,7 +1047,6 @@ def create_app():
                         inference_df, inference_data_range_info, prediction_data_preview, agent_df,
                         agent_chatbot,  # agent_chatbot
                         account_status, order_table, task_executions_df,  # 账户信息、订单记录和任务记录
-                        tool_confirmation_df, tool_confirmation_result, tool_confirmation_timer,  # 工具确认UI
                         account_timer  # 定时器
                     ]
                 ).then(
@@ -1154,7 +1102,7 @@ def create_app():
                         ws_status_md, plan_status_md,  # 状态显示
                         ws_start_btn, ws_stop_btn, plan_start_btn, plan_stop_btn,  # 按钮状态
                         auto_finetune_switch, auto_inference_switch,  # 自动化开关
-                        auto_agent_switch, auto_tool_execution_switch,
+                        auto_agent_switch,  # auto_tool_execution_switch已移除
                         automation_config_result,  # 自动化配置结果
                         schedule_time_list, schedule_operation_result,  # 时间表管理
                         lookback_window, predict_window, batch_size,  # 模型参数
@@ -1172,7 +1120,6 @@ def create_app():
                         inference_df, inference_data_range_info, prediction_data_preview, agent_df,
                         agent_chatbot,  # agent_chatbot
                         account_status, order_table, task_executions_df,  # 账户信息、订单记录和任务记录
-                        tool_confirmation_df, tool_confirmation_result, tool_confirmation_timer,  # 工具确认UI
                         account_timer  # 定时器
                     ]
                 )
@@ -1502,19 +1449,6 @@ def create_app():
                     outputs=[inference_operation_result, prediction_data_preview, kline_chart, probability_indicators_md]
                 )
 
-                # 刷新待确认工具列表的辅助函数（提前定义以避免作用域错误）
-                def refresh_pending_tools_wrapper(pid):
-                    """刷新待确认工具列表"""
-                    if not pid:
-                        return gr.DataFrame(), ""
-                    try:
-                        # 直接获取DataFrame
-                        df = detail_ui.get_pending_tools(int(pid))
-                        return df, ""
-                    except Exception as e:
-                        logger.error(f"刷新待确认工具失败: {e}")
-                        return gr.DataFrame(), f"❌ 刷新失败: {str(e)}"
-
                 # 手动推理（流式）
                 async def manual_inference_wrapper_stream(pid):
                     """流式推理包装函数"""
@@ -1533,10 +1467,6 @@ def create_app():
                     show_progress="full",  # 显示完整进度
                     api_name="manual_inference_stream"  # 添加API名称
                 ).then(
-                    fn=refresh_pending_tools_wrapper,
-                    inputs=[plan_id_input],
-                    outputs=[tool_confirmation_df, tool_confirmation_result]
-                ).then(
                     fn=lambda pid: detail_ui.load_agent_decisions(int(pid)) if pid else gr.DataFrame(),
                     inputs=[plan_id_input],
                     outputs=[agent_df]
@@ -1546,48 +1476,11 @@ def create_app():
                     outputs=[agent_chatbot]
                 )
 
-                # 显示工具调用历史
+                # 显示工具调用历史（已废弃）
                 def show_tool_history_wrapper(pid):
-                    """显示工具调用历史到chatbot"""
-                    if not pid:
-                        return [{"role": "assistant", "content": "❌ 请先选择计划"}]
-
-                    try:
-                        # 获取工具确认历史
-                        tool_history = detail_ui.get_tool_confirmation_history(int(pid), limit=10)
-
-                        if not tool_history:
-                            return [{"role": "user", "content": "工具调用历史"},
-                                   {"role": "assistant", "content": "暂无工具调用记录"}]
-
-                        # 格式化工具历史
-                        history_lines = ["## 🛠️ 工具调用历史\n"]
-
-                        for record in tool_history:
-                            status_emoji = "✅" if record.get('status') == 'approved' else "❌" if record.get('status') == 'rejected' else "⏳"
-                            tool_name = record.get('tool_name', 'unknown')
-                            tool_args = record.get('tool_args', {})
-                            created_time = record.get('created_at', 'N/A')
-                            confirmed_by = record.get('confirmed_by', 'N/A')
-                            risk_warning = record.get('risk_warning', '')
-
-                            history_lines.append(f"### {status_emoji} **{tool_name}**")
-                            history_lines.append(f"- **时间**: {created_time}")
-                            history_lines.append(f"- **参数**: `{tool_args}`")
-                            history_lines.append(f"- **状态**: {record.get('status', 'unknown')}")
-                            history_lines.append(f"- **操作人**: {confirmed_by}")
-                            if risk_warning:
-                                history_lines.append(f"- **风险提示**: {risk_warning}")
-                            history_lines.append("")
-
-                        return [
-                            {"role": "user", "content": "工具调用历史"},
-                            {"role": "assistant", "content": "\n".join(history_lines)}
-                        ]
-
-                    except Exception as e:
-                        logger.error(f"获取工具历史失败: {e}")
-                        return [{"role": "assistant", "content": f"❌ 获取工具历史失败: {str(e)}"}]
+                    """显示工具调用历史到chatbot（工具确认功能已废弃）"""
+                    return [{"role": "user", "content": "工具调用历史"},
+                           {"role": "assistant", "content": "⚠️ 工具确认功能已废弃\n\nAI Agent现在可以直接使用启用的工具，无需人工确认。工具调用记录会显示在Agent决策列表中。"}]
 
                 show_tool_history_btn.click(
                     fn=show_tool_history_wrapper,
@@ -1595,224 +1488,7 @@ def create_app():
                     outputs=[agent_chatbot]
                 )
 
-                # 工具确认相关事件
-                refresh_pending_tools_btn.click(
-                    fn=refresh_pending_tools_wrapper,
-                    inputs=[plan_id_input],
-                    outputs=[tool_confirmation_df, tool_confirmation_result]
-                )
-
-                # 工具详情查看功能
-                def show_tool_detail_wrapper(pid, selection_data):
-                    """显示工具详情"""
-                    if not pid or not selection_data:
-                        return gr.update(visible=False), ""
-
-                    try:
-                        # selection_data 是一个字典，包含行数据
-                        if isinstance(selection_data, dict) and 'row' in selection_data:
-                            row_index = selection_data['row']
-                            df = detail_ui.get_pending_tools(int(pid))
-
-                            if 0 <= row_index < len(df):
-                                row = df.iloc[row_index]
-                                tool_id = row['ID']
-
-                                # 获取详细的工具信息
-                                from services.agent_confirmation_service import confirmation_service
-                                tool_detail = confirmation_service.get_tool_detail(tool_id)
-
-                                if tool_detail:
-                                    # 格式化工具详情HTML
-                                    status_colors = {
-                                        'pending': '#FFA500',
-                                        'approved': '#28A745',
-                                        'rejected': '#DC3545',
-                                        'executed': '#17A2B8',
-                                        'expired': '#6C757D'
-                                    }
-
-                                    status_map = {
-                                        'pending': '⏳ 待确认',
-                                        'approved': '✅ 已批准',
-                                        'rejected': '❌ 已拒绝',
-                                        'executed': '✅ 已执行',
-                                        'expired': '⏰ 已过期'
-                                    }
-
-                                    status = tool_detail.get('status', 'unknown')
-                                    status_color = status_colors.get(status, '#6C757D')
-                                    status_text = status_map.get(status, status)
-
-                                    detail_html = f"""
-                                    <div style="padding: 20px;">
-                                        <h3>🔧 工具调用详情</h3>
-
-                                        <div style="margin-bottom: 15px;">
-                                            <strong>工具ID:</strong> {tool_detail.get('id', 'N/A')}<br>
-                                            <strong>工具名称:</strong> <code>{tool_detail.get('tool_name', 'N/A')}</code><br>
-                                            <strong>状态:</strong> <span style="background-color: {status_color}; color: white; padding: 4px 8px; border-radius: 4px;">{status_text}</span><br>
-                                            <strong>创建时间:</strong> {tool_detail.get('created_at', 'N/A')}<br>
-                                            <strong>过期时间:</strong> {tool_detail.get('expires_at', 'N/A')}
-                                        </div>
-
-                                        <div style="margin-bottom: 15px;">
-                                            <h4>📋 参数:</h4>
-                                            <pre style="background-color: #f8f9fa; padding: 10px; border-radius: 4px; overflow-x: auto;">{tool_detail.get('tool_arguments', '{}')}</pre>
-                                        </div>
-
-                                        <div style="margin-bottom: 15px;">
-                                            <h4>🎯 预期效果:</h4>
-                                            <p>{tool_detail.get('expected_effect', '无描述')}</p>
-                                        </div>
-
-                                        <div style="margin-bottom: 15px;">
-                                            <h4>⚠️ 风险警告:</h4>
-                                            <p style="color: #dc3545;">{tool_detail.get('risk_warning', '无特别警告')}</p>
-                                        </div>
-
-                                        <div>
-                                            <h4>📝 执行结果:</h4>
-                                            <pre style="background-color: #f8f9fa; padding: 10px; border-radius: 4px; overflow-x: auto;">{tool_detail.get('execution_result', '尚未执行')}</pre>
-                                        </div>
-                                    </div>
-                                    """
-                                else:
-                                    detail_html = "<p>工具详情不存在</p>"
-
-                                return gr.update(visible=True), detail_html
-                            else:
-                                return gr.update(visible=False), ""
-                        else:
-                            return gr.update(visible=False), ""
-                    except Exception as e:
-                        logger.error(f"显示工具详情失败: {e}")
-                        return gr.update(visible=False), ""
-
-                # 工具确认定时器自动刷新
-                tool_confirmation_timer.tick(
-                    fn=refresh_pending_tools_wrapper,
-                    inputs=[plan_id_input],
-                    outputs=[tool_confirmation_df, tool_confirmation_result]
-                )
-
-                # 工具表格点击事件
-                tool_confirmation_df.select(
-                    fn=show_tool_detail_wrapper,
-                    inputs=[plan_id_input, tool_confirmation_df],
-                    outputs=[tool_detail_modal, tool_detail_content]
-                )
-
-                # 关闭详情模态框
-                tool_detail_close_btn.click(
-                    fn=lambda: gr.update(visible=False),
-                    outputs=[tool_detail_modal]
-                )
-
-                def approve_tools_wrapper(pid, selected_tools):
-                    """同意执行工具"""
-                    if not pid or not selected_tools.strip():
-                        return "❌ 请先选择计划并输入工具ID"
-                    try:
-                        result = detail_ui.confirm_tools(int(pid), selected_tools, "approve")
-                        # 刷新工具列表
-                        refresh_result = refresh_pending_tools_wrapper(pid)
-                        return f"✅ {result}\n\n{refresh_result[1]}"
-                    except Exception as e:
-                        logger.error(f"同意工具执行失败: {e}")
-                        return f"❌ 操作失败: {str(e)}"
-
-                approve_selected_btn.click(
-                    fn=approve_tools_wrapper,
-                    inputs=[plan_id_input, selected_tools_input],
-                    outputs=[tool_confirmation_result]
-                ).then(
-                    fn=refresh_pending_tools_wrapper,
-                    inputs=[plan_id_input],
-                    outputs=[tool_confirmation_df, tool_confirmation_result]
-                )
-
-                def reject_tools_wrapper(pid, selected_tools):
-                    """拒绝执行工具"""
-                    if not pid or not selected_tools.strip():
-                        return "❌ 请先选择计划并输入工具ID"
-                    try:
-                        result = detail_ui.confirm_tools(int(pid), selected_tools, "reject")
-                        # 刷新工具列表
-                        refresh_result = refresh_pending_tools_wrapper(pid)
-                        return f"❌ {result}\n\n{refresh_result[1]}"
-                    except Exception as e:
-                        logger.error(f"拒绝工具执行失败: {e}")
-                        return f"❌ 操作失败: {str(e)}"
-
-                reject_selected_btn.click(
-                    fn=reject_tools_wrapper,
-                    inputs=[plan_id_input, selected_tools_input],
-                    outputs=[tool_confirmation_result]
-                ).then(
-                    fn=refresh_pending_tools_wrapper,
-                    inputs=[plan_id_input],
-                    outputs=[tool_confirmation_df, tool_confirmation_result]
-                )
-
-                def approve_all_tools_wrapper(pid):
-                    """同意所有待确认工具"""
-                    if not pid:
-                        return "❌ 请先选择计划"
-                    try:
-                        # 获取所有待确认工具的ID
-                        pending_tools = detail_ui.get_pending_tools(int(pid))
-                        if not pending_tools:
-                            return "⚠️ 没有待确认的工具"
-
-                        tool_ids = ",".join([str(tool.get('id', '')) for tool in pending_tools])
-                        result = detail_ui.confirm_tools(int(pid), tool_ids, "approve")
-                        # 刷新工具列表
-                        refresh_result = refresh_pending_tools_wrapper(pid)
-                        return f"✅ {result}\n\n{refresh_result[1]}"
-                    except Exception as e:
-                        logger.error(f"同意所有工具执行失败: {e}")
-                        return f"❌ 操作失败: {str(e)}"
-
-                approve_all_btn.click(
-                    fn=approve_all_tools_wrapper,
-                    inputs=[plan_id_input],
-                    outputs=[tool_confirmation_result]
-                ).then(
-                    fn=refresh_pending_tools_wrapper,
-                    inputs=[plan_id_input],
-                    outputs=[tool_confirmation_df, tool_confirmation_result]
-                )
-
-                def reject_all_tools_wrapper(pid):
-                    """拒绝所有待确认工具"""
-                    if not pid:
-                        return "❌ 请先选择计划"
-                    try:
-                        # 获取所有待确认工具的ID
-                        pending_tools = detail_ui.get_pending_tools(int(pid))
-                        if not pending_tools:
-                            return "⚠️ 没有待确认的工具"
-
-                        tool_ids = ",".join([str(tool.get('id', '')) for tool in pending_tools])
-                        result = detail_ui.confirm_tools(int(pid), tool_ids, "reject")
-                        # 刷新工具列表
-                        refresh_result = refresh_pending_tools_wrapper(pid)
-                        return f"❌ {result}\n\n{refresh_result[1]}"
-                    except Exception as e:
-                        logger.error(f"拒绝所有工具执行失败: {e}")
-                        return f"❌ 操作失败: {str(e)}"
-
-                reject_all_btn.click(
-                    fn=reject_all_tools_wrapper,
-                    inputs=[plan_id_input],
-                    outputs=[tool_confirmation_result]
-                ).then(
-                    fn=refresh_pending_tools_wrapper,
-                    inputs=[plan_id_input],
-                    outputs=[tool_confirmation_df, tool_confirmation_result]
-                )
-
+  
                 # 清空对话
                 def clear_chat_wrapper():
                     """清空对话历史"""

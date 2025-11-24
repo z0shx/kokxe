@@ -290,7 +290,7 @@ class SchedulerService:
                 },
                 task_metadata={
                     'auto_generated': True,
-                    'auto_tool_execution': plan.auto_tool_execution_enabled
+                    'auto_tool_execution': plan.auto_tool_execution_enabled  # 已废弃字段，保留用于历史记录
                 }
             )
 
