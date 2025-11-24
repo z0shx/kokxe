@@ -167,22 +167,33 @@ class AgentConfirmationService:
                 result = []
                 for tool in pending_tools:
                     # 检查是否过期
-                    if tool.expires_at and get_current_beijing_time() > tool.expires_at:
-                        tool.status = ConfirmationStatus.EXPIRED.value
-                        db.commit()
-                        continue
+                    if tool.expires_at:
+                        current_time = get_current_beijing_time()
+                        # 确保两个时间对象都有timezone信息
+                        if tool.expires_at.tzinfo is None:
+                            import pytz
+                            beijing_tz = pytz.timezone('Asia/Shanghai')
+                            expires_at = beijing_tz.localize(tool.expires_at)
+                        else:
+                            expires_at = tool.expires_at
+
+                        if current_time > expires_at:
+                            tool.status = ConfirmationStatus.EXPIRED.value
+                            db.commit()
+                            continue
 
                     result.append({
                         'id': tool.id,
                         'plan_id': tool.plan_id,
                         'agent_decision_id': tool.agent_decision_id,
                         'tool_name': tool.tool_name,
-                        'tool_arguments': tool.tool_arguments,
+                        'tool_args': tool.tool_arguments,  # 改为tool_args以匹配UI期望
                         'expected_effect': tool.expected_effect,
                         'risk_warning': tool.risk_warning,
                         'created_at': tool.created_at,
                         'expires_at': tool.expires_at,
-                        'remaining_time': self._get_remaining_time(tool.expires_at)
+                        'remaining_time': self._get_remaining_time(tool.expires_at),
+                        'status': ConfirmationStatus.PENDING.value  # 添加状态字段
                     })
 
                 return result
@@ -215,6 +226,47 @@ class AgentConfirmationService:
             return f"{delta.seconds // 3600}小时{(delta.seconds % 3600) // 60}分钟"
         else:
             return f"{delta.seconds // 60}分钟"
+
+    def get_tool_detail(self, tool_id: int) -> Optional[Dict[str, Any]]:
+        """
+        获取工具详情
+
+        Args:
+            tool_id: 工具ID
+
+        Returns:
+            工具详情字典
+        """
+        try:
+            with get_db() as db:
+                tool_call = db.query(PendingToolCall).filter(PendingToolCall.id == tool_id).first()
+                if not tool_call:
+                    return None
+
+                # 格式化时间
+                created_at_str = ""
+                expires_at_str = ""
+                if tool_call.created_at:
+                    created_at_str = tool_call.created_at.strftime('%Y-%m-%d %H:%M:%S')
+                if tool_call.expires_at:
+                    expires_at_str = tool_call.expires_at.strftime('%Y-%m-%d %H:%M:%S')
+
+                return {
+                    'id': tool_call.id,
+                    'plan_id': tool_call.plan_id,
+                    'tool_name': tool_call.tool_name,
+                    'tool_arguments': tool_call.tool_arguments,
+                    'expected_effect': tool_call.expected_effect,
+                    'risk_warning': tool_call.risk_warning,
+                    'created_at': created_at_str,
+                    'expires_at': expires_at_str,
+                    'status': tool_call.status,
+                    'execution_result': tool_call.execution_result
+                }
+
+        except Exception as e:
+            logger.error(f"获取工具详情失败: {e}")
+            return None
 
     async def confirm_tool_call(
         self,

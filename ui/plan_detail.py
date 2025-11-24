@@ -3121,13 +3121,65 @@ class PlanDetailUI:
             traceback.print_exc()
             return f"❌ 清除失败: {str(e)}"
 
-    def get_pending_tools(self, plan_id: int) -> List[Dict]:
+    def get_pending_tools(self, plan_id: int) -> pd.DataFrame:
         """获取待确认工具列表"""
         try:
-            return confirmation_service.get_pending_tools(plan_id)
+            tools = confirmation_service.get_pending_tools(plan_id)
+
+            if not tools:
+                return pd.DataFrame(columns=[
+                    'ID', '工具名称', '参数', '创建时间', '状态'
+                ])
+
+            # 构建DataFrame
+            df_data = []
+            for tool in tools:
+                # 格式化时间
+                created_at = tool.get('created_at', 'N/A')
+                if created_at != 'N/A':
+                    try:
+                        if hasattr(created_at, 'strftime'):
+                            created_at = created_at.strftime('%m-%d %H:%M:%S')
+                        else:
+                            created_at = str(created_at)
+                    except:
+                        created_at = str(created_at)
+
+                # 格式化参数
+                tool_args = tool.get('tool_args', {})
+                if isinstance(tool_args, dict):
+                    args_str = ', '.join([f"{k}: {v}" for k, v in tool_args.items()])
+                else:
+                    args_str = str(tool_args)
+
+                # 状态映射
+                status = tool.get('status', 'pending')
+                status_map = {
+                    'pending': '⏳ 待确认',
+                    'approved': '✅ 已批准',
+                    'rejected': '❌ 已拒绝',
+                    'executed': '✅ 已执行',
+                    'failed': '❌ 执行失败'
+                }
+                status_display = status_map.get(status, status)
+
+                df_data.append({
+                    'ID': tool.get('id', ''),
+                    '工具名称': tool.get('tool_name', 'N/A'),
+                    '参数': args_str,
+                    '创建时间': created_at,
+                    '状态': status_display
+                })
+
+            return pd.DataFrame(df_data)
+
         except Exception as e:
             logger.error(f"获取待确认工具失败: {e}")
-            return []
+            import traceback
+            traceback.print_exc()
+            return pd.DataFrame(columns=[
+                'ID', '工具名称', '参数', '创建时间', '状态'
+            ])
 
     def get_tool_confirmation_history(self, plan_id: int, limit: int = 20) -> List[Dict]:
         """获取工具确认历史"""

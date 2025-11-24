@@ -3079,11 +3079,11 @@ class AgentDecisionService:
 
                                 # 完成工具调用
                                 if func_name:
-                                    # 添加到当前内容中，使用更醒目的格式
+                                    # 添加到当前内容中，使用更醒目的格式和状态标签
                                     action_text = f"""
 
 **🔧 准备执行工具**
-- **工具名称:** `{func_name}`
+<span style="background-color: #FFA500; color: white; padding: 2px 6px; border-radius: 4px; font-size: 12px;">⏳ 待确认</span> `{func_name}`
 - **参数:** `{func_args}`
 """
                                     current_content += action_text
@@ -3214,9 +3214,8 @@ class AgentDecisionService:
                         current_content += content_piece
                         thinking_content += content_piece
 
-                        # 如果没有推理内容，累积输出完整内容
-                        if not reasoning_content and enable_thinking:
-                            yield [{"role": "assistant", "content": thinking_content}]
+                        # 始终输出常规内容，无论是否有推理内容
+                        yield [{"role": "assistant", "content": current_content}]
 
                     elif hasattr(delta, 'tool_calls') and delta.tool_calls:
                         for tool_call in delta.tool_calls:
@@ -3225,11 +3224,11 @@ class AgentDecisionService:
                                 func_args = tool_call.function.arguments or "{}"
 
                                 if func_name:
-                                    # 添加到当前内容中，使用更醒目的格式
+                                    # 添加到当前内容中，使用更醒目的格式和状态标签
                                     action_text = f"""
 
 **🔧 准备执行工具**
-- **工具名称:** `{func_name}`
+<span style="background-color: #FFA500; color: white; padding: 2px 6px; border-radius: 4px; font-size: 12px;">⏳ 待确认</span> `{func_name}`
 - **参数:** `{func_args}`
 """
                                     current_content += action_text
@@ -3287,7 +3286,7 @@ class AgentDecisionService:
 
                                     # 自动或禁用模式下直接执行
                                     result = await cls._simulate_tool_execution(func_name, func_args)
-                                    observation_text = f"\n\n**📋 工具结果:** {result}"
+                                    observation_text = f"\n\n**📋 工具结果:**\n<span style=\"background-color: #28A745; color: white; padding: 2px 6px; border-radius: 4px; font-size: 12px;\">✅ 已执行</span> `{func_name}`\n\n{result}"
                                     current_content += observation_text
                                     yield [{"role": "assistant", "content": current_content}]
 
@@ -3363,11 +3362,11 @@ class AgentDecisionService:
                                 func_args = tool_call.function.arguments or "{}"
 
                                 if func_name:
-                                    # 添加到当前内容中，使用更醒目的格式
+                                    # 添加到当前内容中，使用更醒目的格式和状态标签
                                     action_text = f"""
 
 **🔧 准备执行工具**
-- **工具名称:** `{func_name}`
+<span style="background-color: #FFA500; color: white; padding: 2px 6px; border-radius: 4px; font-size: 12px;">⏳ 待确认</span> `{func_name}`
 - **参数:** `{func_args}`
 """
                                     current_content += action_text
