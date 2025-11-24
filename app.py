@@ -780,6 +780,28 @@ def create_app():
                             gr.Timer(active=False)  # account_timer
                         )
 
+                    def safe_int(value, default=0):
+                        """安全转换为整数"""
+                        try:
+                            if value is None:
+                                return default
+                            if isinstance(value, str):
+                                return int(float(value))
+                            return int(value)
+                        except (ValueError, TypeError):
+                            return default
+
+                    def safe_float(value, default=0.0):
+                        """安全转换为浮点数"""
+                        try:
+                            if value is None:
+                                return default
+                            if isinstance(value, str):
+                                return float(value)
+                            return float(value)
+                        except (ValueError, TypeError):
+                            return default
+
                     # 调用render_plan_overview获取概览文本和状态信息
                     overview_data = detail_ui.render_plan_overview(int(plan_id))
                     overview_text = overview_data[0]
@@ -870,25 +892,25 @@ def create_app():
                         "",  # automation_config_result
                         schedule_text,  # schedule_time_list
                         "",  # schedule_operation_result
-                        int(params.get('lookback_window', 512)),
-                        int(params.get('predict_window', 48)),
-                        int(params.get('batch_size', 16)),
-                        int(params.get('tokenizer_epochs', 25)),
-                        int(params.get('predictor_epochs', 50)),
-                        float(params.get('learning_rate', 1e-4)),
+                        safe_int(params.get('lookback_window'), 512),
+                        safe_int(params.get('predict_window'), 48),
+                        safe_int(params.get('batch_size'), 16),
+                        safe_int(params.get('tokenizer_epochs'), 25),
+                        safe_int(params.get('predictor_epochs'), 50),
+                        safe_float(params.get('learning_rate'), 1e-4),
                         "",  # params_status
                         range_info,  # train_data_range_info
                         start_date,  # train_start_date
                         end_date,    # train_end_date
                         "",  # train_data_config_result
-                        int(inference_params.get('lookback_window', 512)),  # inference_lookback_window
-                        int(inference_params.get('predict_window', 48)),  # inference_predict_window
-                        float(inference_params.get('temperature', 1.0)),  # inference_temperature
-                        float(inference_params.get('top_p', 0.9)),  # inference_top_p
-                        int(inference_params.get('sample_count', 30)),  # inference_sample_count
-                        int(inference_params.get('data_offset', 0)),  # inference_data_offset
+                        safe_int(inference_params.get('lookback_window'), 512),  # inference_lookback_window
+                        safe_int(inference_params.get('predict_window'), 48),  # inference_predict_window
+                        safe_float(inference_params.get('temperature'), 1.0),  # inference_temperature
+                        safe_float(inference_params.get('top_p'), 0.9),  # inference_top_p
+                        safe_int(inference_params.get('sample_count'), 30),  # inference_sample_count
+                        safe_int(inference_params.get('data_offset'), 0),  # inference_data_offset
                         "",  # inference_params_status
-                        gr.update(choices=llm_configs, value=agent_config.get('llm_config_id')),  # llm_config_dropdown
+                        gr.update(choices=llm_configs, value=int(agent_config.get('llm_config_id')) if agent_config.get('llm_config_id') is not None else None),  # llm_config_dropdown
                         gr.update(choices=prompt_templates, value=None),  # prompt_template_dropdown
                         agent_config.get('agent_prompt', ''),  # agent_prompt_textbox
                         tools_config.get('get_account_balance', True),  # tool_get_account
@@ -900,14 +922,14 @@ def create_app():
                         tools_config.get('cancel_order', True),  # tool_cancel_order
                         tools_config.get('modify_order', True),  # tool_modify_order
                         tools_config.get('place_stop_loss_order', True),  # tool_stop_loss
-                        max_iterations,  # max_iterations
+                        safe_int(max_iterations, 3),  # max_iterations
                         enable_thinking,  # enable_thinking
                         thinking_style,  # thinking_style
                         tool_approval,  # tool_approval
-                        quick_usdt_amount,  # quick_usdt_amount
-                        quick_usdt_percentage,  # quick_usdt_percentage
-                        quick_avg_orders,  # quick_avg_orders
-                        quick_stop_loss,  # quick_stop_loss
+                        safe_float(quick_usdt_amount, 1000.0),  # quick_usdt_amount
+                        safe_float(quick_usdt_percentage, 30.0),  # quick_usdt_percentage
+                        safe_int(quick_avg_orders, 10),  # quick_avg_orders
+                        safe_float(quick_stop_loss, 20.0),  # quick_stop_loss
                         detail_ui.load_training_records(int(plan_id)),  # training_df
                         detail_ui.generate_kline_chart(int(plan_id)),  # kline_chart
                         probability_indicators,  # probability_indicators_md
@@ -1095,65 +1117,63 @@ def create_app():
                 # 控制面板功能已移至 ui/plan_detail.py 中的专用Tab
 
                 # 详情页刷新（注意：控制面板组件已移至ui/plan_detail.py，变量定义已在前面添加）
-                def refresh_plan_detail_wrapper(pid):
-                    """刷新计划详情的包装函数，确保返回正确数量的值"""
-                    if not pid:
-                        return (
-                            "",  # overview_md
-                            "", "",  # ws_result, plan_result (占位)
-                            "", "",  # ws_status_md, plan_status_md (占位)
-                            gr.update(), gr.update(), gr.update(), gr.update(),  # 按钮状态 (占位)
-                            False, False, False, False,  # automation switches (占位)
-                            "",  # automation_config_result (占位)
-                            "", "",  # schedule_time_list, schedule_operation_result (占位)
-                            512, 48, 16, 25, 50, 1e-4,  # 微调参数
-                            "",  # params_status
-                            "", "", "", "",  # train_data_range_info, train_start_date, train_end_date, train_data_config_result
-                            512, 48,  # inference_lookback_window, inference_predict_window
-                            1.0, 0.9, 30, 0,  # inference_temperature, inference_top_p, inference_sample_count, inference_data_offset
-                            "",  # inference_params_status
-                            gr.update(), None, "",  # llm_config_dropdown, prompt_template_dropdown, agent_prompt_textbox
-                            True, True, True, True, True, True, True, True, True,  # 工具选择
-                            3, True, "详细", False,  # react配置: max_iterations, enable_thinking, thinking_style, tool_approval
-                            1000.0, 30.0, 10.0, 20.0,  # 交易限制默认值：quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss
-                            gr.DataFrame(), gr.Plot(), "",  # training_df, kline_chart, probability_indicators_md
-                            gr.DataFrame(), "请保存推理参数后查看数据范围...", "", gr.DataFrame(), [],  # inference_df, inference_data_range_info, prediction_data_preview, agent_df, agent_chatbot
-                            "",  # account_status
-                            gr.DataFrame(),  # order_table
-                            gr.DataFrame(),  # task_executions_df
-                            gr.DataFrame(), "", gr.Timer(active=False),  # tool_confirmation_df, tool_confirmation_result, tool_confirmation_timer
-                            gr.Timer(active=False)  # account_timer
-                        )
+                def safe_int(value, default=0):
+                    """安全转换为整数"""
+                    try:
+                        if value is None:
+                            return default
+                        if isinstance(value, str):
+                            return int(float(value))
+                        return int(value)
+                    except (ValueError, TypeError):
+                        return default
 
+                def safe_float(value, default=0.0):
+                    """安全转换为浮点数"""
+                    try:
+                        if value is None:
+                            return default
+                        if isinstance(value, str):
+                            return float(value)
+                        return float(value)
+                    except (ValueError, TypeError):
+                        return default
+
+                def refresh_plan_detail_wrapper(pid):
+                    """刷新计划详情的包装函数，使用原有的load_plan_detail逻辑"""
+                    # 直接调用原有的load_plan_detail函数
                     result = load_plan_detail(pid)
-                    # 返回71个值（跳过前2个：detail_container, no_plan_msg）
-                    return result[2:71]
+                    # 返回除了detail_container和no_plan_msg之外的所有值
+                    return result[2:]
 
                 detail_refresh_btn.click(
                     fn=refresh_plan_detail_wrapper,
                     inputs=[plan_id_input],
                     outputs=[
-                        overview_md,  # 1个
-                        ws_result,  # 占位输出
-                        auto_finetune_switch, auto_inference_switch,  # 占位输出
-                        auto_agent_switch, auto_tool_execution_switch,  # 占位输出
-                        automation_config_result,  # 占位输出
-                        schedule_time_list, schedule_operation_result,  # 占位输出
-                        lookback_window, predict_window, batch_size,
+                        overview_md, ws_result, plan_result,  # 概览和结果
+                        ws_status_md, plan_status_md,  # 状态显示
+                        ws_start_btn, ws_stop_btn, plan_start_btn, plan_stop_btn,  # 按钮状态
+                        auto_finetune_switch, auto_inference_switch,  # 自动化开关
+                        auto_agent_switch, auto_tool_execution_switch,
+                        automation_config_result,  # 自动化配置结果
+                        schedule_time_list, schedule_operation_result,  # 时间表管理
+                        lookback_window, predict_window, batch_size,  # 模型参数
                         tokenizer_epochs, predictor_epochs, learning_rate, params_status,
                         train_data_range_info, train_start_date, train_end_date, train_data_config_result,
-                        inference_lookback_window, inference_predict_window,
+                        inference_lookback_window, inference_predict_window,  # 推理数据窗口
                         inference_temperature, inference_top_p, inference_sample_count, inference_data_offset, inference_params_status,
-                        llm_config_dropdown, prompt_template_dropdown, agent_prompt_textbox,
+                        llm_config_dropdown, prompt_template_dropdown, agent_prompt_textbox,  # Agent配置
                         tool_get_account, tool_get_positions, tool_get_pending_orders,
-                        tool_query_prediction, tool_prediction_history, tool_place_order,
+                        tool_query_prediction, tool_prediction_history, tool_place_order,  # 工具选择
                         tool_cancel_order, tool_modify_order, tool_stop_loss,
-                        quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss,
-                        training_df, kline_chart, probability_indicators_md, inference_df, inference_data_range_info, prediction_data_preview, agent_df,
-                        agent_chatbot,
-                        account_status, order_table, task_executions_df,
-                        tool_confirmation_df, tool_confirmation_result, tool_confirmation_timer,
-                        account_timer
+                        max_iterations, enable_thinking, thinking_style, tool_approval,  # ReAct配置
+                        quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss,  # 交易限制配置
+                        training_df, kline_chart, probability_indicators_md,  # K线图和概率指标
+                        inference_df, inference_data_range_info, prediction_data_preview, agent_df,
+                        agent_chatbot,  # agent_chatbot
+                        account_status, order_table, task_executions_df,  # 账户信息、订单记录和任务记录
+                        tool_confirmation_df, tool_confirmation_result, tool_confirmation_timer,  # 工具确认UI
+                        account_timer  # 定时器
                     ]
                 )
 
