@@ -818,6 +818,11 @@ def create_app():
 
                     # 获取ReAct配置
                     react_config = detail_ui.get_react_config(int(plan_id))
+                    # 确保类型转换正确，避免从数据库读取的字符串导致的错误
+                    max_iterations = int(react_config.get('max_iterations', 3))
+                    enable_thinking = bool(react_config.get('enable_thinking', True))
+                    thinking_style = str(react_config.get('thinking_style', '详细'))
+                    tool_approval = bool(react_config.get('tool_approval', False))
 
                     # 获取推理参数配置
                     inference_params = detail_ui.get_inference_params(int(plan_id))
@@ -835,6 +840,11 @@ def create_app():
 
                     # 获取交易限制配置
                     trading_limits = detail_ui.get_trading_limits_config(int(plan_id))
+                    # 确保交易限制的类型转换正确，避免从数据库读取的字符串导致的错误
+                    quick_usdt_amount = float(trading_limits.get('available_usdt_amount', 1000.0))
+                    quick_usdt_percentage = float(trading_limits.get('available_usdt_percentage', 30.0))
+                    quick_avg_orders = int(trading_limits.get('avg_order_count', 10))
+                    quick_stop_loss = float(trading_limits.get('stop_loss_percentage', 20.0))
 
                     # 获取最新的Agent决策输出
                     latest_agent_output = detail_ui.get_latest_agent_decision_output(int(plan_id))
@@ -890,14 +900,14 @@ def create_app():
                         tools_config.get('cancel_order', True),  # tool_cancel_order
                         tools_config.get('modify_order', True),  # tool_modify_order
                         tools_config.get('place_stop_loss_order', True),  # tool_stop_loss
-                        int(react_config.get('max_iterations', 3)),  # max_iterations
-                        bool(react_config.get('enable_thinking', True)),  # enable_thinking
-                        react_config.get('thinking_style', '详细'),  # thinking_style
-                        bool(react_config.get('tool_approval', False)),  # tool_approval
-                        float(trading_limits['available_usdt_amount']),  # quick_usdt_amount
-                        float(trading_limits['available_usdt_percentage']),  # quick_usdt_percentage
-                        int(trading_limits['avg_order_count']),  # quick_avg_orders
-                        float(trading_limits['stop_loss_percentage']),  # quick_stop_loss
+                        max_iterations,  # max_iterations
+                        enable_thinking,  # enable_thinking
+                        thinking_style,  # thinking_style
+                        tool_approval,  # tool_approval
+                        quick_usdt_amount,  # quick_usdt_amount
+                        quick_usdt_percentage,  # quick_usdt_percentage
+                        quick_avg_orders,  # quick_avg_orders
+                        quick_stop_loss,  # quick_stop_loss
                         detail_ui.load_training_records(int(plan_id)),  # training_df
                         detail_ui.generate_kline_chart(int(plan_id)),  # kline_chart
                         probability_indicators,  # probability_indicators_md
@@ -1090,7 +1100,9 @@ def create_app():
                     if not pid:
                         return (
                             "",  # overview_md
-                            "",  # ws_result (占位)
+                            "", "",  # ws_result, plan_result (占位)
+                            "", "",  # ws_status_md, plan_status_md (占位)
+                            gr.update(), gr.update(), gr.update(), gr.update(),  # 按钮状态 (占位)
                             False, False, False, False,  # automation switches (占位)
                             "",  # automation_config_result (占位)
                             "", "",  # schedule_time_list, schedule_operation_result (占位)
@@ -1102,18 +1114,20 @@ def create_app():
                             "",  # inference_params_status
                             gr.update(), None, "",  # llm_config_dropdown, prompt_template_dropdown, agent_prompt_textbox
                             True, True, True, True, True, True, True, True, True,  # 工具选择
+                            3, True, "详细", False,  # react配置: max_iterations, enable_thinking, thinking_style, tool_approval
                             1000.0, 30.0, 10.0, 20.0,  # 交易限制默认值：quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss
                             gr.DataFrame(), gr.Plot(), "",  # training_df, kline_chart, probability_indicators_md
                             gr.DataFrame(), "请保存推理参数后查看数据范围...", "", gr.DataFrame(), [],  # inference_df, inference_data_range_info, prediction_data_preview, agent_df, agent_chatbot
                             "",  # account_status
                             gr.DataFrame(),  # order_table
                             gr.DataFrame(),  # task_executions_df
+                            gr.DataFrame(), "", gr.Timer(active=False),  # tool_confirmation_df, tool_confirmation_result, tool_confirmation_timer
                             gr.Timer(active=False)  # account_timer
                         )
 
                     result = load_plan_detail(pid)
-                    # 只返回需要的55个值（跳过前2个：detail_container, no_plan_msg）
-                    return result[2:57]
+                    # 返回71个值（跳过前2个：detail_container, no_plan_msg）
+                    return result[2:71]
 
                 detail_refresh_btn.click(
                     fn=refresh_plan_detail_wrapper,
@@ -1435,6 +1449,10 @@ def create_app():
                     fn=execute_inference_wrapper,
                     inputs=[inference_record_id],
                     outputs=[inference_operation_result, prediction_data_preview, kline_chart, probability_indicators_md]
+                ).then(
+                    fn=lambda training_id: detail_ui.load_inference_records(int(training_id)) if training_id else gr.DataFrame(),
+                    inputs=[inference_record_id],
+                    outputs=[inference_df]
                 )
 
                 # Mock预测数据
@@ -1498,6 +1516,14 @@ def create_app():
                     fn=refresh_pending_tools_wrapper,
                     inputs=[plan_id_input],
                     outputs=[tool_confirmation_df, tool_confirmation_result]
+                ).then(
+                    fn=lambda pid: detail_ui.load_agent_decisions(int(pid)) if pid else gr.DataFrame(),
+                    inputs=[plan_id_input],
+                    outputs=[agent_df]
+                ).then(
+                    fn=lambda pid: detail_ui.get_latest_agent_decision_output(int(pid)) if pid else [{"role": "assistant", "content": "请先选择计划"}],
+                    inputs=[plan_id_input],
+                    outputs=[agent_chatbot]
                 )
 
                 # 显示工具调用历史

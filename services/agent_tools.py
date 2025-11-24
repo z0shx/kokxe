@@ -473,6 +473,86 @@ AGENT_TOOLS = {
         required_params=[],
         risk_level="low"
     ),
+
+    "query_historical_kline_data": AgentTool(
+        name="query_historical_kline_data",
+        description="""查询真实历史交易数据。通过查询数据库中的K线数据表，使用UTC+0时间戳作为查询条件，返回指定时间范围内的历史OHLCV数据。
+
+使用场景：
+1. 查看特定时间段的历史价格走势
+2. 分析历史价格波动和成交量
+3. 获取技术分析所需的历史数据
+4. 对比模型预测与实际历史数据
+5. 回测交易策略的历史表现
+
+返回信息包括：
+- 符合条件的历史K线数据列表
+- 每条数据的时间戳（UTC+0）、开盘价、最高价、最低价、收盘价、成交量、成交额
+- 数据统计信息（数据量、时间范围、价格波动等）
+- 数据完整性说明""",
+        category=ToolCategory.QUERY,
+        parameters={
+            "inst_id": {
+                "type": "string",
+                "description": "交易对，如 BTC-USDT、ETH-USDT",
+                "required": True
+            },
+            "interval": {
+                "type": "string",
+                "description": "K线时间间隔，支持：30m、1H、2H、4H",
+                "required": False,
+                "default": "1H",
+                "enum": ["30m", "1H", "2H", "4H"]
+            },
+            "start_time": {
+                "type": "string",
+                "description": "开始时间，格式：YYYY-MM-DD HH:MM:SS（UTC+0时间）",
+                "required": False
+            },
+            "end_time": {
+                "type": "string",
+                "description": "结束时间，格式：YYYY-MM-DD HH:MM:SS（UTC+0时间）",
+                "required": False
+            },
+            "limit": {
+                "type": "integer",
+                "description": "返回数据条数，默认100，最大500",
+                "required": False,
+                "default": 100
+            },
+            "order_by": {
+                "type": "string",
+                "description": "排序方式：'time_asc'(时间升序)、'time_desc'(时间降序)",
+                "required": False,
+                "default": "time_asc",
+                "enum": ["time_asc", "time_desc"]
+            }
+        },
+        required_params=["inst_id"],
+        risk_level="low"
+    ),
+
+    "get_current_utc_time": AgentTool(
+        name="get_current_utc_time",
+        description="""获取当前的UTC+0日期与时间。返回精确的时间戳和格式化的时间字符串，用于时间相关的操作和查询。
+
+使用场景：
+1. 确定当前时间用于数据查询范围
+2. 计算时间差和时间间隔
+3. 生成时间相关的交易决策依据
+4. 同步不同系统的时间标准
+5. 记录精确的操作时间点
+
+返回信息包括：
+- 当前UTC+0时间戳（毫秒）
+- 格式化的时间字符串（YYYY-MM-DD HH:MM:SS）
+- ISO格式的时间字符串
+- 时区信息说明""",
+        category=ToolCategory.QUERY,
+        parameters={},
+        required_params=[],
+        risk_level="low"
+    ),
 }
 
 

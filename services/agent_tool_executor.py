@@ -173,6 +173,10 @@ class AgentToolExecutor:
                 return await self._cancel_all_orders(params)
             elif tool_name == "get_prediction_history":
                 return await self._get_prediction_history(params)
+            elif tool_name == "query_historical_kline_data":
+                return await self._query_historical_kline_data(params)
+            elif tool_name == "get_current_utc_time":
+                return await self._get_current_utc_time(params)
             else:
                 return {"success": False, "error": f"工具 {tool_name} 未实现"}
 
@@ -486,6 +490,167 @@ class AgentToolExecutor:
             return {
                 "success": False,
                 "error": f"查询失败: {str(e)}"
+            }
+
+    async def _query_historical_kline_data(self, params: Dict) -> Dict:
+        """查询历史K线数据"""
+        from database.db import get_db
+        from database.models import KlineData
+        from sqlalchemy import and_, asc, desc
+        from datetime import datetime
+
+        try:
+            inst_id = params["inst_id"]
+            interval = params.get("interval", "1H")
+            start_time = params.get("start_time")
+            end_time = params.get("end_time")
+            limit = min(params.get("limit", 100), 500)  # 限制最大500条
+            order_by = params.get("order_by", "time_asc")
+
+            with get_db() as db:
+                # 构建查询条件
+                query = db.query(KlineData).filter(
+                    and_(
+                        KlineData.inst_id == inst_id,
+                        KlineData.interval == interval
+                    )
+                )
+
+                # 添加时间范围过滤
+                if start_time:
+                    try:
+                        start_dt = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
+                        query = query.filter(KlineData.timestamp >= start_dt)
+                    except ValueError:
+                        return {"success": False, "error": "开始时间格式错误，请使用 YYYY-MM-DD HH:MM:SS"}
+
+                if end_time:
+                    try:
+                        end_dt = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
+                        query = query.filter(KlineData.timestamp <= end_dt)
+                    except ValueError:
+                        return {"success": False, "error": "结束时间格式错误，请使用 YYYY-MM-DD HH:MM:SS"}
+
+                # 排序
+                if order_by == "time_asc":
+                    query = query.order_by(asc(KlineData.timestamp))
+                else:  # time_desc
+                    query = query.order_by(desc(KlineData.timestamp))
+
+                # 限制数量
+                query = query.limit(limit)
+
+                # 执行查询
+                kline_records = query.all()
+
+                if not kline_records:
+                    return {
+                        "success": True,
+                        "message": f"未找到 {inst_id} {interval} 的历史数据",
+                        "data": {
+                            "inst_id": inst_id,
+                            "interval": interval,
+                            "count": 0,
+                            "records": []
+                        }
+                    }
+
+                # 格式化数据
+                records = []
+                for record in kline_records:
+                    records.append({
+                        "时间(UTC+0)": record.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                        "时间戳(毫秒)": int(record.timestamp.timestamp() * 1000),
+                        "开盘价": f"{record.open:.6f}",
+                        "最高价": f"{record.high:.6f}",
+                        "最低价": f"{record.low:.6f}",
+                        "收盘价": f"{record.close:.6f}",
+                        "成交量": f"{record.volume:.4f}",
+                        "成交额": f"{record.amount:.2f}"
+                    })
+
+                # 计算统计信息
+                closes = [r.close for r in kline_records]
+                volumes = [r.volume for r in kline_records]
+
+                price_change = ((closes[-1] - closes[0]) / closes[0] * 100) if len(closes) > 1 and closes[0] != 0 else 0
+                high_price = max(closes) if closes else 0
+                low_price = min(closes) if closes else 0
+                total_volume = sum(volumes) if volumes else 0
+
+                # 获取实际查询的时间范围
+                actual_start = min(r.timestamp for r in kline_records)
+                actual_end = max(r.timestamp for r in kline_records)
+
+                return {
+                    "success": True,
+                    "message": f"找到 {len(records)} 条 {inst_id} {interval} 历史数据",
+                    "data": {
+                        "inst_id": inst_id,
+                        "interval": interval,
+                        "count": len(records),
+                        "time_range": {
+                            "start": actual_start.strftime("%Y-%m-%d %H:%M:%S"),
+                            "end": actual_end.strftime("%Y-%m-%d %H:%M:%S")
+                        },
+                        "statistics": {
+                            "价格变化(%)": f"{price_change:.2f}%",
+                            "最高价": f"{high_price:.6f}",
+                            "最低价": f"{low_price:.6f}",
+                            "总成交量": f"{total_volume:.4f}"
+                        },
+                        "records": records
+                    }
+                }
+
+        except Exception as e:
+            logger.error(f"查询历史K线数据失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": f"查询失败: {str(e)}"
+            }
+
+    async def _get_current_utc_time(self, params: Dict) -> Dict:
+        """获取当前UTC时间"""
+        from datetime import datetime, timezone
+
+        try:
+            # 获取当前UTC时间
+            now_utc = datetime.now(timezone.utc)
+
+            # 格式化不同的时间表示
+            timestamp_ms = int(now_utc.timestamp() * 1000)
+            formatted_time = now_utc.strftime("%Y-%m-%d %H:%M:%S")
+            iso_time = now_utc.isoformat()
+
+            # 转换为北京时间用于对比
+            from utils.timezone_helper import convert_to_beijing_time
+            beijing_time = convert_to_beijing_time(now_utc)
+            formatted_beijing_time = beijing_time.strftime("%Y-%m-%d %H:%M:%S")
+
+            return {
+                "success": True,
+                "message": "当前时间获取成功",
+                "data": {
+                    "utc_timestamp_ms": timestamp_ms,
+                    "utc_time": formatted_time,
+                    "utc_iso": iso_time,
+                    "beijing_time": formatted_beijing_time,
+                    "timezone_info": {
+                        "utc": "UTC+0 (协调世界时)",
+                        "beijing": "UTC+8 (北京时间)"
+                    },
+                    "timestamp_description": f"时间戳 {timestamp_ms} 毫秒自1970-01-01 00:00:00 UTC"
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"获取当前时间失败: {e}")
+            return {
+                "success": False,
+                "error": f"获取时间失败: {str(e)}"
             }
 
     async def close(self):

@@ -918,19 +918,64 @@ class PlanDetailUI:
             return f"获取失败: {str(e)}"
 
     def _format_tool_calls(self, tool_calls, tool_results) -> str:
-        """格式化工具调用"""
+        """格式化工具调用 - 显示完整的ReAct过程"""
         if not tool_calls:
             return "无工具调用"
 
         lines = []
+        lines.append("### 🔄 ReAct 工具调用过程")
+        lines.append("")
+
         for i, call in enumerate(tool_calls, 1):
             tool_name = call.get('name', 'unknown')
             tool_args = call.get('arguments', {})
             result = tool_results[i-1] if tool_results and len(tool_results) >= i else {}
 
-            lines.append(f"**{i}. {tool_name}**")
-            lines.append(f"   - 参数: `{tool_args}`")
-            lines.append(f"   - 结果: `{result}`")
+            # 工具调用步骤
+            lines.append(f"#### **步骤 {i}: 调用工具 `{tool_name}`**")
+
+            # 显示工具参数
+            lines.append("**📝 调用参数:**")
+            if tool_args:
+                for key, value in tool_args.items():
+                    lines.append(f"   - `{key}`: `{value}`")
+            else:
+                lines.append("   - 无参数")
+
+            # 显示执行结果
+            lines.append("**⚡ 执行结果:**")
+            if result:
+                success = result.get('success', False)
+                status_emoji = '✅ 成功' if success else '❌ 失败'
+                lines.append(f"   - **状态**: {status_emoji}")
+
+                if success:
+                    # 成功时显示数据摘要
+                    data = result.get('data')
+                    if data:
+                        if isinstance(data, dict):
+                            if 'message' in data:
+                                lines.append(f"   - **消息**: {data['message']}")
+                            if 'count' in data:
+                                lines.append(f"   - **数据量**: {data['count']} 条")
+                            if 'total' in data:
+                                lines.append(f"   - **总数**: {data['total']}")
+                            if 'records' in data and isinstance(data['records'], list):
+                                lines.append(f"   - **记录数**: {len(data['records'])} 条")
+                        elif isinstance(data, list):
+                            lines.append(f"   - **数组长度**: {len(data)} 项")
+
+                    if result.get('message'):
+                        lines.append(f"   - **说明**: {result['message']}")
+                else:
+                    # 失败时显示错误信息
+                    error_msg = result.get('error', result.get('message', '未知错误'))
+                    lines.append(f"   - **错误**: {error_msg}")
+            else:
+                lines.append("   - **状态**: ⚠️ 无结果数据")
+
+            lines.append("")
+            lines.append("---")
             lines.append("")
 
         return "\n".join(lines)
@@ -1010,53 +1055,130 @@ class PlanDetailUI:
 
                 # 添加AI Agent决策结果部分
                 if decision:
-                    decision_output = f"""## 🤖 AI Agent 最新推理结果
+                    # 创建完整的ReAct对话格式
+                    messages = []
 
-**决策时间**: {format_datetime_full_beijing(decision.decision_time)}
-**决策类型**: {decision.decision_type or 'N/A'}
-**状态**: {decision.status}
-**使用模型**: v{decision.training_record_id} | **LLM**: {decision.llm_model or 'N/A'}
+                    # 1. 系统和初始提示
+                    messages.append({
+                        "role": "system",
+                        "content": f"AI Agent 交易分析系统\n使用模型: v{decision.training_record_id} | LLM: {decision.llm_model or 'N/A'}\n决策时间: {format_datetime_full_beijing(decision.decision_time)}"
+                    })
 
----
+                    # 2. 用户输入（预测数据）
+                    if output_parts:
+                        messages.append({
+                            "role": "user",
+                            "content": output_parts[-1] if output_parts else "请分析最新的市场预测数据并提供交易建议。"
+                        })
 
-### 💭 AI分析与推理
+                    # 3. AI思考过程（推理）
+                    reasoning_content = f"""## 🧠 AI思考过程
 
-{decision.reasoning or '无'}
+**📊 分析阶段**:
+- 正在分析最新的Kronos预测数据
+- 评估市场趋势和价格波动
+- 结合交易限制和风险控制要求
 
----
+**💡 决策逻辑**:
+{decision.reasoning or '无详细推理过程'}
 
-### 🛠️ 工具调用
+**🎯 决策结论**:
+- **决策类型**: {decision.decision_type or 'N/A'}
+- **执行状态**: {decision.status}
+- **建议操作**: 基于分析结果决定是否执行交易
 
 """
-                    # 格式化工具调用
+                    messages.append({
+                        "role": "assistant",
+                        "content": reasoning_content
+                    })
+
+                    # 4. 工具调用过程
                     if decision.tool_calls:
+                        tool_process_content = "## 🔧 工具执行阶段\n\n"
+
                         for i, call in enumerate(decision.tool_calls, 1):
                             tool_name = call.get('name', 'unknown')
                             tool_args = call.get('arguments', {})
-                            decision_output += f"**{i}. {tool_name}**\n"
-                            decision_output += f"   - 参数: `{tool_args}`\n"
+                            result = decision.tool_results[i-1] if decision.tool_results and len(decision.tool_results) >= i else {}
 
-                            # 显示执行结果
-                            if decision.tool_results and len(decision.tool_results) >= i:
-                                result = decision.tool_results[i-1]
+                            # 工具调用步骤
+                            tool_process_content += f"### **步骤 {i}: 执行 `{tool_name}`**\n\n"
+
+                            # 调用参数
+                            tool_process_content += "**📋 调用参数:**\n"
+                            if tool_args:
+                                for key, value in tool_args.items():
+                                    tool_process_content += f"- `{key}`: `{value}`\n"
+                            else:
+                                tool_process_content += "- 无参数\n"
+
+                            tool_process_content += "\n**⚡ 执行结果:**\n"
+
+                            if result:
                                 success = result.get('success', False)
-                                status_emoji = '✅' if success else '❌'
-                                decision_output += f"   - 结果: {status_emoji} {result.get('message', result.get('error', 'N/A'))}\n"
-                            decision_output += "\n"
-                    else:
-                        decision_output += "无工具调用\n"
+                                status_emoji = '✅ 成功' if success else '❌ 失败'
+                                tool_process_content += f"- **状态**: {status_emoji}\n"
 
-                    output_parts.append(decision_output)
+                                if success:
+                                    data = result.get('data')
+                                    if data:
+                                        if isinstance(data, dict):
+                                            if 'message' in data:
+                                                tool_process_content += f"- **返回信息**: {data['message']}\n"
+                                            if 'count' in data:
+                                                tool_process_content += f"- **数据量**: {data['count']} 条\n"
+                                            if 'total' in data:
+                                                tool_process_content += f"- **总数**: {data['total']}\n"
+                                            if 'records' in data and isinstance(data['records'], list):
+                                                tool_process_content += f"- **记录数**: {len(data['records'])} 条\n"
+                                                # 显示前几条数据示例
+                                                if len(data['records']) > 0:
+                                                    sample_record = data['records'][0]
+                                                    tool_process_content += f"- **数据示例**: {str(sample_record)[:100]}...\n"
+                                        elif isinstance(data, list):
+                                            tool_process_content += f"- **数组长度**: {len(data)} 项\n"
+                                            if len(data) > 0:
+                                                tool_process_content += f"- **示例数据**: {str(data[0])[:100]}...\n"
+
+                                if result.get('message'):
+                                    tool_process_content += f"- **说明**: {result['message']}\n"
+                            else:
+                                tool_process_content += "- **状态**: ⚠️ 无结果数据\n"
+
+                            tool_process_content += "\n---\n\n"
+
+                        messages.append({
+                            "role": "assistant",
+                            "content": tool_process_content
+                        })
+
+                    # 5. 最终总结
+                    summary_content = f"""## 📋 执行总结
+
+**🎯 决策结果**: {decision.status}
+**🔧 工具调用次数**: {len(decision.tool_calls) if decision.tool_calls else 0}
+**📦 关联订单**: {len(decision.order_ids) if decision.order_ids else 0}
+**⏰ 完成时间**: {format_datetime_full_beijing(decision.decision_time)}
+
+**💰 交易执行情况**:
+{self._format_order_ids(decision.order_ids) if decision.order_ids else "无订单生成"}
+
+---
+*此决策由AI Agent基于Kronos预测数据自动分析生成*
+"""
+                    messages.append({
+                        "role": "assistant",
+                        "content": summary_content
+                    })
+
+                    return messages
                 else:
-                    # 如果没有决策记录，只显示预测数据
-                    if not output_parts:  # 如果也没有预测数据
-                        output_parts.append("等待推理...\n\n暂无AI Agent决策记录")
-
-                # 合并所有输出
-                combined_output = "\n\n---\n\n".join(output_parts)
-
-                # 返回 messages 格式
-                return [{"role": "assistant", "content": combined_output}]
+                    # 没有决策记录时的默认响应
+                    if output_parts:
+                        return [{"role": "assistant", "content": output_parts[-1]}]
+                    else:
+                        return [{"role": "assistant", "content": "暂无AI Agent决策记录。请先运行推理并让AI Agent进行分析。"}]
 
         except Exception as e:
             logger.error(f"获取最新Agent决策输出失败: {e}")
