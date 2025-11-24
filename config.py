@@ -84,6 +84,12 @@ class Config:
         "4H": "candle4H"
     }
 
+    # 数据完整性验证配置
+    DATA_VALIDATION_ENABLED = os.getenv("DATA_VALIDATION_ENABLED", "true").lower() == "true"
+    DATA_VALIDATION_INTERVAL_HOURS = int(os.getenv("DATA_VALIDATION_INTERVAL_HOURS", "12"))  # 验证间隔（小时）
+    DATA_VALIDATION_MAX_MISSING_POINTS = int(os.getenv("DATA_VALIDATION_MAX_MISSING_POINTS", "10"))  # 最大允许缺失数据点数
+    DATA_VALIDATION_BATCH_SIZE = int(os.getenv("DATA_VALIDATION_BATCH_SIZE", "100"))  # 批量处理大小
+
     def __init__(self):
         # 确保必要目录存在
         self.MODEL_SAVE_PATH.mkdir(parents=True, exist_ok=True)

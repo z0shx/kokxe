@@ -143,6 +143,24 @@ def initialize_app():
         import traceback
         traceback.print_exc()
 
+    # 启动数据完整性验证服务
+    try:
+        from services.data_validation_service import data_validation_service
+        import asyncio
+
+        # 初始化数据验证服务
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(data_validation_service.initialize())
+        loop.close()
+
+        # 启动定时验证调度器
+        data_validation_service.start_validation_scheduler()
+        logger.info("✅ 数据完整性验证服务已启动")
+
+    except Exception as e:
+        logger.error(f"⚠️ 启动数据验证服务失败: {e}")
+
     logger.info("=" * 60)
     logger.info("✅ KOKEX 应用初始化完成")
     logger.info("=" * 60)
