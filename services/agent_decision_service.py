@@ -1034,13 +1034,20 @@ class AgentDecisionService:
             elif tool_name == 'place_stop_loss_order':
                 result = asyncio.run(trading_tools.place_stop_loss_order(**tool_args))
             elif tool_name == 'cancel_order':
-                result = asyncio.run(trading_tools.cancel_order(**tool_args))
+                inst_id = tool_args.get('inst_id')
+                order_id = tool_args.get('order_id')
+                client_order_id = tool_args.get('client_order_id')
+                result = asyncio.run(trading_tools.cancel_order(inst_id, order_id, client_order_id))
             elif tool_name == 'get_positions':
                 result = asyncio.run(trading_tools.get_positions(**tool_args))
             elif tool_name == 'get_current_price':
                 result = asyncio.run(trading_tools.get_current_price(**tool_args))
             elif tool_name == 'get_trading_limits':
                 result = asyncio.run(trading_tools.get_trading_limits(**tool_args))
+            elif tool_name == 'get_current_utc_time':
+                result = asyncio.run(trading_tools.get_current_utc_time(**tool_args))
+            elif tool_name == 'query_historical_kline_data':
+                result = asyncio.run(trading_tools.query_historical_kline_data(**tool_args))
             elif tool_name == 'run_latest_model_inference':
                 # 传递plan_id用于推理工具
                 tool_args_with_plan = tool_args.copy()
@@ -1170,13 +1177,20 @@ class AgentDecisionService:
             elif tool_name == 'place_stop_loss_order':
                 result = await trading_tools.place_stop_loss_order(**tool_args)
             elif tool_name == 'cancel_order':
-                result = await trading_tools.cancel_order(**tool_args)
+                inst_id = tool_args.get('inst_id')
+                order_id = tool_args.get('order_id')
+                client_order_id = tool_args.get('client_order_id')
+                result = await trading_tools.cancel_order(inst_id, order_id, client_order_id)
             elif tool_name == 'get_positions':
                 result = await trading_tools.get_positions(**tool_args)
             elif tool_name == 'get_current_price':
                 result = await trading_tools.get_current_price(**tool_args)
             elif tool_name == 'get_trading_limits':
                 result = await trading_tools.get_trading_limits(**tool_args)
+            elif tool_name == 'get_current_utc_time':
+                result = await trading_tools.get_current_utc_time(**tool_args)
+            elif tool_name == 'query_historical_kline_data':
+                result = await trading_tools.query_historical_kline_data(**tool_args)
             elif tool_name == 'run_latest_model_inference':
                 # 传递plan_id用于推理工具
                 tool_args_with_plan = tool_args.copy()
@@ -1236,7 +1250,7 @@ class AgentDecisionService:
         try:
             side = tool_args.get('side')
             size = tool_args.get('size')
-            order_type = tool_args.get('order_type', 'market')
+            order_type = tool_args.get('order_type', 'limit')
             price = tool_args.get('price')
             total_amount = tool_args.get('total_amount')
 
@@ -1246,6 +1260,11 @@ class AgentDecisionService:
                     'success': False,
                     'error': '缺少必要参数: side或price'
                 }
+
+            # 强制使用限价单，禁止市价单
+            if order_type == 'market':
+                order_type = 'limit'
+                logger.warning("检测到市价单请求，已自动改为限价单以防止投资损失")
 
             # 获取交易限制配置
             trading_limits = plan.trading_limits or {}
@@ -1311,8 +1330,7 @@ class AgentDecisionService:
                         side=side,
                         order_type=order_type,
                         size=single_order_size,
-                        price=price,
-                        client_order_id=client_order_id
+                        price=price
                     )
 
                     order_results.append({
@@ -1384,8 +1402,15 @@ class AgentDecisionService:
 
             # 查询当前持仓
             try:
-                positions = trading_tools.get_account_positions(inst_id)
-                if not positions:
+                positions_result = trading_tools.get_account_positions(inst_id)
+                if not positions_result.get('success'):
+                    return {
+                        'success': False,
+                        'error': f'查询持仓失败: {positions_result.get("error", "未知错误")}'
+                    }
+
+                positions_list = positions_result.get('positions', [])
+                if not positions_list:
                     return {
                         'success': False,
                         'error': f'当前没有 {inst_id} 的持仓，无需设置止损'
@@ -1393,8 +1418,8 @@ class AgentDecisionService:
 
                 # 找到指定交易对的持仓
                 position = None
-                for pos in positions:
-                    if pos.get('instId') == inst_id and float(pos.get('pos', 0)) != 0:
+                for pos in positions_list:
+                    if pos.get('inst_id') == inst_id and float(pos.get('position_size', 0)) != 0:
                         position = pos
                         break
 
@@ -1405,9 +1430,9 @@ class AgentDecisionService:
                     }
 
                 # 计算持仓信息
-                pos_size = float(position.get('pos', 0))
-                avg_cost = float(position.get('avgCost', 0))
-                mark_price = float(position.get('markPx', 0))
+                pos_size = float(position.get('position_size', 0))
+                avg_cost = float(position.get('average_price', 0))
+                mark_price = float(position.get('mark_price', 0))
 
                 if pos_size == 0 or avg_cost == 0:
                     return {
@@ -2572,20 +2597,34 @@ class AgentDecisionService:
                 result = cls._execute_query_prediction_data(plan, tool_args)
             elif tool_name == 'get_prediction_history':
                 result = cls._execute_get_prediction_history(plan, tool_args)
+            elif tool_name == 'get_account_balance':
+                result = cls._execute_get_account_balance(trading_tools, tool_args)
+            elif tool_name == 'get_current_price':
+                result = cls._execute_get_current_price(trading_tools, tool_args)
+            elif tool_name == 'get_account_positions':
+                result = cls._execute_get_account_positions(trading_tools, tool_args)
+            elif tool_name == 'get_pending_orders':
+                result = cls._execute_get_pending_orders(trading_tools, tool_args)
             elif tool_name == 'cancel_order':
-                # TODO: 实现取消订单
-                result = {
-                    'success': True,
-                    'message': f"取消订单功能开发中",
-                    'simulated': True
-                }
-            elif tool_name == 'modify_order':
-                # TODO: 实现修改订单
-                result = {
-                    'success': True,
-                    'message': f"修改订单功能开发中",
-                    'simulated': True
-                }
+                result = cls._execute_cancel_order(trading_tools, tool_args)
+            elif tool_name == 'amend_order':
+                result = cls._execute_amend_order(trading_tools, tool_args)
+            elif tool_name == 'cancel_all_orders':
+                result = cls._execute_cancel_all_orders(trading_tools, tool_args)
+            elif tool_name == 'get_fills':
+                result = cls._execute_get_fills(trading_tools, tool_args)
+            elif tool_name == 'get_order_info':
+                result = cls._execute_get_order_info(trading_tools, tool_args)
+            elif tool_name == 'get_order_history':
+                result = cls._execute_get_order_history(trading_tools, tool_args)
+            elif tool_name == 'get_current_utc_time':
+                result = cls._execute_get_current_utc_time(trading_tools, tool_args)
+            elif tool_name == 'query_historical_kline_data':
+                result = cls._execute_query_historical_kline_data(trading_tools, tool_args)
+            elif tool_name == 'run_latest_model_inference':
+                result = cls._execute_run_latest_model_inference(trading_tools, tool_args)
+            elif tool_name == 'delete_prediction_data_by_batch':
+                result = cls._execute_delete_prediction_data_by_batch(trading_tools, tool_args)
             else:
                 result = {
                     'success': False,
@@ -3913,5 +3952,292 @@ class AgentDecisionService:
                 'type': 'error',
                 'content': f'❌ 推理过程出错: {str(e)}',
                 'messages': [{"role": "assistant", "content": f"❌ 推理过程出错: {str(e)}"}]
+            }
+
+    # ==================== 新增工具执行方法 ====================
+
+    @classmethod
+    def _execute_get_account_balance(cls, trading_tools, tool_args: Dict) -> Dict:
+        """执行查询账户余额"""
+        try:
+            ccy = tool_args.get('ccy')
+            result = trading_tools.get_account_balance(ccy)
+            return result
+        except Exception as e:
+            logger.error(f"查询账户余额失败: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    @classmethod
+    def _execute_get_current_price(cls, trading_tools, tool_args: Dict) -> Dict:
+        """执行获取当前价格"""
+        try:
+            inst_id = tool_args.get('inst_id')
+            if not inst_id:
+                return {
+                    'success': False,
+                    'error': '缺少必要参数: inst_id'
+                }
+            result = trading_tools.get_current_price(inst_id)
+            return result
+        except Exception as e:
+            logger.error(f"获取价格失败: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    @classmethod
+    def _execute_get_account_positions(cls, trading_tools, tool_args: Dict) -> Dict:
+        """执行查询持仓信息"""
+        try:
+            inst_id = tool_args.get('inst_id')
+            result = trading_tools.get_account_positions(inst_id)
+            return result
+        except Exception as e:
+            logger.error(f"查询持仓失败: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    @classmethod
+    def _execute_get_pending_orders(cls, trading_tools, tool_args: Dict) -> Dict:
+        """执行查询挂单"""
+        try:
+            inst_id = tool_args.get('inst_id')
+            result = trading_tools.get_pending_orders(inst_id)
+            return result
+        except Exception as e:
+            logger.error(f"查询挂单失败: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    @classmethod
+    def _execute_cancel_order(cls, trading_tools, tool_args: Dict) -> Dict:
+        """执行撤销订单"""
+        try:
+            inst_id = tool_args.get('inst_id')
+            order_id = tool_args.get('order_id')
+            client_order_id = tool_args.get('client_order_id')
+
+            if not inst_id or not (order_id or client_order_id):
+                return {
+                    'success': False,
+                    'error': '缺少必要参数: inst_id 和 (order_id 或 client_order_id)'
+                }
+
+            result = trading_tools.cancel_order(inst_id, order_id, client_order_id)
+            return result
+        except Exception as e:
+            logger.error(f"撤单失败: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    @classmethod
+    def _execute_amend_order(cls, trading_tools, tool_args: Dict) -> Dict:
+        """执行修改订单"""
+        try:
+            inst_id = tool_args.get('inst_id')
+            order_id = tool_args.get('order_id')
+            client_order_id = tool_args.get('client_order_id')
+            new_price = tool_args.get('new_price')
+            new_size = tool_args.get('new_size')
+
+            if not inst_id or not (order_id or client_order_id):
+                return {
+                    'success': False,
+                    'error': '缺少必要参数: inst_id 和 (order_id 或 client_order_id)'
+                }
+
+            if not new_price and not new_size:
+                return {
+                    'success': False,
+                    'error': '必须指定 new_price 或 new_size 之一'
+                }
+
+            result = trading_tools.amend_order(
+                inst_id=inst_id,
+                order_id=order_id,
+                client_order_id=client_order_id,
+                new_size=new_size,
+                new_price=new_price
+            )
+            return result
+        except Exception as e:
+            logger.error(f"改单失败: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    @classmethod
+    def _execute_cancel_all_orders(cls, trading_tools, tool_args: Dict) -> Dict:
+        """执行批量撤销订单"""
+        try:
+            inst_id = tool_args.get('inst_id')
+            result = trading_tools.cancel_all_orders(inst_id)
+            return result
+        except Exception as e:
+            logger.error(f"批量撤单失败: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    @classmethod
+    def _execute_get_fills(cls, trading_tools, tool_args: Dict) -> Dict:
+        """执行查询成交明细"""
+        try:
+            inst_id = tool_args.get('inst_id')
+            order_id = tool_args.get('order_id')
+            limit = tool_args.get('limit', '100')
+
+            result = trading_tools.get_fills(
+                inst_id=inst_id,
+                order_id=order_id,
+                limit=int(limit)
+            )
+            return result
+        except Exception as e:
+            logger.error(f"查询成交明细失败: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    @classmethod
+    def _execute_get_order_info(cls, trading_tools, tool_args: Dict) -> Dict:
+        """执行查询订单信息"""
+        try:
+            inst_id = tool_args.get('inst_id')
+            order_id = tool_args.get('order_id')
+            client_order_id = tool_args.get('client_order_id')
+
+            if not inst_id or not (order_id or client_order_id):
+                return {
+                    'success': False,
+                    'error': '缺少必要参数: inst_id 和 (order_id 或 client_order_id)'
+                }
+
+            result = trading_tools.get_order(inst_id, order_id, client_order_id)
+            return result
+        except Exception as e:
+            logger.error(f"查询订单信息失败: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    @classmethod
+    def _execute_get_order_history(cls, trading_tools, tool_args: Dict) -> Dict:
+        """执行查询历史订单"""
+        try:
+            # 使用 get_order 方法获取订单，然后过滤历史
+            inst_id = tool_args.get('inst_id')
+            order_id = tool_args.get('order_id')
+            client_order_id = tool_args.get('client_order_id')
+            limit = int(tool_args.get('limit', '100'))
+
+            result = trading_tools.get_order(inst_id, order_id, client_order_id)
+
+            if result.get('success'):
+                # 这里简化实现，实际应该调用专门的历史订单API
+                return {
+                    'success': True,
+                    'message': f"查询历史订单功能基础实现，限制数量: {limit}",
+                    'data': result.get('data', [])
+                }
+            else:
+                return result
+        except Exception as e:
+            logger.error(f"查询历史订单失败: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    @classmethod
+    def _execute_get_current_utc_time(cls, trading_tools, tool_args: Dict) -> Dict:
+        """执行获取当前UTC时间"""
+        try:
+            result = trading_tools.get_current_utc_time()
+            return result
+        except Exception as e:
+            logger.error(f"获取UTC时间失败: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    @classmethod
+    def _execute_query_historical_kline_data(cls, trading_tools, tool_args: Dict) -> Dict:
+        """执行查询历史K线数据"""
+        try:
+            inst_id = tool_args.get('inst_id')
+            interval = tool_args.get('interval', '1H')
+            start_time = tool_args.get('start_time')
+            end_time = tool_args.get('end_time')
+            limit = int(tool_args.get('limit', '100'))
+
+            result = trading_tools.query_historical_kline_data(
+                inst_id=inst_id,
+                interval=interval,
+                start_time=start_time,
+                end_time=end_time,
+                limit=limit
+            )
+            return result
+        except Exception as e:
+            logger.error(f"查询历史K线数据失败: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    @classmethod
+    def _execute_run_latest_model_inference(cls, trading_tools, tool_args: Dict) -> Dict:
+        """执行最新模型推理"""
+        try:
+            lookback_window = tool_args.get('lookback_window')
+            predict_window = tool_args.get('predict_window')
+            force_rerun = tool_args.get('force_rerun', False)
+
+            result = trading_tools.run_latest_model_inference(
+                lookback_window=lookback_window,
+                predict_window=predict_window,
+                force_rerun=force_rerun
+            )
+            return result
+        except Exception as e:
+            logger.error(f"执行模型推理失败: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    @classmethod
+    def _execute_delete_prediction_data_by_batch(cls, trading_tools, tool_args: Dict) -> Dict:
+        """执行按批次删除预测数据"""
+        try:
+            batch_id = tool_args.get('batch_id')
+            confirm_delete = tool_args.get('confirm_delete', False)
+
+            result = trading_tools.delete_prediction_data_by_batch(
+                batch_id=batch_id,
+                confirm_delete=confirm_delete
+            )
+            return result
+        except Exception as e:
+            logger.error(f"删除预测数据失败: {e}")
+            return {
+                'success': False,
+                'error': str(e)
             }
 

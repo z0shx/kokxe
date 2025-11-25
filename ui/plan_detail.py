@@ -2493,7 +2493,7 @@ class PlanDetailUI:
     async def manual_inference_stream(self, plan_id: int):
         """手动执行AI Agent推理（流式输出）"""
         try:
-            # 发送开始消息
+            # 清空对话并显示启动消息
             yield [{"role": "assistant", "content": "🤖 正在启动 AI Agent ReAct 推理..."}]
 
             # 使用 ReAct+Tool Use 流式方法
@@ -2522,6 +2522,18 @@ class PlanDetailUI:
                     yield [{"role": "assistant", "content": "❌ 没有可用的训练记录，请先完成模型训练"}]
                     return
 
+            # 发送推理初始化消息，显示预测数据预览
+            prediction_preview = await self._get_prediction_preview(plan_id, latest_training.id)
+            yield [{"role": "assistant", "content": f"""🎯 **AI Agent ReAct 推理已启动**
+
+**交易计划**: {plan.plan_name} ({plan.inst_id})
+**模型版本**: {latest_training.version}
+**时间周期**: {plan.interval}
+
+{prediction_preview}
+
+🔄 正在加载系统提示词并初始化对话..."""}]
+
             # 使用 AgentDecisionService 的增强版 ReAct+Tool Use 流式方法
             # 该方法支持完整的对话记录和真实工具调用
             async for chunk in AgentDecisionService.enhanced_react_tool_use_stream(
@@ -2529,14 +2541,69 @@ class PlanDetailUI:
                 training_id=latest_training.id if latest_training else None,
                 session_name=f"手动推理_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             ):
-                if chunk.get('type') == 'message':
-                    # 格式化消息为Chatbot格式
+                if chunk.get('type') == 'conversation_created':
+                    # 对话创建确认
+                    yield [{"role": "assistant", "content": f"""✅ **对话会话已创建**
+会话ID: {chunk.get('conversation_id')}
+会话名称: {chunk.get('session_name')}
+
+🧠 AI Agent 正在进行思考分析..."""}]
+
+                elif chunk.get('type') == 'message':
+                    # 标准消息更新
                     messages = chunk.get('messages', [])
                     if messages:
                         yield messages
+
+                elif chunk.get('type') == 'thinking_stream':
+                    # 流式思考内容 - 实时显示AI的思考过程
+                    thinking_content = chunk.get('content', '')
+                    iteration = chunk.get('iteration', 1)
+
+                    # 构建思考消息，使用特殊的思考格式
+                    thinking_message = {
+                        "role": "assistant",
+                        "content": f"""🧠 **思考过程 (迭代 {iteration})**
+
+{thinking_content}"""
+                    }
+                    yield [thinking_message]
+
+                elif chunk.get('type') == 'tool_call':
+                    # 工具调用信息
+                    tool_name = chunk.get('tool_name', 'unknown')
+                    tool_args = chunk.get('tool_arguments', {})
+
+                    tool_call_message = {
+                        "role": "assistant",
+                        "content": f"""🛠️ **工具调用**: `{tool_name}`
+
+📋 **调用参数**:
+{self._format_tool_arguments(tool_args)}
+
+⏳ 正在执行工具..."""
+                    }
+                    yield [tool_call_message]
+
+                elif chunk.get('type') == 'tool_result':
+                    # 工具执行结果
+                    tool_name = chunk.get('tool_name', 'unknown')
+                    tool_result = chunk.get('tool_result', {})
+
+                    tool_result_message = {
+                        "role": "assistant",
+                        "content": f"""✅ **工具执行结果**: `{tool_name}`
+
+{self._format_tool_result(tool_result)}
+
+🔄 继续分析和思考..."""
+                    }
+                    yield [tool_result_message]
+
                 elif chunk.get('type') == 'error':
                     # 错误消息
-                    yield [{"role": "assistant", "content": chunk.get('content', '推理过程出错')}]
+                    error_content = chunk.get('content', '推理过程出错')
+                    yield [{"role": "assistant", "content": f"❌ 错误: {error_content}"}]
 
         except Exception as e:
             logger.error(f"ReAct推理失败: {e}")
@@ -2545,6 +2612,110 @@ class PlanDetailUI:
             yield [{"role": "assistant", "content": f"❌ 推理过程出错: {str(e)}"}]
 
     # continue_inference_stream方法已移除 - 工具确认功能已废弃，AI Agent现在直接使用启用的工具
+
+    async def _get_prediction_preview(self, plan_id: int, training_id: int) -> str:
+        """获取预测数据预览"""
+        try:
+            from database.models import PredictionData
+            from database.db import get_db
+            from sqlalchemy import desc
+
+            with get_db() as db:
+                # 获取最新的预测数据
+                latest_prediction = db.query(PredictionData).filter(
+                    PredictionData.training_record_id == training_id
+                ).order_by(desc(PredictionData.timestamp)).first()
+
+                if not latest_prediction:
+                    return "⚠️ 暂无预测数据"
+
+                # 安全处理概率值的格式化
+                upward_prob = latest_prediction.upward_probability
+                volatility_prob = latest_prediction.volatility_amplification_probability
+
+                upward_prob_str = f"{upward_prob:.2%}" if upward_prob is not None else "N/A"
+                volatility_prob_str = f"{volatility_prob:.2%}" if volatility_prob is not None else "N/A"
+
+                # 安全处理价格区间的格式化
+                close_min = latest_prediction.close_min
+                close_max = latest_prediction.close_max
+                current_price = latest_prediction.close
+
+                close_min_str = f"${close_min:.4f}" if close_min is not None else "N/A"
+                close_max_str = f"${close_max:.4f}" if close_max is not None else "N/A"
+                current_price_str = f"${current_price:.4f}" if current_price is not None else "N/A"
+
+                # 预测趋势判断
+                trend = '未知'
+                if close_max is not None and current_price is not None:
+                    trend = '📈 上涨' if close_max > current_price else '📉 下跌' if close_max < current_price else '➡️ 横盘'
+
+                return f"""📊 **最新预测数据**:
+- **当前价格**: {current_price_str}
+- **预测趋势**: {trend}
+- **价格区间**: {close_min_str} ~ {close_max_str}
+- **上涨概率**: {upward_prob_str}
+- **波动放大概率**: {volatility_prob_str}
+- **预测时间**: {latest_prediction.timestamp.strftime('%Y-%m-%d %H:%M:%S')}"""
+
+        except Exception as e:
+            logger.error(f"获取预测预览失败: {e}")
+            return "⚠️ 无法获取预测数据"
+
+    def _format_tool_arguments(self, tool_args: dict) -> str:
+        """格式化工具参数"""
+        if not tool_args:
+            return "- 无参数"
+
+        formatted_lines = []
+        for key, value in tool_args.items():
+            if isinstance(value, dict):
+                value_str = json.dumps(value, ensure_ascii=False, indent=2)
+                formatted_lines.append(f"- `{key}`: {value_str}")
+            else:
+                formatted_lines.append(f"- `{key}`: `{value}`")
+
+        return "\n".join(formatted_lines)
+
+    def _format_tool_result(self, tool_result: dict) -> str:
+        """格式化工具执行结果"""
+        if not tool_result:
+            return "- 无返回数据"
+
+        # 检查是否成功
+        success = tool_result.get('success', False)
+        status_emoji = "✅ 成功" if success else "❌ 失败"
+
+        result_lines = [f"**状态**: {status_emoji}"]
+
+        # 添加消息
+        if tool_result.get('message'):
+            result_lines.append(f"**说明**: {tool_result['message']}")
+
+        # 添加数据统计
+        data = tool_result.get('data')
+        if data:
+            if isinstance(data, dict):
+                if 'count' in data:
+                    result_lines.append(f"**数据量**: {data['count']} 条")
+                if 'total' in data:
+                    result_lines.append(f"**总数**: {data['total']}")
+                if 'records' in data and isinstance(data['records'], list):
+                    result_lines.append(f"**记录数**: {len(data['records'])} 条")
+                    # 显示前几条数据示例
+                    if len(data['records']) > 0:
+                        sample_record = data['records'][0]
+                        result_lines.append(f"**数据示例**: {str(sample_record)[:150]}...")
+            elif isinstance(data, list):
+                result_lines.append(f"**数组长度**: {len(data)} 项")
+                if len(data) > 0:
+                    result_lines.append(f"**示例数据**: {str(data[0])[:150]}...")
+
+        # 添加错误信息
+        if tool_result.get('error'):
+            result_lines.append(f"**错误信息**: {tool_result['error']}")
+
+        return "\n".join(result_lines) if len(result_lines) > 1 else result_lines[0]
 
     def _build_system_message(self, plan):
         """构建系统消息"""
