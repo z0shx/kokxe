@@ -408,7 +408,7 @@ def create_app():
                         with gr.Row():
                             show_pred_toggle = gr.Checkbox(label="显示预测", value=True)
                             days_slider = gr.Slider(
-                                minimum=1, maximum=120, value=3, step=1,
+                                minimum=3, maximum=30, value=7, step=1,
                                 label="显示天数"
                             )
 
@@ -565,12 +565,7 @@ def create_app():
                                     value="详细",
                                     info="控制思考内容的详细程度"
                                 )
-                                tool_approval = gr.Checkbox(
-                                    label="工具审批",
-                                    value=False,
-                                    info="启用后工具调用需要用户手动确认"
-                                )
-
+  
                          # 保存按钮
                             with gr.Row():
                                 save_agent_config_btn = gr.Button("💾 保存配置", size="sm")
@@ -798,7 +793,6 @@ def create_app():
                     max_iterations = int(react_config.get('max_iterations', 3))
                     enable_thinking = bool(react_config.get('enable_thinking', True))
                     thinking_style = str(react_config.get('thinking_style', '详细'))
-                    tool_approval = bool(react_config.get('tool_approval', False))
 
                     # 获取推理参数配置
                     inference_params = detail_ui.get_inference_params(int(plan_id))
@@ -878,7 +872,6 @@ def create_app():
                         safe_int(max_iterations, 3),  # max_iterations
                         enable_thinking,  # enable_thinking
                         thinking_style,  # thinking_style
-                        tool_approval,  # tool_approval
                         safe_float(quick_usdt_amount, 1000.0),  # quick_usdt_amount
                         safe_float(quick_usdt_percentage, 30.0),  # quick_usdt_percentage
                         safe_int(quick_avg_orders, 10),  # quick_avg_orders
@@ -1041,7 +1034,7 @@ def create_app():
                         tool_get_account, tool_get_positions, tool_get_pending_orders,
                         tool_query_prediction, tool_prediction_history, tool_place_order,  # 工具选择
                         tool_cancel_order, tool_modify_order, tool_stop_loss,
-                        max_iterations, enable_thinking, thinking_style, tool_approval,  # ReAct配置
+                        max_iterations, enable_thinking, thinking_style,  # ReAct配置
                         quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss,  # 交易限制配置
                         training_df, kline_chart, probability_indicators_md,  # K线图和概率指标
                         inference_df, inference_data_range_info, prediction_data_preview, agent_df,
@@ -1114,7 +1107,7 @@ def create_app():
                         tool_get_account, tool_get_positions, tool_get_pending_orders,
                         tool_query_prediction, tool_prediction_history, tool_place_order,  # 工具选择
                         tool_cancel_order, tool_modify_order, tool_stop_loss,
-                        max_iterations, enable_thinking, thinking_style, tool_approval,  # ReAct配置
+                        max_iterations, enable_thinking, thinking_style,  # ReAct配置
                         quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss,  # 交易限制配置
                         training_df, kline_chart, probability_indicators_md,  # K线图和概率指标
                         inference_df, inference_data_range_info, prediction_data_preview, agent_df,
@@ -1287,7 +1280,7 @@ def create_app():
                 )
 
                 # Agent配置事件
-                def save_agent_config_wrapper(pid, llm_id, prompt, t1, t2, t3, t4, t5, t6, t7, t8, t9, max_iter, enable_think, think_style, tool_approve):
+                def save_agent_config_wrapper(pid, llm_id, prompt, t1, t2, t3, t4, t5, t6, t7, t8, t9, max_iter, enable_think, think_style):
                     if not pid:
                         return "❌ 请先选择计划"
                     tools_config = {
@@ -1309,7 +1302,6 @@ def create_app():
                         int(pid),
                         int(max_iter),
                         enable_think,
-                        tool_approve,
                         think_style
                     )
 
@@ -1322,7 +1314,7 @@ def create_app():
                         tool_get_account, tool_get_positions, tool_get_pending_orders,
                         tool_query_prediction, tool_prediction_history, tool_place_order,
                         tool_cancel_order, tool_modify_order, tool_stop_loss,
-                        max_iterations, enable_thinking, thinking_style, tool_approval
+                        max_iterations, enable_thinking, thinking_style
                     ],
                     outputs=[agent_config_status]
                 )

@@ -57,7 +57,7 @@ class TradingPlan(Base):
     auto_finetune_enabled = Column(Boolean, default=False, comment='是否启用自动微调')
     auto_inference_enabled = Column(Boolean, default=False, comment='是否启用自动推理')
     auto_agent_enabled = Column(Boolean, default=False, comment='是否启用自动Agent触发')
-    auto_tool_execution_enabled = Column(Boolean, default=False, comment='已废弃：自动工具调用功能已移除，AI Agent现在直接使用启用的工具')
+    auto_tool_execution_enabled = Column(Boolean, default=False, comment='已废弃：工具确认功能已移除，AI Agent现在直接使用启用的工具')
     latest_training_record_id = Column(Integer, comment='最新的训练记录ID')
 
     # AI Agent 配置

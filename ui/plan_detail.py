@@ -1528,7 +1528,6 @@ class PlanDetailUI:
                     return {
                         'max_iterations': 3,
                         'enable_thinking': True,
-                        'tool_approval': False,
                         'thinking_style': '详细'
                     }
 
@@ -1537,7 +1536,6 @@ class PlanDetailUI:
                 return {
                     'max_iterations': int(react_config.get('max_iterations', 3)),
                     'enable_thinking': bool(react_config.get('enable_thinking', True)),
-                    'tool_approval': bool(react_config.get('tool_approval', False)),
                     'thinking_style': react_config.get('thinking_style', '详细')
                 }
         except Exception as e:
@@ -1545,18 +1543,16 @@ class PlanDetailUI:
             return {
                 'max_iterations': 3,
                 'enable_thinking': True,
-                'tool_approval': False,
                 'thinking_style': '详细'
             }
 
     def save_react_config(self, plan_id: int, max_iterations: int, enable_thinking: bool,
-                          tool_approval: bool, thinking_style: str) -> str:
+                          thinking_style: str) -> str:
         """保存ReAct配置"""
         try:
             react_config = {
                 'max_iterations': max_iterations,
                 'enable_thinking': enable_thinking,
-                'tool_approval': tool_approval,
                 'thinking_style': thinking_style
             }
 
@@ -1566,7 +1562,7 @@ class PlanDetailUI:
                 })
                 db.commit()
                 logger.info(f"ReAct配置已保存: plan_id={plan_id}, config={react_config}")
-                return f"✅ ReAct配置已保存\n- 最大推理轮数: {max_iterations}\n- 思考过程显示: {'启用' if enable_thinking else '禁用'}\n- 工具审批: {'启用' if tool_approval else '禁用'}\n- 思考风格: {thinking_style}"
+                return f"✅ ReAct配置已保存\n- 最大推理轮数: {max_iterations}\n- 思考过程显示: {'启用' if enable_thinking else '禁用'}\n- 思考风格: {thinking_style}"
         except Exception as e:
             logger.error(f"保存ReAct配置失败: {e}")
             return f"❌ 保存失败: {str(e)}"
@@ -1863,63 +1859,7 @@ class PlanDetailUI:
             logger.error(f"停止自动化调度器失败: {e}")
             return f"❌ 停止失败: {str(e)}"
 
-    def get_pending_tools_data(self, plan_id: int):
-        """获取待执行工具数据"""
-        try:
-            from services.automation_service import automation_service
-            pending_tools = automation_service.get_pending_tool_executions(plan_id)
-
-            data = []
-            for tool in pending_tools:
-                decision_time = format_datetime_full_beijing(tool.get('decision_time')) if tool.get('decision_time') else 'N/A'
-                tool_name = tool.get('tool_name', 'N/A')
-                tool_args = str(tool.get('tool_args', {})) if tool.get('tool_args') else '{}'
-                status = tool.get('status', 'pending')
-
-                # 状态映射
-                status_map = {
-                    'pending': '⏳ 待确认',
-                    'approved': '✅ 已批准',
-                    'rejected': '❌ 已拒绝',
-                    'executed': '✅ 已执行',
-                    'failed': '❌ 执行失败'
-                }
-                status_display = status_map.get(status, status)
-
-                data.append([decision_time, tool_name, tool_args, status_display])
-
-            return data
-
-        except Exception as e:
-            logger.error(f"获取待执行工具失败: {e}")
-            return []
-
-    def handle_pending_tool_action(self, plan_id: int, action: str, selected_row: dict) -> str:
-        """处理待执行工具操作"""
-        try:
-            if not selected_row or len(selected_row) < 2:
-                return "❌ 请选择要操作的工具记录"
-
-            decision_id = selected_row.get('decision_id')
-            tool_name = selected_row.get('tool_name')
-
-            if not decision_id or not tool_name:
-                return "❌ 无效的工具记录"
-
-            from services.automation_service import automation_service
-
-            if action == "approve":
-                result = automation_service.approve_pending_tool(plan_id, decision_id, tool_name)
-            elif action == "reject":
-                result = automation_service.reject_pending_tool(plan_id, decision_id, tool_name)
-            else:
-                return "❌ 无效的操作类型"
-
-            return result
-
-        except Exception as e:
-            logger.error(f"处理工具操作失败: {e}")
-            return f"❌ 操作失败: {str(e)}"
+    # 工具确认相关方法已移除 - AI Agent现在直接使用启用的工具，无需确认
 
     def get_finetune_schedule(self, plan_id: int) -> list:
         """获取自动微调时间表"""
@@ -2486,33 +2426,7 @@ class PlanDetailUI:
             traceback.print_exc()
             yield [{"role": "assistant", "content": f"❌ 推理过程出错: {str(e)}"}]
 
-    async def continue_inference_stream(self, plan_id: int):
-        """继续AI Agent推理（用户确认工具后）"""
-        try:
-            # 发送继续消息
-            yield [{"role": "assistant", "content": "🔄 继续执行 AI Agent 推理..."}]
-
-            from services.agent_decision_service import AgentDecisionService
-            
-            # 获取待确认的工具并执行
-            with get_db() as db:
-                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
-                if not plan:
-                    yield [{"role": "assistant", "content": "❌ 计划不存在"}]
-                    return
-
-                # 工具确认功能已废弃 - AI Agent现在可以直接使用启用的工具
-                confirmed_tools = []  # 设为空，跳过后续逻辑
-
-                # 由于工具确认功能已废弃，直接返回提示信息
-                yield [{"role": "assistant", "content": "⚠️ 工具确认功能已废弃\n\nAI Agent现在可以直接使用启用的工具，无需人工确认。工具调用记录会显示在Agent决策列表中。"}]
-                return
-
-        except Exception as e:
-            logger.error(f"继续推理失败: {e}")
-            import traceback
-            traceback.print_exc()
-            yield [{"role": "assistant", "content": f"❌ 继续推理失败: {str(e)}"}]
+    # continue_inference_stream方法已移除 - 工具确认功能已废弃，AI Agent现在直接使用启用的工具
 
     def _build_system_message(self, plan):
         """构建系统消息"""

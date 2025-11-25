@@ -379,7 +379,6 @@ class AutomationService:
                     'auto_finetune_enabled': plan.auto_finetune_enabled or False,
                     'auto_inference_enabled': plan.auto_inference_enabled or False,
                     'auto_agent_enabled': plan.auto_agent_enabled or False,
-                    'auto_tool_execution_enabled': plan.auto_tool_execution_enabled or False,  # 已废弃字段
                     'auto_finetune_schedule': plan.auto_finetune_schedule or []
                 }
 
@@ -411,74 +410,7 @@ class AutomationService:
             logger.error(f"获取自动化状态失败: {e}")
             return {}
 
-    def get_pending_tool_executions(self, plan_id: int) -> List[Dict]:
-        """获取待执行工具列表"""
-        try:
-            with get_db() as db:
-                # 查找自动模式下产生的待执行工具决策
-                decisions = db.query(AgentDecision).filter(
-                    AgentDecision.plan_id == plan_id,
-                    AgentDecision.auto_mode == True,
-                    AgentDecision.status == 'completed'
-                ).all()
-
-                pending_tools = []
-                for decision in decisions:
-                    # 获取该决策下的待执行工具
-                    # 这里需要在AgentDecision中添加pending_tools字段
-                    if hasattr(decision, 'pending_tools') and decision.pending_tools:
-                        for tool in decision.pending_tools:
-                            pending_tools.append({
-                                'decision_id': decision.id,
-                                'decision_time': decision.created_at,
-                                'tool_name': tool.get('name'),
-                                'tool_args': tool.get('args'),
-                                'status': tool.get('status', 'pending')
-                            })
-
-                return pending_tools
-
-        except Exception as e:
-            logger.error(f"获取待执行工具失败: {e}")
-            return []
-
-    def approve_pending_tool(self, plan_id: int, decision_id: int, tool_name: str) -> str:
-        """批准执行待执行工具"""
-        try:
-            # 异步执行工具
-            asyncio.run(self._execute_approved_tool(decision_id, tool_name))
-            return f"✅ 已批准执行工具: {tool_name}"
-        except Exception as e:
-            logger.error(f"批准执行工具失败: {e}")
-            return f"❌ 执行失败: {str(e)}"
-
-    def reject_pending_tool(self, plan_id: int, decision_id: int, tool_name: str) -> str:
-        """拒绝执行待执行工具"""
-        try:
-            # 更新工具状态为拒绝
-            # 这里需要在数据库中更新状态
-            logger.info(f"已拒绝执行工具: plan_id={plan_id}, decision_id={decision_id}, tool={tool_name}")
-            return f"❌ 已拒绝执行工具: {tool_name}"
-        except Exception as e:
-            logger.error(f"拒绝执行工具失败: {e}")
-            return f"❌ 操作失败: {str(e)}"
-
-    async def _execute_approved_tool(self, decision_id: int, tool_name: str):
-        """执行已批准的工具"""
-        try:
-            # 这里调用AgentDecisionService来执行特定的工具
-            execution_result = await AgentDecisionService.execute_specific_tool_async(
-                decision_id=decision_id,
-                tool_name=tool_name
-            )
-
-            if execution_result.get('success'):
-                logger.info(f"工具执行成功: decision_id={decision_id}, tool={tool_name}")
-            else:
-                logger.error(f"工具执行失败: decision_id={decision_id}, tool={tool_name}")
-
-        except Exception as e:
-            logger.error(f"执行已批准工具失败: {e}")
+    # 工具确认相关方法已移除 - AI Agent现在直接使用启用的工具，无需确认
 
 
 # 全局单例实例

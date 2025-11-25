@@ -2719,7 +2719,6 @@ class AgentDecisionService:
                 react_config = plan.react_config or {}
                 max_iterations = int(react_config.get('max_iterations', 3))
                 enable_thinking = bool(react_config.get('enable_thinking', True))
-                tool_approval = bool(react_config.get('tool_approval', False))
                 thinking_style = react_config.get('thinking_style', '详细')
 
                 iteration = 0
