@@ -12,8 +12,9 @@ from typing import Optional, List, Dict
 from services.plan_service import PlanService
 from services.training_service import TrainingService
 from services.inference_service import InferenceService
+from services.conversation_service import ConversationService
 from database.db import get_db
-from database.models import TradingPlan, TrainingRecord, PredictionData, AgentDecision, KlineData
+from database.models import TradingPlan, TrainingRecord, PredictionData, AgentDecision, KlineData, AgentConversation, AgentMessage
 from sqlalchemy import and_, desc, func
 from utils.logger import setup_logger
 from utils.timezone_helper import (format_datetime_full_beijing, format_datetime_short_beijing,
@@ -1184,6 +1185,114 @@ class PlanDetailUI:
             import traceback
             traceback.print_exc()
             return [{"role": "assistant", "content": f"等待推理...\n\n❌ 获取失败: {str(e)}"}]
+
+    def get_latest_conversation_messages(self, plan_id: int) -> List[Dict]:
+        """
+        获取最新的对话会话消息（支持新的对话系统）
+
+        Returns:
+            List[Dict]: Chatbot messages 格式 [{"role": "assistant", "content": ...}]
+        """
+        try:
+            # 首先尝试从新的对话系统获取
+            latest_conversation = ConversationService.get_latest_conversation(
+                plan_id=plan_id,
+                conversation_type="auto_inference"
+            )
+
+            if latest_conversation:
+                messages = ConversationService.get_conversation_messages(latest_conversation.id)
+                return ConversationService.format_messages_for_chatbot(messages)
+
+            # 如果没有新对话，回退到旧的决策记录系统
+            return self.get_latest_agent_decision_output(plan_id)
+
+        except Exception as e:
+            logger.error(f"获取最新对话消息失败: {e}")
+            return [{"role": "assistant", "content": f"等待对话...\n\n❌ 获取失败: {str(e)}"}]
+
+    def get_conversation_tool_calls_summary(self, plan_id: int) -> List[Dict]:
+        """
+        获取对话的工具调用摘要
+
+        Returns:
+            List[Dict]: 工具调用列表
+        """
+        try:
+            latest_conversation = ConversationService.get_latest_conversation(
+                plan_id=plan_id,
+                conversation_type="auto_inference"
+            )
+
+            if latest_conversation:
+                return ConversationService.get_tool_calls_summary(latest_conversation.id)
+
+            return []
+
+        except Exception as e:
+            logger.error(f"获取工具调用摘要失败: {e}")
+            return []
+
+    def get_plan_conversations_list(self, plan_id: int, limit: int = 10) -> List[Dict]:
+        """
+        获取计划的对话会话列表
+
+        Returns:
+            List[Dict]: 对话会话列表
+        """
+        try:
+            conversations = ConversationService.get_plan_conversations(plan_id, limit)
+
+            conversation_list = []
+            for conv in conversations:
+                conversation_list.append({
+                    'id': conv.id,
+                    'session_name': conv.session_name,
+                    'conversation_type': conv.conversation_type,
+                    'status': conv.status,
+                    'total_messages': conv.total_messages,
+                    'total_tool_calls': conv.total_tool_calls,
+                    'started_at': format_datetime_full_beijing(conv.started_at),
+                    'last_message_at': format_datetime_full_beijing(conv.last_message_at) if conv.last_message_at else 'N/A',
+                    'completed_at': format_datetime_full_beijing(conv.completed_at) if conv.completed_at else '进行中'
+                })
+
+            return conversation_list
+
+        except Exception as e:
+            logger.error(f"获取对话会话列表失败: {e}")
+            return []
+
+    async def enhanced_inference_stream(self, plan_id: int, training_record_id: int = None, progress=None):
+        """
+        增强版推理流式输出，支持React循环展示和工具调用记录
+
+        Args:
+            plan_id: 计划ID
+            training_record_id: 训练记录ID
+            progress: Gradio进度条
+
+        Yields:
+            Dict: 包含对话状态、消息等的流式数据
+        """
+        try:
+            from services.agent_decision_service import AgentDecisionService
+
+            async for chunk in AgentDecisionService.enhanced_react_tool_use_stream(
+                plan_id=plan_id,
+                training_id=training_record_id,
+                progress=progress,
+                session_name=f"推理会话_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            ):
+                yield chunk
+
+        except Exception as e:
+            logger.error(f"增强版推理流失败: {e}")
+            yield {
+                'type': 'error',
+                'content': f'❌ 推理失败: {str(e)}',
+                'messages': [{"role": "assistant", "content": f"❌ 推理失败: {str(e)}"}]
+            }
 
     def _format_prediction_preview(self, predictions: list, batch_id: str, version: str) -> str:
         """

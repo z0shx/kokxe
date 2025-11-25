@@ -5,9 +5,10 @@ AI Agent 决策服务
 import asyncio
 import json
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, AsyncGenerator
 from database.db import get_db
 from database.models import TradingPlan, TrainingRecord, PredictionData, AgentDecision, LLMConfig
+from services.conversation_service import ConversationService, MessageType, ReactStage
 from utils.logger import setup_logger
 from sqlalchemy import desc
 from config import config
@@ -3221,4 +3222,412 @@ class AgentDecisionService:
         except Exception as e:
             logger.warning(f"JSON解析失败: {json_str}, 错误: {e}")
             return {}
+
+    @classmethod
+    async def enhanced_react_tool_use_stream(
+        cls,
+        plan_id: int,
+        training_id: int = None,
+        progress=None,
+        session_name: Optional[str] = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        增强版 ReAct + Tool Use 流式推理，支持对话记录和React循环展示
+
+        Args:
+            plan_id: 计划ID
+            training_id: 训练记录ID（可选）
+            progress: Gradio进度条
+            session_name: 会话名称
+
+        Yields:
+            包含对话状态、消息、工具调用等的字典
+        """
+        try:
+            # 设置当前计划ID
+            cls._current_plan_id = plan_id
+
+            with get_db() as db:
+                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                if not plan:
+                    yield {
+                        'type': 'error',
+                        'content': '❌ 计划不存在',
+                        'messages': [{"role": "assistant", "content": "❌ 计划不存在"}]
+                    }
+                    return
+
+                # 创建新的对话会话
+                conversation = ConversationService.create_conversation(
+                    plan_id=plan_id,
+                    training_record_id=training_id,
+                    session_name=session_name or f"推理会话_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                    conversation_type="auto_inference"
+                )
+
+                yield {
+                    'type': 'conversation_created',
+                    'conversation_id': conversation.id,
+                    'session_name': conversation.session_name
+                }
+
+                # 获取预测数据
+                prediction_records = []
+                if training_id:
+                    prediction_records = db.query(PredictionData).filter(
+                        PredictionData.training_record_id == training_id
+                    ).order_by(PredictionData.timestamp).all()
+
+                # 获取历史数据
+                historical_df = None
+                try:
+                    from database.models import KlineData
+                    import pandas as pd
+
+                    hist_start = datetime.utcnow() - timedelta(days=7)
+                    hist_end = datetime.utcnow()
+
+                    with get_db() as db:
+                        kline_records = db.query(KlineData).filter(
+                            KlineData.inst_id == plan.inst_id,
+                            KlineData.interval == plan.interval,
+                            KlineData.timestamp >= hist_start,
+                            KlineData.timestamp <= hist_end
+                        ).order_by(KlineData.timestamp.desc()).limit(100).all()
+
+                        if kline_records:
+                            historical_df = pd.DataFrame([
+                                {
+                                    'timestamp': record.timestamp,
+                                    'open': record.open,
+                                    'high': record.high,
+                                    'low': record.low,
+                                    'close': record.close,
+                                    'volume': record.volume
+                                }
+                                for record in kline_records
+                            ])
+
+                except Exception as e:
+                    logger.warning(f"获取历史数据失败: {e}")
+
+                # 构建预测数据摘要
+                prediction_summary = ""
+                if prediction_records:
+                    latest_prediction = prediction_records[-1]
+                    prediction_summary = f"""
+最新预测数据（时间: {latest_prediction.timestamp.strftime('%Y-%m-%d %H:%M')}）：
+- 当前价格: ${latest_prediction.close:.4f}
+- 预测趋势: {'上涨' if latest_prediction.predicted_close > latest_prediction.close else '下跌'}
+- 预测价格: ${latest_prediction.predicted_close:.4f}
+- 上涨概率: {latest_prediction.upward_probability:.2%}
+- 波动性概率: {latest_prediction.volatility_probability:.2%}
+"""
+                else:
+                    prediction_summary = "暂无预测数据"
+
+                # 添加系统消息
+                system_content = f"""
+你是一个专业的加密货币交易AI助手。当前任务是基于最新的预测数据进行交易分析和决策。
+
+**交易计划信息**:
+- 交易对: {plan.inst_id}
+- 时间框架: {plan.interval}
+- 计划状态: {plan.status}
+
+**{prediction_summary}**
+
+请使用ReAct模式进行思考：
+1. **思考** (Thought): 分析当前市场状况和预测数据
+2. **行动** (Action): 如果需要更多信息，调用相应工具
+3. **观察** (Observation): 分析工具返回的结果
+4. **重复** 直到得出最终结论
+
+可用工具包括：查询账户余额、获取持仓信息、获取待成交订单、查询预测数据、获取预测历史、下单、撤单、修改订单等。
+"""
+                ConversationService.add_message(
+                    conversation_id=conversation.id,
+                    role="system",
+                    content=system_content,
+                    message_type=MessageType.SYSTEM.value
+                )
+
+                # 发送初始消息
+                yield {
+                    'type': 'message',
+                    'messages': ConversationService.format_messages_for_chatbot(
+                        ConversationService.get_conversation_messages(conversation.id)
+                    )
+                }
+
+                # 获取LLM配置
+                llm_config = None
+                if plan.llm_config_id:
+                    llm_config = db.query(LLMConfig).filter(
+                        LLMConfig.id == plan.llm_config_id
+                    ).first()
+
+                # 获取ReAct配置
+                react_config = plan.react_config or {}
+                max_iterations = int(react_config.get('max_iterations', 3))
+                enable_thinking = bool(react_config.get('enable_thinking', True))
+                thinking_style = react_config.get('thinking_style', '详细')
+
+                iteration = 0
+                tool_calls = []
+                tool_results = []
+
+                # ReAct循环
+                while iteration < max_iterations:
+                    iteration += 1
+
+                    # 构建对话上下文
+                    messages = ConversationService.get_conversation_messages(conversation.id)
+                    context_messages = []
+
+                    # 只添加文本消息到LLM上下文
+                    for msg in messages:
+                        if msg.message_type in [MessageType.TEXT.value, MessageType.SYSTEM.value]:
+                            context_messages.append({
+                                "role": msg.role,
+                                "content": msg.content
+                            })
+
+                    # 添加工具结果到上下文
+                    tool_result_messages = [
+                        {
+                            "role": "assistant",
+                            "content": f"工具调用结果：{msg.tool_name} - {json.dumps(msg.tool_result, ensure_ascii=False) if msg.tool_result else 'No result'}"
+                        }
+                        for msg in messages if msg.message_type == MessageType.TOOL_RESULT.value
+                    ]
+
+                    context_messages.extend(tool_result_messages)
+
+                    if progress:
+                        progress((iteration - 1) / max_iterations, f"ReAct迭代 {iteration}/{max_iterations}")
+
+                    # 调用LLM
+                    llm_response = ""
+                    reasoning_text = ""
+
+                    if enable_thinking:
+                        # 发送思考开始消息
+                        thinking_start_msg = ConversationService.add_message(
+                            conversation_id=conversation.id,
+                            role="assistant",
+                            content=f"🔄 **ReAct循环 {iteration}/{max_iterations}** - 开始思考...",
+                            message_type=MessageType.THINKING.value,
+                            react_iteration=iteration,
+                            react_stage=ReactStage.THOUGHT.value
+                        )
+
+                        yield {
+                            'type': 'message',
+                            'messages': ConversationService.format_messages_for_chatbot(
+                                ConversationService.get_conversation_messages(conversation.id)
+                            )
+                        }
+
+                    # 执行LLM调用
+                    if llm_config and llm_config.provider == 'anthropic':
+                        async for chunk in cls._call_claude_react_stream(llm_config, context_messages):
+                            if isinstance(chunk, str) and chunk.strip():
+                                llm_response += chunk
+                                yield {
+                                    'type': 'thinking_stream',
+                                    'content': chunk,
+                                    'iteration': iteration
+                                }
+                    elif llm_config and llm_config.provider == 'openai':
+                        async for chunk in cls._call_openai_react_stream(llm_config, context_messages):
+                            if isinstance(chunk, str) and chunk.strip():
+                                llm_response += chunk
+                                yield {
+                                    'type': 'thinking_stream',
+                                    'content': chunk,
+                                    'iteration': iteration
+                                }
+                    else:
+                        # 默认处理
+                        llm_response = "基于预测数据和市场分析，我建议保持谨慎观望态度。"
+                        yield {
+                            'type': 'thinking_stream',
+                            'content': llm_response,
+                            'iteration': iteration
+                        }
+
+                    reasoning_text = llm_response
+
+                    # 保存思考结果
+                    if enable_thinking:
+                        ConversationService.add_message(
+                            conversation_id=conversation.id,
+                            role="assistant",
+                            content=reasoning_text,
+                            message_type=MessageType.THINKING.value,
+                            react_iteration=iteration,
+                            react_stage=ReactStage.THOUGHT.value,
+                            llm_model=llm_config.model_name if llm_config else 'default'
+                        )
+
+                        yield {
+                            'type': 'message',
+                            'messages': ConversationService.format_messages_for_chatbot(
+                                ConversationService.get_conversation_messages(conversation.id)
+                            )
+                        }
+
+                    # 解析工具调用
+                    tools_called = False
+                    if cls._has_tool_calls(reasoning_text):
+                        try:
+                            parsed_calls = cls._parse_tool_calls(reasoning_text)
+
+                            for tool_call in parsed_calls:
+                                tools_called = True
+                                tool_name = tool_call.get('name', 'unknown')
+                                tool_args = tool_call.get('arguments', {})
+
+                                # 记录工具调用
+                                ConversationService.add_message(
+                                    conversation_id=conversation.id,
+                                    role="assistant",
+                                    content=f"调用工具: {tool_name}",
+                                    message_type=MessageType.TOOL_CALL.value,
+                                    react_iteration=iteration,
+                                    react_stage=ReactStage.ACTION.value,
+                                    tool_name=tool_name,
+                                    tool_arguments=tool_args,
+                                    llm_model=llm_config.model_name if llm_config else 'default'
+                                )
+
+                                yield {
+                                    'type': 'tool_call',
+                                    'tool_name': tool_name,
+                                    'tool_arguments': tool_args,
+                                    'messages': ConversationService.format_messages_for_chatbot(
+                                        ConversationService.get_conversation_messages(conversation.id)
+                                    )
+                                }
+
+                                # 执行工具
+                                logger.info(f"执行工具: {tool_name}, 参数: {tool_args}")
+
+                                # 工具确认功能已废弃 - AI Agent现在可以直接使用启用的工具
+                                # 直接执行工具
+                                result = await cls._execute_single_tool_async(plan, tool_name, tool_args)
+
+                                # 记录工具结果
+                                ConversationService.add_message(
+                                    conversation_id=conversation.id,
+                                    role="assistant",
+                                    content=f"工具结果: {tool_name}",
+                                    message_type=MessageType.TOOL_RESULT.value,
+                                    react_iteration=iteration,
+                                    react_stage=ReactStage.OBSERVATION.value,
+                                    tool_name=tool_name,
+                                    tool_arguments=tool_args,
+                                    tool_result=result,
+                                    tool_status='success' if result.get('success') else 'failed'
+                                )
+
+                                yield {
+                                    'type': 'tool_result',
+                                    'tool_name': tool_name,
+                                    'tool_result': result,
+                                    'messages': ConversationService.format_messages_for_chatbot(
+                                        ConversationService.get_conversation_messages(conversation.id)
+                                    )
+                                }
+
+                                tool_calls.append(tool_call)
+                                tool_results.append(result)
+
+                        except Exception as e:
+                            logger.error(f"解析或执行工具调用失败: {e}")
+                            error_msg = f"工具调用执行失败: {str(e)}"
+                            ConversationService.add_message(
+                                conversation_id=conversation.id,
+                                role="assistant",
+                                content=error_msg,
+                                message_type=MessageType.TEXT.value
+                            )
+
+                    # 如果没有工具调用，且是最后一轮，生成最终回复
+                    if not tools_called and iteration >= max_iterations:
+                        final_response = reasoning_text if reasoning_text else "基于分析，我建议保持当前策略。"
+
+                        ConversationService.add_message(
+                            conversation_id=conversation.id,
+                            role="assistant",
+                            content=final_response,
+                            message_type=MessageType.TEXT.value,
+                            llm_model=llm_config.model_name if llm_config else 'default'
+                        )
+
+                        # 创建决策记录
+                        try:
+                            agent_decision = AgentDecision(
+                                plan_id=plan_id,
+                                training_record_id=training_id,
+                                decision_time=datetime.utcnow(),
+                                decision_type='analysis',
+                                reasoning=final_response,
+                                llm_model=llm_config.model_name if llm_config else 'default',
+                                llm_input={'messages': context_messages},
+                                llm_output=final_response,
+                                tool_calls=tool_calls,
+                                tool_results=tool_results,
+                                order_ids=[],
+                                status='completed'
+                            )
+
+                            db.add(agent_decision)
+                            db.commit()
+
+                            yield {
+                                'type': 'decision_completed',
+                                'decision_id': agent_decision.id,
+                                'messages': ConversationService.format_messages_for_chatbot(
+                                    ConversationService.get_conversation_messages(conversation.id)
+                                )
+                            }
+
+                        except Exception as e:
+                            logger.error(f"创建决策记录失败: {e}")
+
+                        break
+
+                    # 如果没有工具调用但不是最后一轮，继续下一轮
+                    elif not tools_called and iteration < max_iterations:
+                        continue_msg = "继续分析..."
+                        ConversationService.add_message(
+                            conversation_id=conversation.id,
+                            role="user",
+                            content=continue_msg,
+                            message_type=MessageType.TEXT.value
+                        )
+
+                # 完成对话
+                ConversationService.complete_conversation(conversation.id)
+
+                # 返回工具调用摘要
+                tool_summary = ConversationService.get_tool_calls_summary(conversation.id)
+
+                yield {
+                    'type': 'conversation_completed',
+                    'conversation_id': conversation.id,
+                    'tool_calls_summary': tool_summary,
+                    'total_messages': conversation.total_messages,
+                    'total_tool_calls': conversation.total_tool_calls
+                }
+
+        except Exception as e:
+            logger.error(f"增强版ReAct推理失败: {e}")
+            yield {
+                'type': 'error',
+                'content': f'❌ 推理过程出错: {str(e)}',
+                'messages': [{"role": "assistant", "content": f"❌ 推理过程出错: {str(e)}"}]
+            }
 

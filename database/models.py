@@ -395,6 +395,82 @@ class AgentDecision(Base):
 # 工具确认功能已废弃 - PendingToolCall 模型已移除
 
 
+class AgentConversation(Base):
+    """AI Agent 对话会话表"""
+    __tablename__ = 'agent_conversations'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    plan_id = Column(Integer, ForeignKey('trading_plans.id', ondelete='CASCADE'), nullable=False, comment='关联的交易计划ID')
+    training_record_id = Column(Integer, comment='关联的训练记录ID（触发时的模型版本）')
+    session_name = Column(String(200), comment='会话名称')
+
+    # 会话类型和状态
+    conversation_type = Column(String(50), default='auto_inference', comment='对话类型：auto_inference, manual_chat, analysis')
+    status = Column(String(20), default='active', comment='状态：active, completed, archived')
+
+    # 统计信息
+    total_messages = Column(Integer, default=0, comment='总消息数')
+    total_tool_calls = Column(Integer, default=0, comment='总工具调用数')
+
+    # 时间戳
+    started_at = Column(DateTime, default=datetime.utcnow, comment='开始时间')
+    last_message_at = Column(DateTime, default=datetime.utcnow, comment='最后消息时间')
+    completed_at = Column(DateTime, comment='完成时间')
+    created_at = Column(DateTime, default=datetime.utcnow, comment='创建时间')
+
+    __table_args__ = (
+        Index('idx_agent_conversation_plan_id', 'plan_id'),
+        Index('idx_agent_conversation_training_record_id', 'training_record_id'),
+        Index('idx_agent_conversation_type', 'conversation_type'),
+        Index('idx_agent_conversation_status', 'status'),
+        Index('idx_agent_conversation_started_at', 'started_at'),
+    )
+
+    def __repr__(self):
+        return f"<AgentConversation(plan_id={self.plan_id}, type={self.conversation_type}, status={self.status})>"
+
+
+class AgentMessage(Base):
+    """AI Agent 对话消息表"""
+    __tablename__ = 'agent_messages'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(Integer, ForeignKey('agent_conversations.id', ondelete='CASCADE'), nullable=False, comment='关联的对话会话ID')
+
+    # 消息基本信息
+    role = Column(String(20), nullable=False, comment='角色：user, assistant, system, tool')
+    content = Column(Text, comment='消息内容')
+    message_type = Column(String(50), default='text', comment='消息类型：text, thinking, tool_call, tool_result, system')
+
+    # React 循环信息
+    react_iteration = Column(Integer, comment='ReAct循环迭代次数')
+    react_stage = Column(String(50), comment='ReAct阶段：thought, action, observation')
+
+    # 工具调用信息（当message_type为tool_call时）
+    tool_name = Column(String(100), comment='工具名称')
+    tool_arguments = Column(JSONB, comment='工具参数')
+    tool_result = Column(JSONB, comment='工具执行结果')
+    tool_status = Column(String(20), default='pending', comment='工具状态：pending, success, failed')
+
+    # 模型信息
+    llm_model = Column(String(100), comment='使用的LLM模型')
+
+    # 时间戳
+    timestamp = Column(DateTime, default=datetime.utcnow, comment='消息时间')
+    created_at = Column(DateTime, default=datetime.utcnow, comment='创建时间')
+
+    __table_args__ = (
+        Index('idx_agent_message_conversation_id', 'conversation_id'),
+        Index('idx_agent_message_role', 'role'),
+        Index('idx_agent_message_type', 'message_type'),
+        Index('idx_agent_message_timestamp', 'timestamp'),
+        Index('idx_agent_message_react_iteration', 'react_iteration'),
+    )
+
+    def __repr__(self):
+        return f"<AgentMessage(conversation_id={self.conversation_id}, role={self.role}, type={self.message_type})>"
+
+
 class TaskExecution(Base):
     """任务执行记录"""
     __tablename__ = 'task_executions'

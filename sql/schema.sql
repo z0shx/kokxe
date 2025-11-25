@@ -1,5 +1,5 @@
 -- KOKEX Database Schema
--- Generated at: 2025-11-25 10:29:18.439232
+-- Generated at: 2025-11-25 10:42:59.155630
 
 
 -- Table: agent_decisions
@@ -250,6 +250,27 @@ CREATE TABLE ws_subscriptions (
 
 ;
 
+-- Table: agent_conversations
+
+CREATE TABLE agent_conversations (
+	id SERIAL NOT NULL, 
+	plan_id INTEGER NOT NULL, 
+	training_record_id INTEGER, 
+	session_name VARCHAR(200), 
+	conversation_type VARCHAR(50), 
+	status VARCHAR(20), 
+	total_messages INTEGER, 
+	total_tool_calls INTEGER, 
+	started_at TIMESTAMP WITHOUT TIME ZONE, 
+	last_message_at TIMESTAMP WITHOUT TIME ZONE, 
+	completed_at TIMESTAMP WITHOUT TIME ZONE, 
+	created_at TIMESTAMP WITHOUT TIME ZONE, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(plan_id) REFERENCES trading_plans (id) ON DELETE CASCADE
+)
+
+;
+
 -- Table: task_executions
 
 CREATE TABLE task_executions (
@@ -275,6 +296,29 @@ CREATE TABLE task_executions (
 	updated_at TIMESTAMP WITHOUT TIME ZONE, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(plan_id) REFERENCES trading_plans (id) ON DELETE CASCADE
+)
+
+;
+
+-- Table: agent_messages
+
+CREATE TABLE agent_messages (
+	id SERIAL NOT NULL, 
+	conversation_id INTEGER NOT NULL, 
+	role VARCHAR(20) NOT NULL, 
+	content TEXT, 
+	message_type VARCHAR(50), 
+	react_iteration INTEGER, 
+	react_stage VARCHAR(50), 
+	tool_name VARCHAR(100), 
+	tool_arguments JSONB, 
+	tool_result JSONB, 
+	tool_status VARCHAR(20), 
+	llm_model VARCHAR(100), 
+	timestamp TIMESTAMP WITHOUT TIME ZONE, 
+	created_at TIMESTAMP WITHOUT TIME ZONE, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(conversation_id) REFERENCES agent_conversations (id) ON DELETE CASCADE
 )
 
 ;
