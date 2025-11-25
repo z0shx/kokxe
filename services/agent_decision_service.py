@@ -1041,6 +1041,13 @@ class AgentDecisionService:
                 result = asyncio.run(trading_tools.get_current_price(**tool_args))
             elif tool_name == 'get_trading_limits':
                 result = asyncio.run(trading_tools.get_trading_limits(**tool_args))
+            elif tool_name == 'run_latest_model_inference':
+                # 传递plan_id用于推理工具
+                tool_args_with_plan = tool_args.copy()
+                tool_args_with_plan['plan_id'] = plan.id
+                result = trading_tools.run_latest_model_inference(**tool_args_with_plan)
+            elif tool_name == 'delete_prediction_data_by_batch':
+                result = trading_tools.delete_prediction_data_by_batch(**tool_args)
             else:
                 result = {
                     'success': False,
@@ -1055,7 +1062,7 @@ class AgentDecisionService:
                 'success': result.get('success', False),
                 'result': result,
                 'status': 'executed',
-                'executed_at': datetime.utcnow(),
+                'executed_at': datetime.utcnow().isoformat(),
                 'execution_mode': 'auto'
             }
 
@@ -1066,7 +1073,7 @@ class AgentDecisionService:
                 'success': False,
                 'error': str(e),
                 'status': 'error',
-                'executed_at': datetime.utcnow(),
+                'executed_at': datetime.utcnow().isoformat(),
                 'execution_mode': 'auto'
             }
 
@@ -1170,6 +1177,13 @@ class AgentDecisionService:
                 result = await trading_tools.get_current_price(**tool_args)
             elif tool_name == 'get_trading_limits':
                 result = await trading_tools.get_trading_limits(**tool_args)
+            elif tool_name == 'run_latest_model_inference':
+                # 传递plan_id用于推理工具
+                tool_args_with_plan = tool_args.copy()
+                tool_args_with_plan['plan_id'] = plan.id
+                result = await trading_tools.run_latest_model_inference(**tool_args_with_plan)
+            elif tool_name == 'delete_prediction_data_by_batch':
+                result = await trading_tools.delete_prediction_data_by_batch(**tool_args)
             else:
                 result = {
                     'success': False,
@@ -1184,7 +1198,7 @@ class AgentDecisionService:
                 'success': result.get('success', False),
                 'result': result,
                 'status': 'executed',
-                'executed_at': datetime.utcnow(),
+                'executed_at': datetime.utcnow().isoformat(),
                 'execution_mode': 'auto'
             }
 
@@ -1195,7 +1209,7 @@ class AgentDecisionService:
                 'success': False,
                 'error': str(e),
                 'status': 'error',
-                'executed_at': datetime.utcnow(),
+                'executed_at': datetime.utcnow().isoformat(),
                 'execution_mode': 'auto'
             }
 

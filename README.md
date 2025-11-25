@@ -16,7 +16,8 @@
 ### 1. 安装依赖
 
 ```bash
-cd /home/zshx/code/kronos/kokex
+conda create -n kokex python=3.10 -y
+conda activate kokex
 pip install -r requirements.txt
 ```
 

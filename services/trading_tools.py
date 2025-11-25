@@ -22,7 +22,8 @@ class OKXTradingTools:
         api_key: str,
         secret_key: str,
         passphrase: str,
-        is_demo: bool = True
+        is_demo: bool = True,
+        trading_limits: Optional[Dict] = None
     ):
         """
         初始化交易工具
@@ -32,11 +33,13 @@ class OKXTradingTools:
             secret_key: Secret Key
             passphrase: Passphrase
             is_demo: 是否使用模拟盘
+            trading_limits: 交易限制配置
         """
         self.api_key = api_key
         self.secret_key = secret_key
         self.passphrase = passphrase
         self.is_demo = is_demo
+        self.trading_limits = trading_limits or {}
 
         # API地址
         if is_demo:
@@ -380,6 +383,226 @@ class OKXTradingTools:
 
         except Exception as e:
             logger.error(f"查询账户余额失败: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    def run_latest_model_inference(
+        self,
+        lookback_window: Optional[int] = None,
+        predict_window: Optional[int] = None,
+        force_rerun: Optional[bool] = None,
+        plan_id: Optional[int] = None
+    ) -> Dict:
+        """
+        执行最新模型推理
+
+        Args:
+            lookback_window: 回溯窗口大小
+            predict_window: 预测窗口大小
+            force_rerun: 是否强制重新推理
+            plan_id: 计划ID（用于查询最新训练记录）
+
+        Returns:
+            推理结果
+        """
+        try:
+            from services.inference_service import InferenceService
+            from database.db import get_db
+            from database.models import TradingPlan, TrainingRecord
+
+            # 查找最新训练记录
+            with get_db() as db:
+                if plan_id:
+                    plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                else:
+                    # 获取第一个运行中的计划
+                    plan = db.query(TradingPlan).filter(
+                        TradingPlan.status == 'running'
+                    ).first()
+
+                if not plan:
+                    return {
+                        'success': False,
+                        'error': '未找到可用的交易计划'
+                    }
+
+                # 查找最新完成的训练记录
+                latest_training = db.query(TrainingRecord).filter(
+                    TrainingRecord.plan_id == plan.id,
+                    TrainingRecord.status == 'completed',
+                    TrainingRecord.is_active == True
+                ).order_by(desc(TrainingRecord.created_at)).first()
+
+                if not latest_training:
+                    return {
+                        'success': False,
+                        'error': '未找到可用的训练模型'
+                    }
+
+            logger.info(f"执行推理: training_id={latest_training.id}, plan_id={plan.id}")
+
+            # 创建推理服务实例
+            inference_service = InferenceService()
+
+            # 执行推理
+            result = inference_service.run_inference(
+                training_record_id=latest_training.id,
+                lookback_window=lookback_window or 512,
+                predict_window=predict_window or 48,
+                force_rerun=force_rerun or False
+            )
+
+            if result.get('success'):
+                return {
+                    'success': True,
+                    'inference_id': result.get('inference_id'),
+                    'training_id': latest_training.id,
+                    'model_version': latest_training.model_version,
+                    'prediction_count': result.get('prediction_count', 0),
+                    'time_range': result.get('time_range', {}),
+                    'summary': result.get('summary', {}),
+                    'message': f"推理成功完成，生成 {result.get('prediction_count', 0)} 条预测数据"
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': result.get('error', '推理失败')
+                }
+
+        except Exception as e:
+            logger.error(f"执行推理失败: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    def delete_prediction_data_by_batch(
+        self,
+        batch_id: Optional[int] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        confirm_delete: bool = False
+    ) -> Dict:
+        """
+        删除预测数据
+
+        Args:
+            batch_id: 批次ID
+            start_time: 开始时间
+            end_time: 结束时间
+            confirm_delete: 确认删除
+
+        Returns:
+            删除结果
+        """
+        try:
+            from database.db import get_db
+            from database.models import PredictionData
+            from datetime import datetime
+
+            if not confirm_delete:
+                return {
+                    'success': False,
+                    'error': '请设置 confirm_delete=true 来确认删除操作'
+                }
+
+            with get_db() as db:
+                query = db.query(PredictionData)
+
+                deleted_count = 0
+                deleted_batch_ids = []
+
+                if batch_id is not None:
+                    # 按批次ID删除
+                    predictions = query.filter(PredictionData.training_record_id == batch_id).all()
+
+                    if predictions:
+                        deleted_count = len(predictions)
+                        deleted_batch_ids = [batch_id]
+
+                        # 删除数据
+                        query.filter(PredictionData.training_record_id == batch_id).delete()
+                        db.commit()
+
+                elif start_time and end_time:
+                    # 按时间范围删除
+                    try:
+                        start_dt = datetime.strptime(start_time, '%Y-%m-%d %H:%M:%S')
+                        end_dt = datetime.strptime(end_time, '%Y-%m-%d %H:%M:%S')
+
+                        predictions = query.filter(
+                            PredictionData.timestamp >= start_dt,
+                            PredictionData.timestamp <= end_dt
+                        ).all()
+
+                        if predictions:
+                            deleted_count = len(predictions)
+                            deleted_batch_ids = list(set([p.training_record_id for p in predictions]))
+
+                            # 删除数据
+                            query.filter(
+                                PredictionData.timestamp >= start_dt,
+                                PredictionData.timestamp <= end_dt
+                            ).delete()
+                            db.commit()
+
+                    except ValueError as e:
+                        return {
+                            'success': False,
+                            'error': f'时间格式错误: {str(e)}'
+                        }
+
+                else:
+                    return {
+                        'success': False,
+                        'error': '请提供 batch_id 或 (start_time, end_time) 参数'
+                    }
+
+                logger.warning(f"删除预测数据: {deleted_count} 条记录，批次ID: {deleted_batch_ids}")
+
+                return {
+                    'success': True,
+                    'deleted_count': deleted_count,
+                    'deleted_batch_ids': deleted_batch_ids,
+                    'time_range': {
+                        'start_time': start_time,
+                        'end_time': end_time
+                    },
+                    'message': f"成功删除 {deleted_count} 条预测数据"
+                }
+
+        except Exception as e:
+            logger.error(f"删除预测数据失败: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    def get_current_utc_time(self) -> Dict:
+        """
+        获取当前UTC+0时间
+
+        Returns:
+            当前时间信息
+        """
+        try:
+            from datetime import datetime
+
+            now = datetime.utcnow()
+
+            return {
+                'success': True,
+                'timestamp': int(now.timestamp() * 1000),  # 毫秒时间戳
+                'formatted_time': now.strftime('%Y-%m-%d %H:%M:%S'),
+                'iso_time': now.isoformat(),
+                'timezone': 'UTC+0',
+                'message': f"当前UTC+0时间: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+            }
+
+        except Exception as e:
+            logger.error(f"获取UTC时间失败: {e}")
             return {
                 'success': False,
                 'error': str(e)

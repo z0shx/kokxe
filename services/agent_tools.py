@@ -553,6 +553,99 @@ AGENT_TOOLS = {
         required_params=[],
         risk_level="low"
     ),
+
+    "run_latest_model_inference": AgentTool(
+        name="run_latest_model_inference",
+        description="""执行最新微调版本模型的预测推理，得到最新的预测数据。使用当前计划关联的最新训练模型，对最新的市场数据进行推理，生成新的预测结果。
+
+使用场景：
+1. 需要基于最新市场数据生成预测时
+2. 定期更新预测数据时
+3. 手动触发模型推理时
+4. 验证模型最新预测结果时
+
+执行过程：
+1. 查找当前计划的最新已完成训练记录
+2. 准备最新的市场数据作为推理输入
+3. 加载最新训练的模型权重
+4. 执行模型推理生成预测
+5. 保存预测结果到数据库
+
+返回信息包括：
+- 推理任务ID
+- 模型版本信息
+- 预测数据数量
+- 预测时间范围
+- 预测结果摘要（最高价格、最低价格、趋势等）""",
+        category=ToolCategory.MONITOR,
+        parameters={
+            "lookback_window": {
+                "type": "integer",
+                "description": "回溯窗口大小，用于推理的历史数据点数（默认512）",
+                "required": False
+            },
+            "predict_window": {
+                "type": "integer",
+                "description": "预测窗口大小，预测未来多少个时间点（默认48）",
+                "required": False
+            },
+            "force_rerun": {
+                "type": "boolean",
+                "description": "是否强制重新推理，即使已有最新的预测数据（默认false）",
+                "required": False
+            }
+        },
+        required_params=[],
+        risk_level="medium"
+    ),
+
+    "delete_prediction_data_by_batch": AgentTool(
+        name="delete_prediction_data_by_batch",
+        description="""删除预测数据（按推理批次）。可以删除指定批次ID或时间范围内的预测数据，用于数据清理或重新推理前的准备工作。
+
+使用场景：
+1. 清理错误或有问题的预测数据
+2. 重新推理前删除旧数据
+3. 数据空间管理和优化
+4. 测试数据清理流程
+
+删除规则：
+- 按批次ID删除：删除指定批次ID的所有预测数据
+- 按时间范围删除：删除指定时间范围内的所有预测数据
+- 删除操作不可恢复，请谨慎使用
+- 只删除预测数据，不影响训练记录
+
+返回信息包括：
+- 删除的数据记录数
+- 被删除的批次ID列表
+- 删除的时间范围信息
+- 操作确认状态""",
+        category=ToolCategory.MONITOR,
+        parameters={
+            "batch_id": {
+                "type": "integer",
+                "description": "推理批次ID。指定批次ID时，将删除该批次的所有预测数据",
+                "required": False
+            },
+            "start_time": {
+                "type": "string",
+                "description": "开始时间，格式：YYYY-MM-DD HH:MM:SS（UTC+0时间）。与batch_id二选一",
+                "required": False
+            },
+            "end_time": {
+                "type": "string",
+                "description": "结束时间，格式：YYYY-MM-DD HH:MM:SS（UTC+0时间）。与start_time配合使用",
+                "required": False
+            },
+            "confirm_delete": {
+                "type": "boolean",
+                "description": "确认删除操作。必须设置为true才会执行删除（安全措施）",
+                "required": True
+            }
+        },
+        required_params=["confirm_delete"],
+        risk_level="high"
+    ),
 }
 
 

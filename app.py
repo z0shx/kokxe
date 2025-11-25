@@ -541,6 +541,11 @@ def create_app():
                                 tool_cancel_order = gr.Checkbox(label="❌ cancel_order", value=True, info="撤销未成交的订单,冻结资金将立即释放")
                                 tool_modify_order = gr.Checkbox(label="✏️ modify_order", value=True, info="修改未成交订单的价格或数量")
                                 tool_stop_loss = gr.Checkbox(label="🛡️ place_stop_loss_order", value=True, info="设置止损订单,当价格达到指定比例时自动卖出")
+                            with gr.Row():
+                                tool_query_historical_kline = gr.Checkbox(label="📈 query_historical_kline_data", value=True, info="查询历史K线实际交易数据,使用UTC+0时间戳作为查询条件")
+                                tool_get_utc_time = gr.Checkbox(label="🕒 get_current_utc_time", value=True, info="读取当前日期与时间(UTC+0),用于时间相关操作")
+                                tool_run_inference = gr.Checkbox(label="🤖 run_latest_model_inference", value=False, info="执行最新微调版本模型的预测推理")
+                                tool_delete_prediction = gr.Checkbox(label="🗑️ delete_prediction_data_by_batch", value=False, info="删除预测数据(按推理批次),请谨慎使用")
 
                             # ReAct配置
                             gr.Markdown("**🧠 ReAct推理配置**")
@@ -655,7 +660,6 @@ def create_app():
 
                         with gr.Row():
                             manual_inference_btn = gr.Button("🎯 执行推理", variant="primary")
-                            show_tool_history_btn = gr.Button("🛠️ 工具调用历史", size="sm")
                             clear_chat_btn = gr.Button("🗑️ 清空对话", size="sm")
 
                         # 工具调用记录展示
@@ -737,7 +741,7 @@ def create_app():
                             512, 48,  # inference_lookback_window, inference_predict_window
                             1.0, 0.9, 30, 0, "",  # inference_temperature, inference_top_p, inference_sample_count, inference_data_offset, inference_params_status
                             gr.update(), None, "",  # llm_config, prompt_template, agent_prompt
-                            True, True, True, True, True, True, True, True, True,  # 工具选择
+                            True, True, True, True, True, True, True, True, True, True, True, True, True, True,  # 工具选择
                             1000.0, 30.0, 10.0, 20.0,  # 交易限制默认值：quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss
                             gr.DataFrame(), gr.Plot(), "", gr.DataFrame(), "请保存推理参数后查看数据范围...", "", gr.DataFrame(), [{"role": "assistant", "content": "请先选择计划"}],  # training_df, kline_chart, probability_indicators_md, inference_df, inference_data_range_info, prediction_data_preview, agent_df, agent_chatbot
                             gr.DataFrame(), gr.DataFrame(),  # tool_calls_df, conversation_history_df
@@ -911,6 +915,10 @@ def create_app():
                         tools_config.get('cancel_order', True),  # tool_cancel_order
                         tools_config.get('modify_order', True),  # tool_modify_order
                         tools_config.get('place_stop_loss_order', True),  # tool_stop_loss
+                        tools_config.get('query_historical_kline_data', True),  # tool_query_historical_kline
+                        tools_config.get('get_current_utc_time', True),  # tool_get_utc_time
+                        tools_config.get('run_latest_model_inference', False),  # tool_run_inference
+                        tools_config.get('delete_prediction_data_by_batch', False),  # tool_delete_prediction
                         safe_int(max_iterations, 3),  # max_iterations
                         enable_thinking,  # enable_thinking
                         thinking_style,  # thinking_style
@@ -1078,6 +1086,7 @@ def create_app():
                         tool_get_account, tool_get_positions, tool_get_pending_orders,
                         tool_query_prediction, tool_prediction_history, tool_place_order,  # 工具选择
                         tool_cancel_order, tool_modify_order, tool_stop_loss,
+                        tool_query_historical_kline, tool_get_utc_time, tool_run_inference, tool_delete_prediction,  # 新增工具
                         max_iterations, enable_thinking, thinking_style,  # ReAct配置
                         quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss,  # 交易限制配置
                         training_df, kline_chart, probability_indicators_md,  # K线图和概率指标
@@ -1152,6 +1161,7 @@ def create_app():
                         tool_get_account, tool_get_positions, tool_get_pending_orders,
                         tool_query_prediction, tool_prediction_history, tool_place_order,  # 工具选择
                         tool_cancel_order, tool_modify_order, tool_stop_loss,
+                        tool_query_historical_kline, tool_get_utc_time, tool_run_inference, tool_delete_prediction,  # 新增工具
                         max_iterations, enable_thinking, thinking_style,  # ReAct配置
                         quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss,  # 交易限制配置
                         training_df, kline_chart, probability_indicators_md,  # K线图和概率指标
@@ -1326,7 +1336,7 @@ def create_app():
                 )
 
                 # Agent配置事件
-                def save_agent_config_wrapper(pid, llm_id, prompt, t1, t2, t3, t4, t5, t6, t7, t8, t9, max_iter, enable_think, think_style):
+                def save_agent_config_wrapper(pid, llm_id, prompt, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11, t12, t13, max_iter, enable_think, think_style):
                     if not pid:
                         return "❌ 请先选择计划"
                     tools_config = {
@@ -1338,7 +1348,11 @@ def create_app():
                         'place_order': t6,
                         'cancel_order': t7,
                         'modify_order': t8,
-                        'place_stop_loss_order': t9
+                        'place_stop_loss_order': t9,
+                        'query_historical_kline_data': t10,
+                        'get_current_utc_time': t11,
+                        'run_latest_model_inference': t12,
+                        'delete_prediction_data_by_batch': t13
                     }
                     # 保存Agent配置
                     agent_result = detail_ui.save_agent_config(int(pid), llm_id, prompt, tools_config)
@@ -1360,6 +1374,7 @@ def create_app():
                         tool_get_account, tool_get_positions, tool_get_pending_orders,
                         tool_query_prediction, tool_prediction_history, tool_place_order,
                         tool_cancel_order, tool_modify_order, tool_stop_loss,
+                        tool_query_historical_kline, tool_get_utc_time, tool_run_inference, tool_delete_prediction,
                         max_iterations, enable_thinking, thinking_style
                     ],
                     outputs=[agent_config_status]
@@ -1514,18 +1529,7 @@ def create_app():
                     outputs=[agent_chatbot]
                 )
 
-                # 显示工具调用历史（已废弃）
-                def show_tool_history_wrapper(pid):
-                    """显示工具调用历史到chatbot（工具确认功能已废弃）"""
-                    return [{"role": "user", "content": "工具调用历史"},
-                           {"role": "assistant", "content": "⚠️ 工具确认功能已废弃\n\nAI Agent现在可以直接使用启用的工具，无需人工确认。工具调用记录会显示在Agent决策列表中。"}]
-
-                show_tool_history_btn.click(
-                    fn=show_tool_history_wrapper,
-                    inputs=[plan_id_input],
-                    outputs=[agent_chatbot]
-                )
-
+  
   
                 # 清空对话
                 def clear_chat_wrapper():
