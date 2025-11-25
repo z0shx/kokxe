@@ -2358,6 +2358,150 @@ class AgentDecisionService:
     # ==================== 工具执行辅助方法 ====================
 
     @classmethod
+    def _has_tool_calls(cls, reasoning_text: str) -> bool:
+        """
+        检查推理文本中是否包含工具调用
+
+        Args:
+            reasoning_text: LLM推理文本
+
+        Returns:
+            bool: 是否包含工具调用
+        """
+        if not reasoning_text:
+            return False
+
+        # 检查常见的工具调用模式
+        tool_patterns = [
+            "调用工具",
+            "使用工具",
+            "执行工具",
+            "tool_call",
+            "function_call",
+            "调用函数",
+            "查询余额",
+            "查余额",
+            "余额",
+            "账户余额",
+            "下单",
+            "取消订单",
+            "修改订单",
+            "获取持仓",
+            "查询持仓",
+            "持仓",
+            "查询价格",
+            "价格",
+            "获取当前时间",
+            "当前时间",
+            "utc时间",
+            "执行推理",
+            "执行模型推理",
+            "模型推理",
+            "删除预测数据",
+            "查询预测数据"
+        ]
+
+        reasoning_text_lower = reasoning_text.lower()
+        for pattern in tool_patterns:
+            if pattern in reasoning_text_lower:
+                return True
+
+        # 检查是否有JSON格式的工具调用
+        import re
+        json_pattern = r'\{[^}]*"tool_name"[^}]*\}'
+        if re.search(json_pattern, reasoning_text):
+            return True
+
+        return False
+
+    @classmethod
+    def _parse_tool_calls(cls, reasoning_text: str) -> List[Dict]:
+        """
+        从推理文本中解析工具调用
+
+        Args:
+            reasoning_text: LLM推理文本
+
+        Returns:
+            List[Dict]: 解析出的工具调用列表
+        """
+        tool_calls = []
+
+        try:
+            import re
+            import json
+
+            # 模式1: 查找 "调用工具: 工具名称" 格式
+            pattern1 = r'调用工具[：:]\s*([^\n,，。.]+?)(?:\s*[参数参数][：:]\s*(\{[^}]*\}))?'
+            matches1 = re.findall(pattern1, reasoning_text)
+
+            for match in matches1:
+                tool_name = match[0].strip()
+                args_str = match[1] if len(match) > 1 and match[1] else "{}"
+
+                try:
+                    args = json.loads(args_str) if args_str else {}
+                except:
+                    args = {}
+
+                tool_calls.append({
+                    "name": tool_name,
+                    "arguments": args
+                })
+
+            # 模式2: 查找特定的工具调用关键词
+            if not tool_calls:
+                if "查询余额" in reasoning_text:
+                    tool_calls.append({
+                        "name": "get_account_balance",
+                        "arguments": {}
+                    })
+                elif "获取持仓" in reasoning_text or "查询持仓" in reasoning_text:
+                    tool_calls.append({
+                        "name": "get_account_positions",
+                        "arguments": {}
+                    })
+                elif "查询价格" in reasoning_text:
+                    # 尝试提取交易对
+                    inst_match = re.search(r'[A-Z]+-[A-Z]+', reasoning_text)
+                    if inst_match:
+                        tool_calls.append({
+                            "name": "get_current_price",
+                            "arguments": {"inst_id": inst_match.group()}
+                        })
+                elif "获取当前时间" in reasoning_text:
+                    tool_calls.append({
+                        "name": "get_current_utc_time",
+                        "arguments": {}
+                    })
+                elif "执行推理" in reasoning_text:
+                    tool_calls.append({
+                        "name": "run_latest_model_inference",
+                        "arguments": {}
+                    })
+
+            # 模式3: 尝试解析JSON格式
+            if not tool_calls:
+                json_pattern = r'\{[^}]*"tool_name"[^}]*\}'
+                json_matches = re.findall(json_pattern, reasoning_text)
+
+                for json_str in json_matches:
+                    try:
+                        data = json.loads(json_str)
+                        if "tool_name" in data:
+                            tool_calls.append({
+                                "name": data["tool_name"],
+                                "arguments": data.get("arguments", {})
+                            })
+                    except:
+                        pass
+
+        except Exception as e:
+            logger.error(f"解析工具调用失败: {e}")
+
+        return tool_calls
+
+    @classmethod
     async def _execute_single_tool_async(cls, plan: TradingPlan, tool_name: str, tool_args: Dict) -> Dict:
         """
         异步执行单个工具
@@ -3000,6 +3144,24 @@ class AgentDecisionService:
                 base_url=llm_config.api_base_url
             )
 
+            # 构建系统消息，引导ReAct思考
+            system_message = """请使用ReAct模式进行推理：
+1. **思考** (Thought): 分析当前情况和可用信息
+2. **行动** (Action): 选择并执行合适的工具
+3. **观察** (Observation): 分析工具执行结果并继续思考
+
+请明确标注你的思考过程，例如：
+💭 **思考**: 我需要先查询当前账户余额来了解资金状况...
+🔧 **行动**: 调用 get_account_balance 工具
+📊 **观察**: 根据返回结果继续分析..."""
+
+            # 在消息开头添加系统消息（如果还没有）
+            if not messages or messages[0].get("role") != "system":
+                messages = [{"role": "system", "content": system_message}] + messages
+            elif messages[0].get("role") == "system":
+                # 在现有系统消息后追加ReAct指导
+                messages[0]["content"] = messages[0]["content"] + "\n\n" + system_message
+
             # 转换工具为OpenAI格式
             tools = []
             for tool_name, tool_def in available_tools.items():
@@ -3023,56 +3185,72 @@ class AgentDecisionService:
                 temperature=llm_config.temperature or 0.7,
                 messages=messages,
                 tools=tools,
-                stream=True,
-                extra_body={"enable_thinking": True}
+                tool_choice="auto",
+                stream=True
             )
 
             current_content = ""
-            thinking_content = ""  # 用于累积思考内容
-            reasoning_content = ""  # 用于累积推理内容
+            current_thinking = ""
+            tool_calls_detected = []
 
             async for chunk in response:
                 if chunk.choices and len(chunk.choices) > 0:
                     delta = chunk.choices[0].delta
 
-                    # 处理推理内容（思考过程）
-                    if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
-                        reasoning_piece = delta.reasoning_content
-                        reasoning_content += reasoning_piece
-                        # 累积输出完整的思考内容
-                        if enable_thinking:
-                            formatted_thinking = cls._format_thinking_content(reasoning_content, thinking_style)
-                            yield [{"role": "assistant", "content": formatted_thinking}]
-
                     # 处理常规内容
-                    elif hasattr(delta, 'content') and delta.content:
+                    if hasattr(delta, 'content') and delta.content:
                         content_piece = delta.content
                         current_content += content_piece
-                        thinking_content += content_piece
 
-                        # 始终输出常规内容，无论是否有推理内容
-                        yield [{"role": "assistant", "content": current_content}]
+                        # 检测是否包含思考标记
+                        if "💭 **思考**" in content_piece or "思考:" in content_piece:
+                            current_thinking += content_piece
+                            # 格式化思考内容为可折叠样式
+                            if enable_thinking:
+                                thinking_formatted = cls._format_thinking_content(current_thinking, thinking_style)
+                                yield [{
+                                    "role": "assistant",
+                                    "content": thinking_formatted
+                                }]
+                        else:
+                            # 常规内容输出
+                            yield [{
+                                "role": "assistant",
+                                "content": current_content
+                            }]
 
+                    # 处理工具调用
                     elif hasattr(delta, 'tool_calls') and delta.tool_calls:
                         for tool_call in delta.tool_calls:
-                            if hasattr(tool_call, 'function'):
-                                func_name = tool_call.function.name
-                                func_args = tool_call.function.arguments or "{}"
+                            tool_call_index = tool_call.index
 
-                                if func_name:
-                                    # 添加到当前内容中，使用更醒目的格式和状态标签
-                                    action_text = f"""
+                            # 确保有足够的空间存储工具调用
+                            while len(tool_calls_detected) <= tool_call_index:
+                                tool_calls_detected.append({
+                                    'id': '',
+                                    'name': '',
+                                    'arguments': ''
+                                })
 
-**🔧 准备执行工具**
-<span style="background-color: #FFA500; color: white; padding: 2px 6px; border-radius: 4px; font-size: 12px;">⏳ 待确认</span> `{func_name}`
-- **参数:** `{func_args}`
-"""
-                                    current_content += action_text
-                                    yield [{"role": "assistant", "content": current_content}]
+                            # 处理工具调用ID
+                            if hasattr(tool_call, 'id') and tool_call.id:
+                                tool_calls_detected[tool_call_index]['id'] = tool_call.id
 
-                                    
+                            # 处理工具调用函数名
+                            if hasattr(tool_call, 'function') and tool_call.function:
+                                if hasattr(tool_call.function, 'name') and tool_call.function.name:
+                                    tool_calls_detected[tool_call_index]['name'] = tool_call.function.name
 
-                                        # 工具确认功能已废弃 - AI Agent现在可以直接使用启用的工具
+                                if hasattr(tool_call.function, 'arguments') and tool_call.function.arguments:
+                                    tool_calls_detected[tool_call_index]['arguments'] += tool_call.function.arguments
+
+            # 返回工具调用信息供上层处理
+            if tool_calls_detected:
+                yield {
+                    'type': 'tool_calls_detected',
+                    'tool_calls': tool_calls_detected,
+                    'content': current_content
+                }
 
         except Exception as e:
             logger.error(f"Qwen ReAct调用失败: {e}")
@@ -3329,14 +3507,39 @@ class AgentDecisionService:
                 prediction_summary = ""
                 if prediction_records:
                     latest_prediction = prediction_records[-1]
+
+                    # 安全处理概率值的格式化
+                    upward_prob = latest_prediction.upward_probability
+                    volatility_prob = latest_prediction.volatility_amplification_probability
+
+                    upward_prob_str = f"{upward_prob:.2%}" if upward_prob is not None else "N/A"
+                    volatility_prob_str = f"{volatility_prob:.2%}" if volatility_prob is not None else "N/A"
+
+                    # 安全处理价格区间的格式化
+                    close_min = latest_prediction.close_min
+                    close_max = latest_prediction.close_max
+                    close_min_str = f"${close_min:.4f}" if close_min is not None else "N/A"
+                    close_max_str = f"${close_max:.4f}" if close_max is not None else "N/A"
+
+                    # 安全处理当前价格的格式化
+                    current_price = latest_prediction.close
+                    current_price_str = f"${current_price:.4f}" if current_price is not None else "N/A"
+
+                    # 预测趋势判断（需要确保值存在）
+                    if close_max is not None and current_price is not None:
+                        trend = '上涨' if close_max > current_price else '下跌'
+                    else:
+                        trend = '未知'
+
                     prediction_summary = f"""
 最新预测数据（时间: {latest_prediction.timestamp.strftime('%Y-%m-%d %H:%M')}）：
-- 当前价格: ${latest_prediction.close:.4f}
-- 预测趋势: {'上涨' if latest_prediction.predicted_close > latest_prediction.close else '下跌'}
-- 预测价格: ${latest_prediction.predicted_close:.4f}
-- 上涨概率: {latest_prediction.upward_probability:.2%}
-- 波动性概率: {latest_prediction.volatility_probability:.2%}
+- 当前价格: {current_price_str}
+- 预测趋势: {trend}
+- 价格区间: {close_min_str} ~ {close_max_str}
+- 上涨概率: {upward_prob_str}
+- 波动性放大概率: {volatility_prob_str}
 """
+
                 else:
                     prediction_summary = "暂无预测数据"
 
@@ -3386,6 +3589,15 @@ class AgentDecisionService:
                 max_iterations = int(react_config.get('max_iterations', 3))
                 enable_thinking = bool(react_config.get('enable_thinking', True))
                 thinking_style = react_config.get('thinking_style', '详细')
+
+                # 获取启用的工具
+                from services.agent_tools import get_all_tools
+                tools_config = plan.agent_tools_config or {}
+                available_tools = {}
+
+                for tool_name, tool_def in get_all_tools().items():
+                    if tools_config.get(tool_name, False):  # 只包含启用的工具
+                        available_tools[tool_name] = tool_def
 
                 iteration = 0
                 tool_calls = []
@@ -3444,6 +3656,9 @@ class AgentDecisionService:
                         }
 
                     # 执行LLM调用
+                    llm_response = ""
+                    detected_tool_calls = []
+
                     if llm_config and llm_config.provider == 'anthropic':
                         async for chunk in cls._call_claude_react_stream(llm_config, context_messages):
                             if isinstance(chunk, str) and chunk.strip():
@@ -3462,6 +3677,29 @@ class AgentDecisionService:
                                     'content': chunk,
                                     'iteration': iteration
                                 }
+                    elif llm_config and llm_config.provider == 'qwen':
+                        # Qwen流式处理，支持思考过程和工具调用
+                        async for chunk in cls._call_qwen_react_stream(
+                            llm_config, context_messages, available_tools, enable_thinking, thinking_style
+                        ):
+                            if isinstance(chunk, list):
+                                # 消息输出
+                                yield {
+                                    'type': 'message',
+                                    'messages': chunk
+                                }
+                            elif isinstance(chunk, dict):
+                                if chunk.get('type') == 'tool_calls_detected':
+                                    detected_tool_calls = chunk.get('tool_calls', [])
+                                    llm_response = chunk.get('content', '')
+                                    break
+                                elif chunk.get('type') == 'error':
+                                    yield {
+                                        'type': 'error',
+                                        'content': chunk.get('content', 'Qwen调用失败'),
+                                        'messages': [{"role": "assistant", "content": chunk.get('content', 'Qwen调用失败')}]
+                                    }
+                                    break
                     else:
                         # 默认处理
                         llm_response = "基于预测数据和市场分析，我建议保持谨慎观望态度。"
@@ -3494,79 +3732,111 @@ class AgentDecisionService:
 
                     # 解析工具调用
                     tools_called = False
-                    if cls._has_tool_calls(reasoning_text):
-                        try:
-                            parsed_calls = cls._parse_tool_calls(reasoning_text)
+                    try:
 
-                            for tool_call in parsed_calls:
-                                tools_called = True
-                                tool_name = tool_call.get('name', 'unknown')
-                                tool_args = tool_call.get('arguments', {})
+                    # 优先处理从Qwen流式响应中检测到的工具调用
+                        if detected_tool_calls:
+                            parsed_calls = []
+                            for tool_call_data in detected_tool_calls:
+                                if tool_call_data.get('name'):
+                                    try:
+                                        import json
+                                        args = {}
+                                        if tool_call_data.get('arguments'):
+                                            args = json.loads(tool_call_data['arguments'])
+                                        parsed_calls.append({
+                                            'name': tool_call_data['name'],
+                                            'arguments': args
+                                        })
+                                    except:
+                                        # 如果JSON解析失败，使用原始字符串
+                                        parsed_calls.append({
+                                            'name': tool_call_data['name'],
+                                            'arguments': {'raw_args': tool_call_data.get('arguments', '{}')}
+                                        })
+                        # 如果没有从流式响应中检测到工具调用，则从文本中解析
+                        elif cls._has_tool_calls(reasoning_text):
+                            try:
+                                parsed_calls = cls._parse_tool_calls(reasoning_text)
+                            except Exception as e:
+                                logger.error(f"解析工具调用失败: {e}")
+                                parsed_calls = []
+                        else:
+                            parsed_calls = []
 
-                                # 记录工具调用
-                                ConversationService.add_message(
-                                    conversation_id=conversation.id,
-                                    role="assistant",
-                                    content=f"调用工具: {tool_name}",
-                                    message_type=MessageType.TOOL_CALL.value,
-                                    react_iteration=iteration,
-                                    react_stage=ReactStage.ACTION.value,
-                                    tool_name=tool_name,
-                                    tool_arguments=tool_args,
-                                    llm_model=llm_config.model_name if llm_config else 'default'
-                                )
+                        for tool_call in parsed_calls:
+                            tools_called = True
+                            tool_name = tool_call.get('name', 'unknown')
+                            tool_args = tool_call.get('arguments', {})
 
-                                yield {
-                                    'type': 'tool_call',
-                                    'tool_name': tool_name,
-                                    'tool_arguments': tool_args,
-                                    'messages': ConversationService.format_messages_for_chatbot(
-                                        ConversationService.get_conversation_messages(conversation.id)
-                                    )
-                                }
-
-                                # 执行工具
-                                logger.info(f"执行工具: {tool_name}, 参数: {tool_args}")
-
-                                # 工具确认功能已废弃 - AI Agent现在可以直接使用启用的工具
-                                # 直接执行工具
-                                result = await cls._execute_single_tool_async(plan, tool_name, tool_args)
-
-                                # 记录工具结果
-                                ConversationService.add_message(
-                                    conversation_id=conversation.id,
-                                    role="assistant",
-                                    content=f"工具结果: {tool_name}",
-                                    message_type=MessageType.TOOL_RESULT.value,
-                                    react_iteration=iteration,
-                                    react_stage=ReactStage.OBSERVATION.value,
-                                    tool_name=tool_name,
-                                    tool_arguments=tool_args,
-                                    tool_result=result,
-                                    tool_status='success' if result.get('success') else 'failed'
-                                )
-
-                                yield {
-                                    'type': 'tool_result',
-                                    'tool_name': tool_name,
-                                    'tool_result': result,
-                                    'messages': ConversationService.format_messages_for_chatbot(
-                                        ConversationService.get_conversation_messages(conversation.id)
-                                    )
-                                }
-
-                                tool_calls.append(tool_call)
-                                tool_results.append(result)
-
-                        except Exception as e:
-                            logger.error(f"解析或执行工具调用失败: {e}")
-                            error_msg = f"工具调用执行失败: {str(e)}"
+                            # 记录工具调用
                             ConversationService.add_message(
                                 conversation_id=conversation.id,
                                 role="assistant",
-                                content=error_msg,
-                                message_type=MessageType.TEXT.value
+                                content=f"调用工具: {tool_name}",
+                                message_type=MessageType.TOOL_CALL.value,
+                                react_iteration=iteration,
+                                react_stage=ReactStage.ACTION.value,
+                                tool_name=tool_name,
+                                tool_arguments=tool_args,
+                                llm_model=llm_config.model_name if llm_config else 'default'
                             )
+
+                            yield {
+                                'type': 'tool_call',
+                                'tool_name': tool_name,
+                                'tool_arguments': tool_args,
+                                'messages': ConversationService.format_messages_for_chatbot(
+                                    ConversationService.get_conversation_messages(conversation.id)
+                                )
+                            }
+
+                            # 执行工具
+                            logger.info(f"执行工具: {tool_name}, 参数: {tool_args}")
+
+                            # 工具确认功能已废弃 - AI Agent现在可以直接使用启用的工具
+                            # 直接执行工具
+                            result = await cls._execute_single_tool_async(plan, tool_name, tool_args)
+
+                            # 记录工具结果
+                            ConversationService.add_message(
+                                conversation_id=conversation.id,
+                                role="assistant",
+                                content=f"工具结果: {tool_name}",
+                                message_type=MessageType.TOOL_RESULT.value,
+                                react_iteration=iteration,
+                                react_stage=ReactStage.OBSERVATION.value,
+                                tool_name=tool_name,
+                                tool_arguments=tool_args,
+                                tool_result=result,
+                                tool_status='success' if result.get('success') else 'failed'
+                            )
+
+                            yield {
+                                'type': 'tool_result',
+                                'tool_name': tool_name,
+                                'tool_result': result,
+                                'messages': ConversationService.format_messages_for_chatbot(
+                                    ConversationService.get_conversation_messages(conversation.id)
+                                )
+                            }
+
+                            tool_calls.append({
+                                'name': tool_name,
+                                'arguments': tool_args,
+                                'result': result
+                            })
+                            tool_results.append(result)
+
+                    except Exception as e:
+                        logger.error(f"解析或执行工具调用失败: {e}")
+                        error_msg = f"工具调用执行失败: {str(e)}"
+                        ConversationService.add_message(
+                            conversation_id=conversation.id,
+                            role="assistant",
+                            content=error_msg,
+                            message_type=MessageType.TEXT.value
+                        )
 
                     # 如果没有工具调用，且是最后一轮，生成最终回复
                     if not tools_called and iteration >= max_iterations:

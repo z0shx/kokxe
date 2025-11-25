@@ -318,16 +318,29 @@ class AutomationService:
                         del self.active_tasks[plan_id]
                     return
 
-                # 执行Agent决策
-                agent_result = await AgentDecisionService.make_decision_async(
-                    plan_id=plan_id,
-                    prediction_data_id=latest_prediction.id,
-                    auto_mode=True  # 标记为自动模式
-                )
+                # 执行Agent决策（使用增强版ReAct推理）
+                agent_decision_id = None
+                try:
+                    async for chunk in AgentDecisionService.enhanced_react_tool_use_stream(
+                        plan_id=plan_id,
+                        training_id=training_record_id,
+                        session_name=f"自动推理_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                    ):
+                        if chunk.get('type') == 'conversation_created':
+                            agent_decision_id = chunk.get('conversation_id')
+                            break
+
+                    if agent_decision_id:
+                        logger.info(f"自动Agent决策成功: plan_id={plan_id}, conversation_id={agent_decision_id}")
+                        agent_result = {'success': True, 'decision_id': agent_decision_id}
+                    else:
+                        raise Exception("未能创建对话会话")
+
+                except Exception as e:
+                    logger.error(f"自动Agent决策失败: {e}")
+                    agent_result = {'success': False, 'error': str(e)}
 
                 if agent_result.get('success'):
-                    agent_decision_id = agent_result.get('decision_id')
-                    logger.info(f"自动Agent决策成功: plan_id={plan_id}, decision_id={agent_decision_id}")
 
                     # 更新任务状态
                     if plan_id in self.active_tasks:

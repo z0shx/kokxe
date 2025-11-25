@@ -2522,12 +2522,21 @@ class PlanDetailUI:
                     yield [{"role": "assistant", "content": "❌ 没有可用的训练记录，请先完成模型训练"}]
                     return
 
-            # 使用 AgentDecisionService 的 ReAct+Tool Use 流式方法
-            async for message in AgentDecisionService.react_tool_use_stream(
+            # 使用 AgentDecisionService 的增强版 ReAct+Tool Use 流式方法
+            # 该方法支持完整的对话记录和真实工具调用
+            async for chunk in AgentDecisionService.enhanced_react_tool_use_stream(
                 plan_id=plan_id,
-                training_id=latest_training.id if latest_training else None
+                training_id=latest_training.id if latest_training else None,
+                session_name=f"手动推理_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             ):
-                yield message
+                if chunk.get('type') == 'message':
+                    # 格式化消息为Chatbot格式
+                    messages = chunk.get('messages', [])
+                    if messages:
+                        yield messages
+                elif chunk.get('type') == 'error':
+                    # 错误消息
+                    yield [{"role": "assistant", "content": chunk.get('content', '推理过程出错')}]
 
         except Exception as e:
             logger.error(f"ReAct推理失败: {e}")

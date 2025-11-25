@@ -1,0 +1,745 @@
+{
+  "get_account_balance": {
+    "name": "get_account_balance",
+    "description": "查询账户余额。返回指定币种或所有币种的可用余额、冻结余额等信息。下单前必须调用此工具确认有足够的资金。根据交易限制配置，如果固定USDT资金不足，将使用账户总资金的百分比。",
+    "category": "query",
+    "risk_level": "low",
+    "parameters": {
+      "ccy": {
+        "type": "string",
+        "description": "币种，如 BTC、USDT。不填则返回所有币种余额",
+        "required": false
+      }
+    },
+    "required_params": [],
+    "test_cases": [
+      {
+        "name": "查询USDT余额",
+        "parameters": {
+          "ccy": "USDT"
+        },
+        "description": "查询USDT的可用余额"
+      },
+      {
+        "name": "查询所有币种余额",
+        "parameters": {},
+        "description": "查询账户中所有币种的余额"
+      },
+      {
+        "name": "查询BTC余额",
+        "parameters": {
+          "ccy": "BTC"
+        },
+        "description": "查询BTC的可用余额"
+      }
+    ]
+  },
+  "get_account_positions": {
+    "name": "get_account_positions",
+    "description": "查询账户持仓信息。返回当前所有持仓的详细信息，包括持仓数量、均价、未实现盈亏等。",
+    "category": "query",
+    "risk_level": "low",
+    "parameters": {
+      "inst_id": {
+        "type": "string",
+        "description": "交易对，如 BTC-USDT。不填则返回所有持仓",
+        "required": false
+      }
+    },
+    "required_params": [],
+    "test_cases": [
+      {
+        "name": "查询BTC-USDT持仓",
+        "parameters": {
+          "inst_id": "BTC-USDT"
+        },
+        "description": "查询BTC-USDT交易对的持仓信息"
+      },
+      {
+        "name": "查询所有持仓",
+        "parameters": {},
+        "description": "查询账户中所有持仓"
+      }
+    ]
+  },
+  "get_order_info": {
+    "name": "get_order_info",
+    "description": "查询订单详细信息。可以查询订单的状态、成交情况、剩余数量等。用于确认订单是否成功下单或成交。",
+    "category": "query",
+    "risk_level": "low",
+    "parameters": {
+      "inst_id": {
+        "type": "string",
+        "description": "交易对，如 ETH-USDT",
+        "required": true
+      },
+      "order_id": {
+        "type": "string",
+        "description": "订单ID (order_id 和 client_order_id 至少提供一个)",
+        "required": false
+      },
+      "client_order_id": {
+        "type": "string",
+        "description": "客户端订单ID",
+        "required": false
+      }
+    },
+    "required_params": [
+      "inst_id"
+    ],
+    "test_cases": [
+      {
+        "name": "查询订单信息(通过订单ID)",
+        "parameters": {
+          "inst_id": "ETH-USDT",
+          "order_id": "12345"
+        },
+        "description": "通过订单ID查询订单详情"
+      },
+      {
+        "name": "查询订单信息(通过客户端ID)",
+        "parameters": {
+          "inst_id": "ETH-USDT",
+          "client_order_id": "test_buy_001"
+        },
+        "description": "通过客户端订单ID查询订单详情"
+      }
+    ]
+  },
+  "get_pending_orders": {
+    "name": "get_pending_orders",
+    "description": "查询当前所有未成交订单（挂单）。返回所有等待成交的限价单信息。",
+    "category": "query",
+    "risk_level": "low",
+    "parameters": {
+      "inst_id": {
+        "type": "string",
+        "description": "交易对，如 ETH-USDT。不填则返回所有交易对的挂单",
+        "required": false
+      }
+    },
+    "required_params": [],
+    "test_cases": [
+      {
+        "name": "查询ETH-USDT挂单",
+        "parameters": {
+          "inst_id": "ETH-USDT"
+        },
+        "description": "查询ETH-USDT的所有挂单"
+      },
+      {
+        "name": "查询所有挂单",
+        "parameters": {},
+        "description": "查询账户中的所有挂单"
+      }
+    ]
+  },
+  "get_order_history": {
+    "name": "get_order_history",
+    "description": "查询历史订单。返回最近7天内的订单历史记录，包括已成交、已撤销的订单。",
+    "category": "query",
+    "risk_level": "low",
+    "parameters": {
+      "inst_id": {
+        "type": "string",
+        "description": "交易对，如 BTC-USDT。不填则返回所有交易对",
+        "required": false
+      },
+      "begin": {
+        "type": "string",
+        "description": "开始时间（毫秒时间戳）",
+        "required": false
+      },
+      "end": {
+        "type": "string",
+        "description": "结束时间（毫秒时间戳）",
+        "required": false
+      },
+      "limit": {
+        "type": "string",
+        "description": "返回数量，默认100，最大100",
+        "required": false
+      }
+    },
+    "required_params": [],
+    "test_cases": [
+      {
+        "name": "默认测试_get_order_history",
+        "parameters": {},
+        "description": "测试get_order_history的默认行为"
+      }
+    ]
+  },
+  "get_fills": {
+    "name": "get_fills",
+    "description": "查询成交明细。返回最近3个月的成交记录，包括成交价格、数量、手续费等。",
+    "category": "query",
+    "risk_level": "low",
+    "parameters": {
+      "inst_id": {
+        "type": "string",
+        "description": "交易对，如 ETH-USDT",
+        "required": false
+      },
+      "order_id": {
+        "type": "string",
+        "description": "订单ID",
+        "required": false
+      },
+      "begin": {
+        "type": "string",
+        "description": "开始时间（毫秒时间戳）",
+        "required": false
+      },
+      "end": {
+        "type": "string",
+        "description": "结束时间（毫秒时间戳）",
+        "required": false
+      },
+      "limit": {
+        "type": "string",
+        "description": "返回数量，默认100，最大100",
+        "required": false
+      }
+    },
+    "required_params": [],
+    "test_cases": [
+      {
+        "name": "查询ETH-USDT成交明细",
+        "parameters": {
+          "inst_id": "ETH-USDT",
+          "limit": "50"
+        },
+        "description": "查询ETH-USDT的最近50条成交记录"
+      },
+      {
+        "name": "查询所有成交明细",
+        "parameters": {
+          "limit": "20"
+        },
+        "description": "查询所有交易对的最近20条成交记录"
+      }
+    ]
+  },
+  "get_current_price": {
+    "name": "get_current_price",
+    "description": "获取交易对当前市场价格。返回最新成交价、买一价、卖一价等实时行情信息。用于判断合适的下单价格。",
+    "category": "query",
+    "risk_level": "low",
+    "parameters": {
+      "inst_id": {
+        "type": "string",
+        "description": "交易对，如 ETH-USDT",
+        "required": true
+      }
+    },
+    "required_params": [
+      "inst_id"
+    ],
+    "test_cases": [
+      {
+        "name": "查询ETH-USDT价格",
+        "parameters": {
+          "inst_id": "ETH-USDT"
+        },
+        "description": "获取ETH-USDT的当前价格"
+      }
+    ]
+  },
+  "place_limit_order": {
+    "name": "place_limit_order",
+    "description": "下限价单。限价单以指定价格买入或卖出，只有当市场价格达到或优于限价时才会成交。\n\n重要提示：\n1. 下单前必须先调用 get_account_balance 确认有足够的资金\n2. 将根据交易限制配置中的可用USDT数量或百分比计算最大可用资金\n3. 支持平摊操作：如果配置了平摊单量，会将交易金额分成多笔小额订单\n4. 买入时需要足够的计价货币（如USDT），卖出时需要足够的基础货币（如BTC）\n5. 价格和数量必须符合交易对的最小交易单位和精度要求\n6. 建议下单后调用 get_order_info 确认订单状态",
+    "category": "trade",
+    "risk_level": "high",
+    "parameters": {
+      "inst_id": {
+        "type": "string",
+        "description": "交易对，如 ETH-USDT",
+        "required": true
+      },
+      "side": {
+        "type": "string",
+        "description": "订单方向：buy(买入) 或 sell(卖出)",
+        "required": true
+      },
+      "price": {
+        "type": "string",
+        "description": "限价价格。买入时不能高于卖一价的105%，卖出时不能低于买一价的95%",
+        "required": true
+      },
+      "size": {
+        "type": "string",
+        "description": "委托数量（基础货币数量，如ETH的数量）。如果不指定，系统将根据交易限制自动计算",
+        "required": false
+      },
+      "total_amount": {
+        "type": "string",
+        "description": "总交易金额（USDT）。如果不指定size，系统将根据此金额和价格计算数量",
+        "required": false
+      },
+      "client_order_id": {
+        "type": "string",
+        "description": "客户端订单ID，用于追踪订单。建议使用有意义的标识",
+        "required": false
+      }
+    },
+    "required_params": [
+      "inst_id",
+      "side",
+      "price"
+    ],
+    "test_cases": [
+      {
+        "name": "安全买入限价单测试",
+        "parameters": {
+          "inst_id": "ETH-USDT",
+          "side": "buy",
+          "price": "100",
+          "total_amount": "10"
+        },
+        "description": "测试买入限价单，价格远低于市场价确保不会成交"
+      },
+      {
+        "name": "安全卖出限价单测试",
+        "parameters": {
+          "inst_id": "ETH-USDT",
+          "side": "sell",
+          "price": "100000",
+          "size": "0.001"
+        },
+        "description": "测试卖出限价单，价格远高于市场价确保不会成交"
+      }
+    ]
+  },
+  "cancel_order": {
+    "name": "cancel_order",
+    "description": "撤销未成交的订单。撤单后，冻结的资金会立即释放。\n\n注意事项：\n1. 只能撤销状态为未成交或部分成交的订单\n2. 已完全成交的订单无法撤销\n3. 撤单成功后，资金会解冻并返回账户可用余额\n4. order_id 和 client_order_id 至少提供一个",
+    "category": "trade",
+    "risk_level": "medium",
+    "parameters": {
+      "inst_id": {
+        "type": "string",
+        "description": "交易对，如 ETH-USDT",
+        "required": true
+      },
+      "order_id": {
+        "type": "string",
+        "description": "订单ID",
+        "required": false
+      },
+      "client_order_id": {
+        "type": "string",
+        "description": "客户端订单ID",
+        "required": false
+      }
+    },
+    "required_params": [
+      "inst_id"
+    ],
+    "test_cases": [
+      {
+        "name": "通过客户端ID撤销订单",
+        "parameters": {
+          "inst_id": "ETH-USDT",
+          "client_order_id": "test_buy_001"
+        },
+        "description": "撤销之前创建的买入限价单（通过客户端ID）"
+      },
+      {
+        "name": "通过订单ID撤销订单",
+        "parameters": {
+          "inst_id": "ETH-USDT",
+          "order_id": "test_order_id_12345"
+        },
+        "description": "撤销订单（通过订单ID）"
+      }
+    ]
+  },
+  "amend_order": {
+    "name": "amend_order",
+    "description": "修改未成交订单的价格或数量。改单可以在不撤销订单的情况下调整交易参数。\n\n注意事项：\n1. 只能修改未成交或部分成交的订单\n2. 每次改单必须至少修改价格或数量之一\n3. 改单后订单会丢失队列优先级（重新排队）\n4. 如果改单失败，原订单仍然有效\n5. 改后的价格和数量仍需符合交易规则",
+    "category": "trade",
+    "risk_level": "medium",
+    "parameters": {
+      "inst_id": {
+        "type": "string",
+        "description": "交易对，如 ETH-USDT",
+        "required": true
+      },
+      "order_id": {
+        "type": "string",
+        "description": "订单ID",
+        "required": false
+      },
+      "client_order_id": {
+        "type": "string",
+        "description": "客户端订单ID",
+        "required": false
+      },
+      "new_price": {
+        "type": "string",
+        "description": "新的委托价格",
+        "required": false
+      },
+      "new_size": {
+        "type": "string",
+        "description": "新的委托数量",
+        "required": false
+      }
+    },
+    "required_params": [
+      "inst_id"
+    ],
+    "test_cases": [
+      {
+        "name": "修改订单价格",
+        "parameters": {
+          "inst_id": "ETH-USDT",
+          "client_order_id": "test_sell_001",
+          "new_price": "200000"
+        },
+        "description": "修改卖出订单价格（仍然远高于市场价，确保不会成交）"
+      },
+      {
+        "name": "修改订单数量",
+        "parameters": {
+          "inst_id": "ETH-USDT",
+          "client_order_id": "test_buy_001",
+          "new_size": "0.002"
+        },
+        "description": "修改买入订单数量"
+      }
+    ]
+  },
+  "cancel_all_orders": {
+    "name": "cancel_all_orders",
+    "description": "批量撤销所有未成交订单。紧急情况下可以一次性撤销所有挂单。\n\n使用场景：\n1. 市场异常波动时需要快速平仓\n2. 策略失效需要停止所有交易\n3. 重新调整交易策略前清空所有订单\n\n注意：此操作不可逆，请谨慎使用",
+    "category": "trade",
+    "risk_level": "high",
+    "parameters": {
+      "inst_id": {
+        "type": "string",
+        "description": "交易对，如 ETH-USDT。不填则撤销所有交易对的订单",
+        "required": false
+      }
+    },
+    "required_params": [],
+    "test_cases": [
+      {
+        "name": "撤销指定交易对的所有订单",
+        "parameters": {
+          "inst_id": "ETH-USDT"
+        },
+        "description": "撤销ETH-USDT交易对的所有未成交订单"
+      },
+      {
+        "name": "撤销所有交易对的订单",
+        "parameters": {},
+        "description": "撤销所有交易对的未成交订单（谨慎使用）"
+      }
+    ]
+  },
+  "place_stop_loss_order": {
+    "name": "place_stop_loss_order",
+    "description": "设置止损订单。当价格达到指定止损比例时自动卖出，用于控制风险。\n\n重要提示：\n1. 止损基于配置的止损百分比，计算当前持仓的平均成本\n2. 止损价格 = 平均成本 * (1 - 止损百分比)\n3. 下单前会检查当前持仓情况和止损必要性\n4. 止损订单使用市价单，确保快速成交\n5. 建议在持仓后及时设置止损保护",
+    "category": "trade",
+    "risk_level": "high",
+    "parameters": {
+      "inst_id": {
+        "type": "string",
+        "description": "交易对，如 ETH-USDT",
+        "required": true
+      },
+      "stop_loss_percentage": {
+        "type": "string",
+        "description": "止损百分比，如 0.2 表示20%的止损。如果不指定，使用计划配置的默认值",
+        "required": false
+      },
+      "client_order_id": {
+        "type": "string",
+        "description": "客户端订单ID，用于追踪止损订单",
+        "required": false
+      }
+    },
+    "required_params": [
+      "inst_id"
+    ],
+    "test_cases": [
+      {
+        "name": "设置ETH-USDT止损订单",
+        "parameters": {
+          "inst_id": "ETH-USDT",
+          "stop_loss_percentage": "0.1",
+          "client_order_id": "stop_loss_eth_001"
+        },
+        "description": "为ETH-USDT设置10%的止损保护（仅在有持仓时生效）"
+      },
+      {
+        "name": "使用默认止损百分比",
+        "parameters": {
+          "inst_id": "ETH-USDT",
+          "client_order_id": "stop_loss_eth_default"
+        },
+        "description": "使用计划配置的默认止损百分比设置止损订单"
+      }
+    ]
+  },
+  "get_prediction_history": {
+    "name": "get_prediction_history",
+    "description": "查询Kronos模型的历史预测数据。返回指定训练版本的所有历史推理批次及其预测结果。\n\n使用场景：\n1. 查看之前的预测结果，评估模型准确性\n2. 对比不同时间点的预测差异\n3. 分析预测趋势的变化\n4. 回顾历史预测与实际走势的对比\n\n返回信息包括：\n- 推理批次ID\n- 推理时间\n- 预测数据数量\n- 预测时间范围\n- 具体的OHLC预测值\n- 上涨概率、波动性放大概率等指标",
+    "category": "query",
+    "risk_level": "low",
+    "parameters": {
+      "training_id": {
+        "type": "integer",
+        "description": "训练记录ID。如果不指定，则返回当前计划最新训练版本的预测历史",
+        "required": false
+      },
+      "inference_batch_id": {
+        "type": "string",
+        "description": "推理批次ID。如果指定，则只返回该批次的详细预测数据；不指定则返回所有批次列表",
+        "required": false
+      },
+      "limit": {
+        "type": "integer",
+        "description": "返回批次数量，默认10，最大50",
+        "required": false
+      }
+    },
+    "required_params": [],
+    "test_cases": [
+      {
+        "name": "查询预测历史(默认)",
+        "parameters": {},
+        "description": "查询当前计划最新训练版本的预测历史"
+      },
+      {
+        "name": "查询指定批次预测详情",
+        "parameters": {
+          "inference_batch_id": "batch_test_001",
+          "limit": 5
+        },
+        "description": "查询指定批次的详细预测数据"
+      }
+    ]
+  },
+  "query_prediction_data": {
+    "name": "query_prediction_data",
+    "description": "查询数据库中存储的预测数据。可以按时间范围、批次ID等条件查询，支持详细的OHLC数据查询。\n\n使用场景：\n1. 查询特定时间段的预测数据\n2. 分析预测数据的统计特征\n3. 对比不同批次的预测结果\n4. 获取预测数据的详细信息用于决策分析\n\n返回信息包括：\n- 符合条件的预测数据列表\n- 每条数据的OHLC值、时间戳\n- 批次信息和推理时间\n- 统计信息（如数据量、时间范围等）\n- 概率指标（如果有）",
+    "category": "query",
+    "risk_level": "low",
+    "parameters": {
+      "training_id": {
+        "type": "integer",
+        "description": "训练记录ID，用于筛选特定训练版本的预测数据",
+        "required": false
+      },
+      "inference_batch_id": {
+        "type": "string",
+        "description": "推理批次ID，用于筛选特定批次的预测数据",
+        "required": false
+      },
+      "start_time": {
+        "type": "string",
+        "description": "开始时间，格式：YYYY-MM-DD HH:MM:SS",
+        "required": false
+      },
+      "end_time": {
+        "type": "string",
+        "description": "结束时间，格式：YYYY-MM-DD HH:MM:SS",
+        "required": false
+      },
+      "limit": {
+        "type": "integer",
+        "description": "返回数据条数，默认50，最大200",
+        "required": false
+      },
+      "order_by": {
+        "type": "string",
+        "description": "排序方式：'time_asc'(时间升序), 'time_desc'(时间降序), 'created_asc', 'created_desc'",
+        "required": false
+      }
+    },
+    "required_params": [],
+    "test_cases": [
+      {
+        "name": "查询最近预测数据",
+        "parameters": {
+          "limit": 20,
+          "order_by": "time_desc"
+        },
+        "description": "查询最近20条预测数据，按时间倒序"
+      },
+      {
+        "name": "按时间范围查询预测数据",
+        "parameters": {
+          "start_time": "2025-11-24 00:00:00",
+          "end_time": "2025-11-25 00:00:00",
+          "limit": 10
+        },
+        "description": "查询指定时间范围的预测数据"
+      }
+    ]
+  },
+  "query_historical_kline_data": {
+    "name": "query_historical_kline_data",
+    "description": "查询真实历史交易数据。通过查询数据库中的K线数据表，使用UTC+0时间戳作为查询条件，返回指定时间范围内的历史OHLCV数据。\n\n使用场景：\n1. 查看特定时间段的历史价格走势\n2. 分析历史价格波动和成交量\n3. 获取技术分析所需的历史数据\n4. 对比模型预测与实际历史数据\n5. 回测交易策略的历史表现\n\n返回信息包括：\n- 符合条件的历史K线数据列表\n- 每条数据的时间戳（UTC+0）、开盘价、最高价、最低价、收盘价、成交量、成交额\n- 数据统计信息（数据量、时间范围、价格波动等）\n- 数据完整性说明",
+    "category": "query",
+    "risk_level": "low",
+    "parameters": {
+      "inst_id": {
+        "type": "string",
+        "description": "交易对，如 BTC-USDT、ETH-USDT",
+        "required": true
+      },
+      "interval": {
+        "type": "string",
+        "description": "K线时间间隔，支持：30m、1H、2H、4H",
+        "required": false
+      },
+      "start_time": {
+        "type": "string",
+        "description": "开始时间，格式：YYYY-MM-DD HH:MM:SS（UTC+0时间）",
+        "required": false
+      },
+      "end_time": {
+        "type": "string",
+        "description": "结束时间，格式：YYYY-MM-DD HH:MM:SS（UTC+0时间）",
+        "required": false
+      },
+      "limit": {
+        "type": "integer",
+        "description": "返回数据条数，默认100，最大500",
+        "required": false
+      },
+      "order_by": {
+        "type": "string",
+        "description": "排序方式：'time_asc'(时间升序)、'time_desc'(时间降序)",
+        "required": false
+      }
+    },
+    "required_params": [
+      "inst_id"
+    ],
+    "test_cases": [
+      {
+        "name": "查询BTC-USDT历史K线(1H)",
+        "parameters": {
+          "inst_id": "BTC-USDT",
+          "interval": "1H",
+          "start_time": "2025-11-20 00:00:00",
+          "end_time": "2025-11-25 00:00:00",
+          "limit": 50
+        },
+        "description": "查询BTC-USDT最近5天的1小时K线数据"
+      },
+      {
+        "name": "查询ETH-USDT历史K线(4H)",
+        "parameters": {
+          "inst_id": "ETH-USDT",
+          "interval": "4H",
+          "start_time": "2025-11-15 00:00:00",
+          "end_time": "2025-11-25 00:00:00",
+          "limit": 30
+        },
+        "description": "查询ETH-USDT最近10天的4小时K线数据"
+      }
+    ]
+  },
+  "get_current_utc_time": {
+    "name": "get_current_utc_time",
+    "description": "获取当前的UTC+0日期与时间。返回精确的时间戳和格式化的时间字符串，用于时间相关的操作和查询。\n\n使用场景：\n1. 确定当前时间用于数据查询范围\n2. 计算时间差和时间间隔\n3. 生成时间相关的交易决策依据\n4. 同步不同系统的时间标准\n5. 记录精确的操作时间点\n\n返回信息包括：\n- 当前UTC+0时间戳（毫秒）\n- 格式化的时间字符串（YYYY-MM-DD HH:MM:SS）\n- ISO格式的时间字符串\n- 时区信息说明",
+    "category": "query",
+    "risk_level": "low",
+    "parameters": {},
+    "required_params": [],
+    "test_cases": [
+      {
+        "name": "获取当前UTC时间",
+        "parameters": {},
+        "description": "获取当前UTC+0时间"
+      }
+    ]
+  },
+  "run_latest_model_inference": {
+    "name": "run_latest_model_inference",
+    "description": "执行最新微调版本模型的预测推理，得到最新的预测数据。使用当前计划关联的最新训练模型，对最新的市场数据进行推理，生成新的预测结果。\n\n使用场景：\n1. 需要基于最新市场数据生成预测时\n2. 定期更新预测数据时\n3. 手动触发模型推理时\n4. 验证模型最新预测结果时\n\n执行过程：\n1. 查找当前计划的最新已完成训练记录\n2. 准备最新的市场数据作为推理输入\n3. 加载最新训练的模型权重\n4. 执行模型推理生成预测\n5. 保存预测结果到数据库\n\n返回信息包括：\n- 推理任务ID\n- 模型版本信息\n- 预测数据数量\n- 预测时间范围\n- 预测结果摘要（最高价格、最低价格、趋势等）",
+    "category": "monitor",
+    "risk_level": "medium",
+    "parameters": {
+      "lookback_window": {
+        "type": "integer",
+        "description": "回溯窗口大小，用于推理的历史数据点数（默认512）",
+        "required": false
+      },
+      "predict_window": {
+        "type": "integer",
+        "description": "预测窗口大小，预测未来多少个时间点（默认48）",
+        "required": false
+      },
+      "force_rerun": {
+        "type": "boolean",
+        "description": "是否强制重新推理，即使已有最新的预测数据（默认false）",
+        "required": false
+      }
+    },
+    "required_params": [],
+    "test_cases": [
+      {
+        "name": "执行推理(默认参数)",
+        "parameters": {},
+        "description": "使用默认参数执行最新模型推理"
+      },
+      {
+        "name": "执行推理(自定义参数)",
+        "parameters": {
+          "lookback_window": 256,
+          "predict_window": 24,
+          "force_rerun": false
+        },
+        "description": "使用自定义参数执行模型推理"
+      }
+    ]
+  },
+  "delete_prediction_data_by_batch": {
+    "name": "delete_prediction_data_by_batch",
+    "description": "删除预测数据（按推理批次）。可以删除指定批次ID或时间范围内的预测数据，用于数据清理或重新推理前的准备工作。\n\n使用场景：\n1. 清理错误或有问题的预测数据\n2. 重新推理前删除旧数据\n3. 数据空间管理和优化\n4. 测试数据清理流程\n\n删除规则：\n- 按批次ID删除：删除指定批次ID的所有预测数据\n- 按时间范围删除：删除指定时间范围内的所有预测数据\n- 删除操作不可恢复，请谨慎使用\n- 只删除预测数据，不影响训练记录\n\n返回信息包括：\n- 删除的数据记录数\n- 被删除的批次ID列表\n- 删除的时间范围信息\n- 操作确认状态",
+    "category": "monitor",
+    "risk_level": "high",
+    "parameters": {
+      "batch_id": {
+        "type": "integer",
+        "description": "推理批次ID。指定批次ID时，将删除该批次的所有预测数据",
+        "required": false
+      },
+      "start_time": {
+        "type": "string",
+        "description": "开始时间，格式：YYYY-MM-DD HH:MM:SS（UTC+0时间）。与batch_id二选一",
+        "required": false
+      },
+      "end_time": {
+        "type": "string",
+        "description": "结束时间，格式：YYYY-MM-DD HH:MM:SS（UTC+0时间）。与start_time配合使用",
+        "required": false
+      },
+      "confirm_delete": {
+        "type": "boolean",
+        "description": "确认删除操作。必须设置为true才会执行删除（安全措施）",
+        "required": true
+      }
+    },
+    "required_params": [
+      "confirm_delete"
+    ],
+    "test_cases": [
+      {
+        "name": "安全测试(不删除)",
+        "parameters": {
+          "batch_id": 999999,
+          "confirm_delete": false
+        },
+        "description": "测试参数验证，不实际删除"
+      }
+    ]
+  }
+}

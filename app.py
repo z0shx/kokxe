@@ -670,15 +670,7 @@ def create_app():
                                 label="此次会话工具调用记录"
                             )
 
-                        # 对话历史展示
-                        with gr.Accordion("💬 对话历史", open=False):
-                            conversation_history_df = gr.DataFrame(
-                                headers=["会话名称", "类型", "消息数", "工具调用数", "开始时间", "状态"],
-                                datatype=["str", "str", "number", "number", "str", "str"],
-                                label="历史对话会话"
-                            )
-                            load_history_btn = gr.Button("🔄 刷新历史记录", size="sm")
-
+                    
                         # 工具确认功能已废弃 - AI Agent现在可以直接使用启用的工具
                         # 清除推理记录
                         with gr.Accordion("📋 记录管理", open=False):
@@ -744,7 +736,7 @@ def create_app():
                             True, True, True, True, True, True, True, True, True, True, True, True, True, True,  # 工具选择
                             1000.0, 30.0, 10.0, 20.0,  # 交易限制默认值：quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss
                             gr.DataFrame(), gr.Plot(), "", gr.DataFrame(), "请保存推理参数后查看数据范围...", "", gr.DataFrame(), [{"role": "assistant", "content": "请先选择计划"}],  # training_df, kline_chart, probability_indicators_md, inference_df, inference_data_range_info, prediction_data_preview, agent_df, agent_chatbot
-                            gr.DataFrame(), gr.DataFrame(),  # tool_calls_df, conversation_history_df
+                            gr.DataFrame(),  # tool_calls_df
                             "### 💰 账户信息\n\n未加载",  # account_status
                             gr.DataFrame(),  # order_table
                             gr.DataFrame(),  # task_executions_df  # task_executions
@@ -852,19 +844,6 @@ def create_app():
                             tool_call.get('timestamp', '').strftime('%H:%M:%S') if tool_call.get('timestamp') else 'N/A'
                         ])
 
-                    # 获取对话历史
-                    conversation_history_data = detail_ui.get_plan_conversations_list(int(plan_id))
-                    conversation_history_df_data = []
-                    for conv in conversation_history_data:
-                        conversation_history_df_data.append([
-                            conv.get('session_name', 'N/A'),
-                            conv.get('conversation_type', 'N/A'),
-                            conv.get('total_messages', 0),
-                            conv.get('total_tool_calls', 0),
-                            conv.get('started_at', 'N/A'),
-                            conv.get('status', 'N/A')
-                        ])
-
                     # 获取账户信息和订单记录
                     account_info = detail_ui.get_account_info(int(plan_id))
                     orders_df = detail_ui.get_orders_info(int(plan_id))
@@ -935,7 +914,6 @@ def create_app():
                         detail_ui.load_agent_decisions(int(plan_id)),  # agent_df
                         latest_agent_output,  # agent_chatbot
                         tool_calls_df_data,  # tool_calls_df
-                        conversation_history_df_data,  # conversation_history_df
                         account_info,  # account_status
                         orders_df,  # order_table
                         detail_ui.load_task_executions(int(plan_id)),  # task_executions_df
@@ -1092,7 +1070,7 @@ def create_app():
                         training_df, kline_chart, probability_indicators_md,  # K线图和概率指标
                         inference_df, inference_data_range_info, prediction_data_preview, agent_df,
                         agent_chatbot,  # agent_chatbot
-                        tool_calls_df, conversation_history_df,  # 工具调用记录和对话历史
+                        tool_calls_df,  # 工具调用记录
                         account_status, order_table, task_executions_df,  # 账户信息、订单记录和任务记录
                         account_timer  # 定时器
                     ]
@@ -1167,7 +1145,7 @@ def create_app():
                         training_df, kline_chart, probability_indicators_md,  # K线图和概率指标
                         inference_df, inference_data_range_info, prediction_data_preview, agent_df,
                         agent_chatbot,  # agent_chatbot
-                        tool_calls_df, conversation_history_df,  # 工具调用记录和对话历史
+                        tool_calls_df,  # 工具调用记录
                         account_status, order_table, task_executions_df,  # 账户信息、订单记录和任务记录
                         account_timer  # 定时器
                     ]
@@ -1524,9 +1502,21 @@ def create_app():
                     inputs=[plan_id_input],
                     outputs=[agent_df]
                 ).then(
-                    fn=lambda pid: detail_ui.get_latest_agent_decision_output(int(pid)) if pid else [{"role": "assistant", "content": "请先选择计划"}],
+                    fn=lambda pid: detail_ui.get_latest_conversation_messages(int(pid)) if pid else [{"role": "assistant", "content": "请先选择计划"}],
                     inputs=[plan_id_input],
                     outputs=[agent_chatbot]
+                ).then(
+                    fn=lambda pid: (
+                        # 刷新工具调用记录 - 格式化为DataFrame需要的格式
+                        [[
+                            tool_call.get('tool_name', 'N/A'),
+                            str(tool_call.get('arguments', {}))[:100] + '...' if len(str(tool_call.get('arguments', {}))) > 100 else str(tool_call.get('arguments', {})),
+                            '✅ 成功' if tool_call.get('status') == 'success' else '❌ 失败',
+                            tool_call.get('timestamp', '').strftime('%H:%M:%S') if tool_call.get('timestamp') else 'N/A'
+                        ] for tool_call in detail_ui.get_conversation_tool_calls_summary(int(pid))]
+                    ) if pid else [],
+                    inputs=[plan_id_input],
+                    outputs=[tool_calls_df]
                 )
 
   
@@ -1541,49 +1531,7 @@ def create_app():
                     outputs=[agent_chatbot]
                 )
 
-                # 刷新历史记录
-                def load_history_wrapper(pid):
-                    """刷新对话历史"""
-                    if not pid:
-                        return [], []
-
-                    try:
-                        # 获取工具调用记录
-                        tool_calls_data = detail_ui.get_conversation_tool_calls_summary(int(pid))
-                        tool_calls_df_data = []
-                        for tool_call in tool_calls_data:
-                            tool_calls_df_data.append([
-                                tool_call.get('tool_name', 'N/A'),
-                                str(tool_call.get('arguments', {}))[:100] + '...' if len(str(tool_call.get('arguments', {}))) > 100 else str(tool_call.get('arguments', {})),
-                                '✅ 成功' if tool_call.get('status') == 'success' else '❌ 失败',
-                                tool_call.get('timestamp', '').strftime('%H:%M:%S') if tool_call.get('timestamp') else 'N/A'
-                            ])
-
-                        # 获取对话历史
-                        conversation_history_data = detail_ui.get_plan_conversations_list(int(pid))
-                        conversation_history_df_data = []
-                        for conv in conversation_history_data:
-                            conversation_history_df_data.append([
-                                conv.get('session_name', 'N/A'),
-                                conv.get('conversation_type', 'N/A'),
-                                conv.get('total_messages', 0),
-                                conv.get('total_tool_calls', 0),
-                                conv.get('started_at', 'N/A'),
-                                conv.get('status', 'N/A')
-                            ])
-
-                        return tool_calls_df_data, conversation_history_df_data
-
-                    except Exception as e:
-                        logger.error(f"刷新历史记录失败: {e}")
-                        return [], []
-
-                load_history_btn.click(
-                    fn=load_history_wrapper,
-                    inputs=[plan_id_input],
-                    outputs=[tool_calls_df, conversation_history_df]
-                )
-
+              
                 # 发送消息 - 与Agent进行真实对话
                 async def send_message_wrapper(message, history, pid):
                     """与Agent进行对话"""
