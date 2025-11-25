@@ -1567,73 +1567,84 @@ def create_app():
                         temp_assistant_msg = {"role": "assistant", "content": ""}
                         history.append(temp_assistant_msg)
 
-                        # 调用LLM进行对话
+                        # 调用流式Agent进行对话
                         try:
-                            # 获取预测数据作为上下文
-                            prediction_context = ""
-                            try:
-                                predictions = detail_ui.get_prediction_text(latest_training.id)
-                                if predictions and not predictions.startswith("⚠️"):
-                                    prediction_context = f"\n\n### 📊 当前预测数据\n\n{predictions}\n"
-                            except:
-                                prediction_context = "\n\n### 📊 当前预测数据\n\n暂无预测数据\n"
+                            from services.agent_stream_service import AgentStreamService
+                            import json
 
-                            # 构建对话上下文（用于AgentDecisionService）
-                            context = {
-                                'plan': {
-                                    'id': plan.id,
-                                    'plan_name': plan.plan_name,
-                                    'inst_id': plan.inst_id,
-                                    'interval': plan.interval,
-                                    'is_demo': plan.is_demo
-                                },
-                                'training_record': {
-                                    'id': latest_training.id,
-                                    'version': latest_training.version
-                                },
-                                'user_message': message,
-                                'prediction_data': prediction_context,
-                                'chat_history': history[:-1]  # 排除临时的assistant消息
-                            }
+                            # 获取聊天历史（排除当前添加的用户消息和临时助手消息）
+                            chat_history = history[:-2] if len(history) >= 2 else []
 
-                            # 构建对话专用的Agent提示词
-                            conversation_prompt = plan.agent_prompt or f"""你是一个专业的加密货币交易AI助手。
+                            # 使用AgentStreamService进行流式对话
+                            response_content = ""
+                            thinking_content = ""
 
-**交易对**: {plan.inst_id}
-**时间周期**: {plan.interval}
-**环境**: {'模拟盘' if plan.is_demo else '实盘'}
+                            async for chunk in AgentStreamService.chat_with_tools_stream(
+                                message=message,
+                                history=chat_history,
+                                plan_id=int(pid),
+                                training_record_id=latest_training.id
+                            ):
+                                try:
+                                    data = json.loads(chunk)
+                                    chunk_type = data.get("type", "")
+                                    content = data.get("content", "")
 
-你的任务是基于Kronos模型的预测数据和当前市场状况，回答用户的问题。请提供专业、准确的分析和建议。
+                                    if chunk_type == "thinking_start":
+                                        thinking_content = "🧠 开始思考...\n\n"
+                                    elif chunk_type == "thinking":
+                                        thinking_content += content
+                                    elif chunk_type == "content":
+                                        response_content = content
+                                    elif chunk_type == "tool_call_start":
+                                        tool_name = data.get("tool_name", "")
+                                        thinking_content += f"\n\n🔧 **调用工具**: `{tool_name}`"
+                                    elif chunk_type == "tool_call_arguments":
+                                        tool_name = data.get("tool_name", "")
+                                        arguments = data.get("arguments", {})
+                                        thinking_content += f"\n📋 **参数**: ```json\n{json.dumps(arguments, indent=2, ensure_ascii=False)}\n```"
+                                    elif chunk_type == "tool_result":
+                                        tool_name = data.get("tool_name", "")
+                                        result = data.get("result", {})
+                                        success = result.get("success", False)
+                                        status_emoji = "✅" if success else "❌"
 
-用户可以向你询问关于：
-- 市场分析和价格预测
-- 交易策略建议
-- 风险管理
-- 模型预测结果解释
+                                        # 格式化结果，确保可读性
+                                        result_str = json.dumps(result, indent=2, ensure_ascii=False)
+                                        thinking_content += f"\n{status_emoji} **工具结果**: `{tool_name}`\n```json\n{result_str}\n```"
+                                    elif chunk_type == "tool_error":
+                                        tool_name = data.get("tool_name", "")
+                                        error = data.get("error", "")
+                                        thinking_content += f"\n❌ **工具错误**: `{tool_name}`\n```\n{error}\n```"
+                                    elif chunk_type == "error":
+                                        response_content = content
+                                        break
 
-请始终谨慎投资，控制风险。
-"""
+                                except json.JSONDecodeError:
+                                    continue
+                                except Exception as chunk_error:
+                                    logger.error(f"处理流式数据块失败: {chunk_error}")
+                                    continue
 
-                            # 使用AgentDecisionService的LLM调用方法进行对话
-                            response = await AgentDecisionService._call_llm_for_conversation(
-                                llm_config, context, conversation_prompt
-                            )
-
-                            if response.get('success', False):
-                                response_content = response.get('content', '抱歉，我无法生成回复。')
-                                history[-1]["content"] = response_content
+                            # 构建最终回复，包含思考过程（如果有）
+                            if thinking_content:
+                                final_content = f"{thinking_content}\n\n---\n\n{response_content}"
                             else:
-                                error_msg = response.get('error', '未知错误')
-                                history[-1]["content"] = f"抱歉，我暂时无法回复您的问题。错误：{error_msg}"
+                                final_content = response_content
+
+                            history[-1]["content"] = final_content or "抱歉，我无法生成回复。"
 
                         except Exception as agent_error:
-                            logger.error(f"调用Agent服务失败: {agent_error}")
-                            # 如果Agent服务调用失败，提供基础响应
-                            history[-1]["content"] = f"""抱歉，我暂时无法连接到AI Agent服务。请检查以下配置：
+                            logger.error(f"调用Agent流式服务失败: {agent_error}")
+                            import traceback
+                            traceback.print_exc()
+                            # 如果Agent流式服务调用失败，提供基础响应
+                            history[-1]["content"] = f"""抱歉，我暂时无法连接到AI Agent流式服务。请检查以下配置：
 
 1. **LLM配置**: 确保已正确配置LLM服务
 2. **网络连接**: 确保能够访问LLM API
 3. **训练记录**: 确保有已完成的模型训练
+4. **工具配置**: 确保已在Agent配置中启用相应工具
 
 **错误详情**: {str(agent_error)}
 

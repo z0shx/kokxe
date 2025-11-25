@@ -2493,23 +2493,14 @@ class PlanDetailUI:
     async def manual_inference_stream(self, plan_id: int):
         """手动执行AI Agent推理（流式输出）"""
         try:
-            # 清空对话并显示启动消息
-            yield [{"role": "assistant", "content": "🤖 正在启动 AI Agent ReAct 推理..."}]
-
-            # 使用 ReAct+Tool Use 流式方法
-            from services.agent_decision_service import AgentDecisionService
+            # 使用新的 AgentStreamService 进行流式推理
+            from services.agent_stream_service import AgentStreamService
             from database.models import TrainingRecord
             from database.db import get_db
             from sqlalchemy import and_, desc
 
-            # 获取计划信息
+            # 获取最新的训练记录
             with get_db() as db:
-                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
-                if not plan:
-                    yield [{"role": "assistant", "content": "❌ 计划不存在"}]
-                    return
-
-                # 获取最新的训练记录
                 latest_training = db.query(TrainingRecord).filter(
                     and_(
                         TrainingRecord.plan_id == plan_id,
@@ -2518,92 +2509,81 @@ class PlanDetailUI:
                     )
                 ).order_by(desc(TrainingRecord.created_at)).first()
 
-                if not latest_training:
-                    yield [{"role": "assistant", "content": "❌ 没有可用的训练记录，请先完成模型训练"}]
-                    return
+            # 发送推理初始化消息
+            yield [{"role": "assistant", "content": "🤖 正在启动 AI Agent 推理..."}]
 
-            # 发送推理初始化消息，显示预测数据预览
-            prediction_preview = await self._get_prediction_preview(plan_id, latest_training.id)
-            yield [{"role": "assistant", "content": f"""🎯 **AI Agent ReAct 推理已启动**
+            # 构建初始提示词
+            initial_prompt = """请基于当前的预测数据进行全面的分析和推理。请：
+1. 分析预测数据的趋势和概率
+2. 查询当前的账户状态和持仓信息
+3. 基于分析结果给出交易建议
+4. 如果需要，执行相应的交易操作
 
-**交易计划**: {plan.plan_name} ({plan.inst_id})
-**模型版本**: {latest_training.version}
-**时间周期**: {plan.interval}
+请使用ReAct模式进行思考，并调用相关工具获取信息。"""
 
-{prediction_preview}
-
-🔄 正在加载系统提示词并初始化对话..."""}]
-
-            # 使用 AgentDecisionService 的增强版 ReAct+Tool Use 流式方法
-            # 该方法支持完整的对话记录和真实工具调用
-            async for chunk in AgentDecisionService.enhanced_react_tool_use_stream(
-                plan_id=plan_id,
-                training_id=latest_training.id if latest_training else None,
-                session_name=f"手动推理_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            # 使用 AgentStreamService 进行流式推理
+            async for chunk_str in AgentStreamService.chat_with_tools_stream(
+                initial_prompt,
+                [],
+                plan_id,
+                latest_training.id if latest_training else None
             ):
-                if chunk.get('type') == 'conversation_created':
-                    # 对话创建确认
-                    yield [{"role": "assistant", "content": f"""✅ **对话会话已创建**
-会话ID: {chunk.get('conversation_id')}
-会话名称: {chunk.get('session_name')}
+                try:
+                    import json
+                    chunk = json.loads(chunk_str)
 
-🧠 AI Agent 正在进行思考分析..."""}]
+                    if chunk.get("type") == "thinking_start":
+                        yield [{"role": "assistant", "content": "🧠 **开始思考分析...**"}]
 
-                elif chunk.get('type') == 'message':
-                    # 标准消息更新
-                    messages = chunk.get('messages', [])
-                    if messages:
-                        yield messages
+                    elif chunk.get("type") == "thinking":
+                        # 思考过程实时更新
+                        yield [{"role": "assistant", "content": f"🧠 **思考中...**\n\n{chunk.get('content', '')}"}]
 
-                elif chunk.get('type') == 'thinking_stream':
-                    # 流式思考内容 - 实时显示AI的思考过程
-                    thinking_content = chunk.get('content', '')
-                    iteration = chunk.get('iteration', 1)
+                    elif chunk.get("type") == "content":
+                        # 正常内容实时更新
+                        yield [{"role": "assistant", "content": chunk.get('content', '')}]
 
-                    # 构建思考消息，使用特殊的思考格式
-                    thinking_message = {
-                        "role": "assistant",
-                        "content": f"""🧠 **思考过程 (迭代 {iteration})**
+                    elif chunk.get("type") == "tool_call_start":
+                        # 工具调用开始
+                        tool_name = chunk.get("tool_name", "unknown")
+                        yield [{"role": "assistant", "content": f"🛠️ **调用工具**: `{tool_name}`\n\n⏳ 正在执行..."}]
 
-{thinking_content}"""
-                    }
-                    yield [thinking_message]
+                    elif chunk.get("type") == "tool_call_arguments":
+                        # 工具调用参数
+                        tool_name = chunk.get("tool_name", "unknown")
+                        arguments = chunk.get("arguments", {})
+                        args_str = json.dumps(arguments, ensure_ascii=False, indent=2)
+                        yield [{"role": "assistant", "content": f"🛠️ **工具调用**: `{tool_name}`\n\n📋 **参数**:\n```json\n{args_str}\n```\n\n⏳ 正在执行..."}]
 
-                elif chunk.get('type') == 'tool_call':
-                    # 工具调用信息
-                    tool_name = chunk.get('tool_name', 'unknown')
-                    tool_args = chunk.get('tool_arguments', {})
+                    elif chunk.get("type") == "tool_result":
+                        # 工具执行结果
+                        tool_name = chunk.get("tool_name", "unknown")
+                        result = chunk.get("result", {})
+                        success = result.get("success", False)
+                        status_emoji = "✅" if success else "❌"
 
-                    tool_call_message = {
-                        "role": "assistant",
-                        "content": f"""🛠️ **工具调用**: `{tool_name}`
+                        result_str = json.dumps(result, ensure_ascii=False, indent=2)
+                        yield [{"role": "assistant", "content": f"🛠️ **工具结果**: `{tool_name}` {status_emoji}\n\n```json\n{result_str}\n```\n\n🔄 继续分析..."}]
 
-📋 **调用参数**:
-{self._format_tool_arguments(tool_args)}
+                    elif chunk.get("type") == "tool_error":
+                        # 工具执行错误
+                        tool_name = chunk.get("tool_name", "unknown")
+                        error = chunk.get("error", "未知错误")
+                        yield [{"role": "assistant", "content": f"❌ **工具执行失败**: {tool_name}\n\n错误: {error}"}]
 
-⏳ 正在执行工具..."""
-                    }
-                    yield [tool_call_message]
+                    elif chunk.get("type") == "error":
+                        # 推理错误
+                        error_msg = chunk.get("content", "未知错误")
+                        yield [{"role": "assistant", "content": f"❌ **推理错误**: {error_msg}"}]
 
-                elif chunk.get('type') == 'tool_result':
-                    # 工具执行结果
-                    tool_name = chunk.get('tool_name', 'unknown')
-                    tool_result = chunk.get('tool_result', {})
+                except json.JSONDecodeError:
+                    continue
+                except Exception as e:
+                    logger.error(f"处理chunk失败: {e}")
+                    continue
 
-                    tool_result_message = {
-                        "role": "assistant",
-                        "content": f"""✅ **工具执行结果**: `{tool_name}`
-
-{self._format_tool_result(tool_result)}
-
-🔄 继续分析和思考..."""
-                    }
-                    yield [tool_result_message]
-
-                elif chunk.get('type') == 'error':
-                    # 错误消息
-                    error_content = chunk.get('content', '推理过程出错')
-                    yield [{"role": "assistant", "content": f"❌ 错误: {error_content}"}]
+            # 推理完成
+            yield [{"role": "assistant", "content": "\n\n✅ **推理完成**\n\n推理过程已结束，所有分析结果和工具调用信息已显示。"}]
 
         except Exception as e:
             logger.error(f"ReAct推理失败: {e}")
