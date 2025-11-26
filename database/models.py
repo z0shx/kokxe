@@ -2,12 +2,20 @@
 数据库模型定义
 """
 from datetime import datetime
+import pytz
 from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Text, UniqueConstraint, Index, ForeignKey
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.dialects.postgresql import JSONB
 
 Base = declarative_base()
+
+# 统一时区：北京时区 UTC+8
+BEIJING_TZ = pytz.timezone('Asia/Shanghai')
+
+def now_beijing():
+    """获取北京时间"""
+    return datetime.now(BEIJING_TZ)
 
 
 class KlineData(Base):
@@ -24,7 +32,7 @@ class KlineData(Base):
     close = Column(Float, nullable=False, comment='收盘价')
     volume = Column(Float, nullable=False, comment='成交量')
     amount = Column(Float, nullable=False, comment='成交额')
-    created_at = Column(DateTime, default=datetime.utcnow, comment='创建时间')
+    created_at = Column(DateTime, default=now_beijing, comment='创建时间')
 
     # 唯一约束：交易对+时间颗粒度+时间戳
     __table_args__ = (
@@ -80,8 +88,8 @@ class TradingPlan(Base):
     last_finetune_time = Column(DateTime, comment='最后微调时间')
 
     # 时间戳
-    created_at = Column(DateTime, default=datetime.utcnow, comment='创建时间')
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment='更新时间')
+    created_at = Column(DateTime, default=now_beijing, comment='创建时间')
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing, comment='更新时间')
 
     # 关联关系
     task_executions = relationship("TaskExecution", back_populates="plan")
@@ -109,8 +117,8 @@ class TradeOrder(Base):
     avg_price = Column(Float, comment='成交均价')
 
     is_demo = Column(Boolean, default=True, comment='是否模拟盘')
-    created_at = Column(DateTime, default=datetime.utcnow, comment='创建时间')
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment='更新时间')
+    created_at = Column(DateTime, default=now_beijing, comment='创建时间')
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing, comment='更新时间')
 
     __table_args__ = (
         Index('idx_trade_order_plan_id', 'plan_id'),
@@ -148,8 +156,8 @@ class WebSocketSubscription(Base):
     # 时间戳
     started_at = Column(DateTime, comment='启动时间')
     stopped_at = Column(DateTime, comment='停止时间')
-    created_at = Column(DateTime, default=datetime.utcnow, comment='创建时间')
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment='更新时间')
+    created_at = Column(DateTime, default=now_beijing, comment='创建时间')
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing, comment='更新时间')
 
     __table_args__ = (
         UniqueConstraint('inst_id', 'interval', 'is_demo', name='uq_ws_subscription'),
@@ -171,7 +179,7 @@ class SystemLog(Base):
     environment = Column(String(10), comment='交易环境：LIVE/DEMO')
     message = Column(Text, nullable=False, comment='日志消息')
     details = Column(JSONB, comment='详细信息（JSON）')
-    created_at = Column(DateTime, default=datetime.utcnow, comment='创建时间')
+    created_at = Column(DateTime, default=now_beijing, comment='创建时间')
 
     __table_args__ = (
         Index('idx_system_log_plan_id', 'plan_id'),
@@ -207,8 +215,8 @@ class LLMConfig(Base):
     is_default = Column(Boolean, default=False, comment='是否默认配置')
 
     # 时间戳
-    created_at = Column(DateTime, default=datetime.utcnow, comment='创建时间')
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment='更新时间')
+    created_at = Column(DateTime, default=now_beijing, comment='创建时间')
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing, comment='更新时间')
 
     __table_args__ = (
         Index('idx_llm_config_provider', 'provider'),
@@ -237,8 +245,8 @@ class AgentPromptTemplate(Base):
     is_default = Column(Boolean, default=False, comment='是否默认模版')
 
     # 时间戳
-    created_at = Column(DateTime, default=datetime.utcnow, comment='创建时间')
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment='更新时间')
+    created_at = Column(DateTime, default=now_beijing, comment='创建时间')
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing, comment='更新时间')
 
     __table_args__ = (
         Index('idx_agent_prompt_template_category', 'category'),
@@ -281,8 +289,8 @@ class TrainingRecord(Base):
     error_message = Column(Text, comment='失败时的错误信息')
 
     # 时间戳
-    created_at = Column(DateTime, default=datetime.utcnow, comment='创建时间')
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment='更新时间')
+    created_at = Column(DateTime, default=now_beijing, comment='创建时间')
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing, comment='更新时间')
 
     __table_args__ = (
         Index('idx_training_record_plan_id', 'plan_id'),
@@ -329,11 +337,11 @@ class PredictionData(Base):
     volatility_amplification_probability = Column(Float, comment='波动性放大概率（0-1）')
 
     # 元数据
-    prediction_time = Column(DateTime, default=datetime.utcnow, comment='何时生成的预测')
+    prediction_time = Column(DateTime, default=now_beijing, comment='何时生成的预测')
     inference_params = Column(JSONB, comment='推理参数（JSON）')
 
     # 时间戳
-    created_at = Column(DateTime, default=datetime.utcnow, comment='创建时间')
+    created_at = Column(DateTime, default=now_beijing, comment='创建时间')
 
     __table_args__ = (
         Index('idx_prediction_data_plan_id', 'plan_id'),
@@ -356,7 +364,7 @@ class AgentDecision(Base):
     training_record_id = Column(Integer, comment='关联的训练记录ID（触发时的模型版本）')
 
     # 决策时间
-    decision_time = Column(DateTime, default=datetime.utcnow, comment='决策时间')
+    decision_time = Column(DateTime, default=now_beijing, comment='决策时间')
 
     # LLM 输入输出
     llm_input = Column(JSONB, comment='LLM输入上下文（JSON）')
@@ -379,7 +387,7 @@ class AgentDecision(Base):
     error_message = Column(Text, comment='错误信息（如有）')
 
     # 时间戳
-    created_at = Column(DateTime, default=datetime.utcnow, comment='创建时间')
+    created_at = Column(DateTime, default=now_beijing, comment='创建时间')
 
     __table_args__ = (
         Index('idx_agent_decision_plan_id', 'plan_id'),
@@ -413,10 +421,10 @@ class AgentConversation(Base):
     total_tool_calls = Column(Integer, default=0, comment='总工具调用数')
 
     # 时间戳
-    started_at = Column(DateTime, default=datetime.utcnow, comment='开始时间')
-    last_message_at = Column(DateTime, default=datetime.utcnow, comment='最后消息时间')
+    started_at = Column(DateTime, default=now_beijing, comment='开始时间')
+    last_message_at = Column(DateTime, default=now_beijing, comment='最后消息时间')
     completed_at = Column(DateTime, comment='完成时间')
-    created_at = Column(DateTime, default=datetime.utcnow, comment='创建时间')
+    created_at = Column(DateTime, default=now_beijing, comment='创建时间')
 
     __table_args__ = (
         Index('idx_agent_conversation_plan_id', 'plan_id'),
@@ -456,8 +464,8 @@ class AgentMessage(Base):
     llm_model = Column(String(100), comment='使用的LLM模型')
 
     # 时间戳
-    timestamp = Column(DateTime, default=datetime.utcnow, comment='消息时间')
-    created_at = Column(DateTime, default=datetime.utcnow, comment='创建时间')
+    timestamp = Column(DateTime, default=now_beijing, comment='消息时间')
+    created_at = Column(DateTime, default=now_beijing, comment='创建时间')
 
     __table_args__ = (
         Index('idx_agent_message_conversation_id', 'conversation_id'),
@@ -493,8 +501,8 @@ class TaskExecution(Base):
     error_message = Column(Text, comment='错误信息')
     progress_percentage = Column(Integer, default=0, comment='进度百分比')
     task_metadata = Column(JSONB, comment='额外元数据')
-    created_at = Column(DateTime, default=datetime.utcnow, comment='创建时间')
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment='更新时间')
+    created_at = Column(DateTime, default=now_beijing, comment='创建时间')
+    updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing, comment='更新时间')
 
     # 关联关系
     plan = relationship("TradingPlan", back_populates="task_executions")

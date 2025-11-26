@@ -1,3 +1,4 @@
+from utils.time_utils import now_beijing, now_beijing_iso
 """
 AI Agent 决策服务
 负责基于预测数据进行智能决策
@@ -152,7 +153,7 @@ class AgentDecisionService:
                 decision = AgentDecision(
                     plan_id=plan_id,
                     training_record_id=training_id,
-                    decision_time=datetime.utcnow(),
+                    decision_time=now_beijing(),
                     decision_type=llm_response.get('decision_type', 'analysis'),
                     reasoning=llm_response.get('reasoning', ''),
                     llm_model=llm_config.model_name if llm_config else 'default',
@@ -1105,7 +1106,7 @@ class AgentDecisionService:
                 'success': result.get('success', False),
                 'result': result,
                 'status': 'executed',
-                'executed_at': datetime.utcnow().isoformat(),
+                'executed_at': now_beijing().isoformat(),
                 'execution_mode': 'auto'
             }
 
@@ -1116,7 +1117,7 @@ class AgentDecisionService:
                 'success': False,
                 'error': str(e),
                 'status': 'error',
-                'executed_at': datetime.utcnow().isoformat(),
+                'executed_at': now_beijing().isoformat(),
                 'execution_mode': 'auto'
             }
 
@@ -1248,7 +1249,7 @@ class AgentDecisionService:
                 'success': result.get('success', False),
                 'result': result,
                 'status': 'executed',
-                'executed_at': datetime.utcnow().isoformat(),
+                'executed_at': now_beijing().isoformat(),
                 'execution_mode': 'auto'
             }
 
@@ -1259,7 +1260,7 @@ class AgentDecisionService:
                 'success': False,
                 'error': str(e),
                 'status': 'error',
-                'executed_at': datetime.utcnow().isoformat(),
+                'executed_at': now_beijing().isoformat(),
                 'execution_mode': 'auto'
             }
 
@@ -1977,7 +1978,7 @@ class AgentDecisionService:
                 decision = AgentDecision(
                     plan_id=plan_id,
                     training_record_id=training_id,
-                    decision_time=datetime.utcnow(),
+                    decision_time=now_beijing(),
                     decision_type='analysis',
                     reasoning=reasoning_text,
                     llm_model=llm_config.model_name if llm_config else 'default',
@@ -2889,8 +2890,8 @@ class AgentDecisionService:
                     from database.models import KlineData
                     import pandas as pd
 
-                    hist_start = datetime.utcnow() - timedelta(days=7)
-                    hist_end = datetime.utcnow()
+                    hist_start = now_beijing() - timedelta(days=7)
+                    hist_end = now_beijing()
 
                     with get_db() as db:
                         # 从数据库查询历史K线数据
@@ -3559,8 +3560,8 @@ class AgentDecisionService:
                     from database.models import KlineData
                     import pandas as pd
 
-                    hist_start = datetime.utcnow() - timedelta(days=7)
-                    hist_end = datetime.utcnow()
+                    hist_start = now_beijing() - timedelta(days=7)
+                    hist_end = now_beijing()
 
                     with get_db() as db:
                         kline_records = db.query(KlineData).filter(
@@ -3938,7 +3939,7 @@ class AgentDecisionService:
                             agent_decision = AgentDecision(
                                 plan_id=plan_id,
                                 training_record_id=training_id,
-                                decision_time=datetime.utcnow(),
+                                decision_time=now_beijing(),
                                 decision_type='analysis',
                                 reasoning=final_response,
                                 llm_model=llm_config.model_name if llm_config else 'default',

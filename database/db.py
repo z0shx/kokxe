@@ -10,13 +10,14 @@ from database.models import Base
 
 logger = setup_logger(__name__, "database.log")
 
-# 创建数据库引擎
+# 创建数据库引擎，设置时区为UTC+8
 engine = create_engine(
     config.DATABASE_URL,
     pool_size=10,
     max_overflow=20,
     pool_pre_ping=True,
-    echo=False
+    echo=False,
+    connect_args={"options": "-c timezone=Asia/Shanghai"}
 )
 
 # 创建会话工厂

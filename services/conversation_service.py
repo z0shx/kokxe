@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple, AsyncGenerator
 from enum import Enum
 import logging
+from utils.time_utils import now_beijing
 
 from database.db import get_db
 from database.models import (
@@ -53,8 +54,8 @@ class ConversationService:
                     session_name=session_name or f"推理会话_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
                     conversation_type=conversation_type,
                     status='active',
-                    started_at=datetime.utcnow(),
-                    last_message_at=datetime.utcnow()
+                    started_at=now_beijing(),
+                    last_message_at=now_beijing()
                 )
 
                 db.add(conversation)
@@ -97,7 +98,7 @@ class ConversationService:
                     tool_result=tool_result,
                     tool_status=tool_status,
                     llm_model=llm_model,
-                    timestamp=datetime.utcnow()
+                    timestamp=now_beijing()
                 )
 
                 db.add(message)
@@ -110,7 +111,7 @@ class ConversationService:
                     conversation.total_messages += 1
                     if message_type in ["tool_call", "tool_result"]:
                         conversation.total_tool_calls += 1
-                    conversation.last_message_at = datetime.utcnow()
+                    conversation.last_message_at = now_beijing()
 
                 db.commit()
                 db.refresh(message)
@@ -240,7 +241,7 @@ class ConversationService:
 
                 if conversation:
                     conversation.status = 'completed'
-                    conversation.completed_at = datetime.utcnow()
+                    conversation.completed_at = now_beijing()
                     db.commit()
                     logger.info(f"对话会话已完成: conversation_id={conversation_id}")
                     return True
