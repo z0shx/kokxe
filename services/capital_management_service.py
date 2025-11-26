@@ -397,6 +397,7 @@ class CapitalManagementService:
                     price=order_result.get('price'),
                     status='pending',  # 初始状态为待成交
                     is_demo=True,  # 暂时硬编码为模拟盘
+                    is_from_agent=True,  # 标记为Agent操作的订单
                     # 额外的资金管理信息可以存储在JSONB字段中（如果需要的话）
                 )
 

@@ -1,5 +1,5 @@
 -- KOKEX Database Schema
--- Generated at: 2025-11-26 16:35:20.299175
+-- Generated at: 2025-11-26 17:00:14.910460
 
 
 -- Table: agent_decisions
@@ -152,6 +152,7 @@ CREATE TABLE trade_orders (
 	filled_size FLOAT, 
 	avg_price FLOAT, 
 	is_demo BOOLEAN, 
+	is_from_agent BOOLEAN, 
 	created_at TIMESTAMP WITHOUT TIME ZONE, 
 	updated_at TIMESTAMP WITHOUT TIME ZONE, 
 	PRIMARY KEY (id), 

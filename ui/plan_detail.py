@@ -3299,29 +3299,16 @@ class PlanDetailUI:
             return f"### 💰 账户信息\n\n❌ 获取失败: {str(e)}"
 
     def get_orders_info(self, plan_id: int) -> pd.DataFrame:
-        """获取订单记录（通过 REST API）"""
+        """获取订单记录（仅显示Agent操作的订单）"""
         try:
             with get_db() as db:
-                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
-                if not plan or not plan.okx_api_key:
-                    return pd.DataFrame()
+                # 从数据库获取仅Agent操作的订单
+                from database.models import TradeOrder
 
-                from services.okx_rest_service import OKXRestService
-
-                # 创建 REST API 服务
-                rest_service = OKXRestService(
-                    api_key=plan.okx_api_key,
-                    secret_key=plan.okx_secret_key,
-                    passphrase=plan.okx_passphrase,
-                    is_demo=plan.is_demo
-                )
-
-                # 获取订单列表（SPOT 类型）
-                orders = rest_service.get_all_orders(
-                    inst_type="SPOT",
-                    inst_id=None,  # 获取所有交易对
-                    limit=50
-                )
+                orders = db.query(TradeOrder).filter(
+                    TradeOrder.plan_id == plan_id,
+                    TradeOrder.is_from_agent == True
+                ).order_by(TradeOrder.created_at.desc()).limit(50).all()
 
                 if not orders:
                     return pd.DataFrame()
@@ -3329,7 +3316,7 @@ class PlanDetailUI:
                 # 构建DataFrame
                 df_data = []
                 for order in orders:
-                    side_emoji = '🟢' if order['side'] == 'buy' else '🔴'
+                    side_emoji = '🟢' if order.side == 'buy' else '🔴'
                     state_map = {
                         'live': '⏳ 未成交',
                         'partially_filled': '⏸️ 部分成交',
@@ -3338,20 +3325,20 @@ class PlanDetailUI:
                         'mmp_canceled': '❌ MMP取消',
                         'failed': '❌ 失败'
                     }
-                    state_emoji = state_map.get(order['state'], f"❓ {order['state']}")
+                    state_emoji = state_map.get(order.status, f"❓ {order.status}")
 
                     # 转换时间戳
-                    create_time = format_datetime_beijing(datetime.fromtimestamp(int(order['cTime']) / 1000), '%m-%d %H:%M:%S')
-                    update_time = format_datetime_beijing(datetime.fromtimestamp(int(order['uTime']) / 1000), '%m-%d %H:%M:%S')
+                    create_time = format_datetime_beijing(order.created_at, '%m-%d %H:%M:%S')
+                    update_time = format_datetime_beijing(order.updated_at, '%m-%d %H:%M:%S')
 
                     df_data.append({
-                        '订单ID': order['ordId'][:10] + '...',
-                        '交易对': order['instId'],
-                        '方向': f"{side_emoji} {order['side']}",
-                        '类型': order['ordType'],
-                        '价格': f"{float(order['px']):.4f}" if order.get('px') else '市价',
-                        '数量': f"{float(order['sz']):.4f}",
-                        '已成交': f"{float(order.get('accFillSz', 0)):.4f}",
+                        '订单ID': order.order_id[:10] + '...' if order.order_id else '本地订单',
+                        '交易对': order.inst_id,
+                        '方向': f"{side_emoji} {order.side}",
+                        '类型': order.order_type,
+                        '价格': f"{float(order.price):.4f}" if order.price else '市价',
+                        '数量': f"{float(order.size):.4f}",
+                        '已成交': f"{float(order.filled_size):.4f}",
                         '状态': state_emoji,
                         '创建时间': create_time,
                         '更新时间': update_time

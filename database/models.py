@@ -123,6 +123,7 @@ class TradeOrder(Base):
     avg_price = Column(Float, comment='成交均价')
 
     is_demo = Column(Boolean, default=True, comment='是否模拟盘')
+    is_from_agent = Column(Boolean, default=False, comment='是否来自Agent操作的订单')
     created_at = Column(DateTime, default=now_beijing, comment='创建时间')
     updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing, comment='更新时间')
 
