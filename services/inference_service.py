@@ -888,3 +888,47 @@ class InferenceService:
                 'success': False,
                 'error': str(e)
             }
+
+    @classmethod
+    async def start_inference_by_plan(cls, plan_id: int, manual: bool = False) -> Optional[int]:
+        """
+        通过计划ID启动推理任务（自动获取最新完成的训练记录）
+
+        Args:
+            plan_id: 计划ID
+            manual: 是否手动触发
+
+        Returns:
+            推理批次ID或None
+        """
+        try:
+            with get_db() as db:
+                # 获取最新的已完成训练记录
+                latest_training = db.query(TrainingRecord).filter(
+                    and_(
+                        TrainingRecord.plan_id == plan_id,
+                        TrainingRecord.status == 'completed',
+                        TrainingRecord.is_active == True
+                    )
+                ).order_by(TrainingRecord.created_at.desc()).first()
+
+                if not latest_training:
+                    logger.warning(f"计划 {plan_id} 没有找到可用的训练记录")
+                    return None
+
+                logger.info(f"为计划 {plan_id} 启动推理，使用训练记录 {latest_training.id}")
+
+                # 启动推理
+                success = await cls.start_inference(latest_training.id)
+
+                if success:
+                    # 返回推理批次ID（这里简化处理，实际可能需要从推理结果中获取）
+                    return f"auto_{plan_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                else:
+                    return None
+
+        except Exception as e:
+            logger.error(f"通过计划ID启动推理失败: plan_id={plan_id}, error={e}")
+            import traceback
+            traceback.print_exc()
+            return None

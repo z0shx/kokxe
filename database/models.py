@@ -60,6 +60,7 @@ class TradingPlan(Base):
     data_end_time = Column(DateTime, comment='训练数据结束时间')
     finetune_params = Column(JSONB, comment='微调参数（JSON）')
     auto_finetune_schedule = Column(JSONB, comment='自动微调时间表（JSON数组），如 ["00:00", "12:00"]')
+    auto_inference_schedule = Column(JSONB, comment='自动预测时间表（JSON数组），如 ["00:00", "12:00"]')
 
     # 自动化配置
     auto_finetune_enabled = Column(Boolean, default=False, comment='是否启用自动微调')

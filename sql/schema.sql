@@ -1,5 +1,5 @@
 -- KOKEX Database Schema
--- Generated at: 2025-11-26 17:00:14.910460
+-- Generated at: 2025-11-26 17:24:05.525500
 
 
 -- Table: agent_decisions
@@ -173,6 +173,7 @@ CREATE TABLE trading_plans (
 	data_end_time TIMESTAMP WITHOUT TIME ZONE, 
 	finetune_params JSONB, 
 	auto_finetune_schedule JSONB, 
+	auto_inference_schedule JSONB, 
 	auto_finetune_enabled BOOLEAN, 
 	auto_inference_enabled BOOLEAN, 
 	auto_agent_enabled BOOLEAN, 

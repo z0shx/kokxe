@@ -104,74 +104,130 @@ class ScheduleService:
                     logger.error(f"计划不存在: plan_id={plan_id}")
                     return False
 
-                logger.info(f"计划信息: plan_id={plan_id}, status={plan.status}, auto_finetune_enabled={plan.auto_finetune_enabled}")
+                logger.info(f"计划信息: plan_id={plan_id}, status={plan.status}, auto_finetune_enabled={plan.auto_finetune_enabled}, auto_inference_enabled={plan.auto_inference_enabled}")
 
-                # 检查是否启用自动微调
-                if not plan.auto_finetune_enabled:
-                    logger.warning(f"计划未启用自动微调: plan_id={plan_id}")
+                # 检查是否启用自动微调或预测
+                if not plan.auto_finetune_enabled and not plan.auto_inference_enabled:
+                    logger.warning(f"计划未启用自动微调或预测: plan_id={plan_id}")
                     return False
-
-                # 获取时间表
-                schedule_times = plan.auto_finetune_schedule or []
-                if not schedule_times:
-                    logger.warning(f"计划未配置微调时间: plan_id={plan_id}")
-                    return False
-
-                logger.info(f"时间表配置: plan_id={plan_id}, schedule_times={schedule_times}")
 
             # 初始化调度器
             scheduler = cls.get_scheduler()
 
-            # 为每个时间点创建任务
-            for time_str in schedule_times:
-                try:
-                    # 解析时间 (HH:MM)
-                    hour, minute = map(int, time_str.split(':'))
-                    logger.info(f"解析时间: time_str={time_str}, hour={hour}, minute={minute}")
+            task_count = 0
 
-                    # 创建cron触发器（每天指定时间执行）
-                    trigger = CronTrigger(hour=hour, minute=minute, timezone='Asia/Shanghai')
-                    logger.info(f"创建Cron触发器: hour={hour}, minute={minute}, timezone=Asia/Shanghai")
+            # 处理自动微调任务
+            if plan.auto_finetune_enabled:
+                schedule_times = plan.auto_finetune_schedule or []
+                if schedule_times:
+                    logger.info(f"启动自动微调任务: plan_id={plan_id}, schedule_times={schedule_times}")
 
-                    # 任务ID：plan_id + 时间
-                    job_id = f"plan_{plan_id}_finetune_{time_str.replace(':', '')}"
+                    for time_str in schedule_times:
+                        try:
+                            # 解析时间 (HH:MM)
+                            hour, minute = map(int, time_str.split(':'))
+                            logger.info(f"解析微调时间: time_str={time_str}, hour={hour}, minute={minute}")
 
-                    # 检查任务是否已存在
-                    existing_job = scheduler.get_job(job_id)
-                    if existing_job:
-                        logger.info(f"任务已存在，先移除: {job_id}")
-                        scheduler.remove_job(job_id)
+                            # 创建cron触发器（每天指定时间执行）
+                            trigger = CronTrigger(hour=hour, minute=minute, timezone='Asia/Shanghai')
 
-                    # 添加任务
-                    scheduler.add_job(
-                        func=cls._trigger_finetune_wrapper,
-                        trigger=trigger,
-                        args=[plan_id],
-                        id=job_id,
-                        name=f"自动微调-计划{plan_id}-{time_str}",
-                        replace_existing=True,
-                        misfire_grace_time=300  # 允许5分钟的延迟执行
-                    )
+                            # 任务ID：plan_id + 任务类型 + 时间
+                            job_id = f"plan_{plan_id}_finetune_{time_str.replace(':', '')}"
 
-                    # 立即检查任务的下次执行时间
-                    job = scheduler.get_job(job_id)
-                    next_run_time = job.next_run_time
-                    if next_run_time:
-                        next_run_beijing = next_run_time.astimezone(cls.BEIJING_TZ)
-                        logger.info(f"已添加定时任务: plan_id={plan_id}, time={time_str}, job_id={job_id}, 下次执行(UTC+8)={next_run_beijing.strftime('%Y-%m-%d %H:%M:%S')}")
-                    else:
-                        logger.warning(f"任务创建成功但无下次执行时间: plan_id={plan_id}, time={time_str}, job_id={job_id}")
+                            # 检查任务是否已存在
+                            existing_job = scheduler.get_job(job_id)
+                            if existing_job:
+                                logger.info(f"任务已存在，先移除: {job_id}")
+                                scheduler.remove_job(job_id)
 
-                except Exception as e:
-                    logger.error(f"创建任务失败: time={time_str}, error={e}")
-                    import traceback
-                    traceback.print_exc()
-                    continue
+                            # 添加任务
+                            scheduler.add_job(
+                                func=cls._trigger_finetune_wrapper,
+                                trigger=trigger,
+                                args=[plan_id],
+                                id=job_id,
+                                name=f"自动微调-计划{plan_id}-{time_str}",
+                                replace_existing=True,
+                                misfire_grace_time=300  # 允许5分钟的延迟执行
+                            )
+
+                            task_count += 1
+
+                            # 立即检查任务的下次执行时间
+                            job = scheduler.get_job(job_id)
+                            next_run_time = job.next_run_time
+                            if next_run_time:
+                                next_run_beijing = next_run_time.astimezone(cls.BEIJING_TZ)
+                                logger.info(f"已添加自动微调任务: plan_id={plan_id}, time={time_str}, job_id={job_id}, 下次执行(UTC+8)={next_run_beijing.strftime('%Y-%m-%d %H:%M:%S')}")
+                            else:
+                                logger.warning(f"微调任务创建成功但无下次执行时间: plan_id={plan_id}, time={time_str}, job_id={job_id}")
+
+                        except Exception as e:
+                            logger.error(f"创建微调任务失败: time={time_str}, error={e}")
+                            import traceback
+                            traceback.print_exc()
+                            continue
+                else:
+                    logger.warning(f"计划启用了自动微调但未配置时间: plan_id={plan_id}")
+
+            # 处理自动预测任务
+            if plan.auto_inference_enabled:
+                schedule_times = plan.auto_inference_schedule or []
+                if schedule_times:
+                    logger.info(f"启动自动预测任务: plan_id={plan_id}, schedule_times={schedule_times}")
+
+                    for time_str in schedule_times:
+                        try:
+                            # 解析时间 (HH:MM)
+                            hour, minute = map(int, time_str.split(':'))
+                            logger.info(f"解析预测时间: time_str={time_str}, hour={hour}, minute={minute}")
+
+                            # 创建cron触发器（每天指定时间执行）
+                            trigger = CronTrigger(hour=hour, minute=minute, timezone='Asia/Shanghai')
+
+                            # 任务ID：plan_id + 任务类型 + 时间
+                            job_id = f"plan_{plan_id}_inference_{time_str.replace(':', '')}"
+
+                            # 检查任务是否已存在
+                            existing_job = scheduler.get_job(job_id)
+                            if existing_job:
+                                logger.info(f"任务已存在，先移除: {job_id}")
+                                scheduler.remove_job(job_id)
+
+                            # 添加任务
+                            scheduler.add_job(
+                                func=cls._trigger_inference_wrapper,
+                                trigger=trigger,
+                                args=[plan_id],
+                                id=job_id,
+                                name=f"自动预测-计划{plan_id}-{time_str}",
+                                replace_existing=True,
+                                misfire_grace_time=300  # 允许5分钟的延迟执行
+                            )
+
+                            task_count += 1
+
+                            # 立即检查任务的下次执行时间
+                            job = scheduler.get_job(job_id)
+                            next_run_time = job.next_run_time
+                            if next_run_time:
+                                next_run_beijing = next_run_time.astimezone(cls.BEIJING_TZ)
+                                logger.info(f"已添加自动预测任务: plan_id={plan_id}, time={time_str}, job_id={job_id}, 下次执行(UTC+8)={next_run_beijing.strftime('%Y-%m-%d %H:%M:%S')}")
+                            else:
+                                logger.warning(f"预测任务创建成功但无下次执行时间: plan_id={plan_id}, time={time_str}, job_id={job_id}")
+
+                        except Exception as e:
+                            logger.error(f"创建预测任务失败: time={time_str}, error={e}")
+                            import traceback
+                            traceback.print_exc()
+                            continue
+                else:
+                    logger.warning(f"计划启用了自动预测但未配置时间: plan_id={plan_id}")
 
             # 重新输出调度器状态
             cls._log_scheduler_status()
 
-            logger.info(f"启动定时调度成功: plan_id={plan_id}, 任务数={len(schedule_times)}")
+            logger.info(f"启动定时调度成功: plan_id={plan_id}, 任务数={task_count}")
             return True
 
         except Exception as e:
@@ -272,6 +328,38 @@ class ScheduleService:
 
                 logger.info(f"计划配置检查通过: plan_id={plan_id}, schedule_times={schedule_times}")
 
+            # 创建任务执行记录
+            from services.task_execution_service import TaskExecutionService
+            task_execution = None
+
+            try:
+                # 从计划配置中找到匹配当前时间的任务
+                current_datetime = datetime.now(cls.BEIJING_TZ)
+                current_time_str = current_datetime.strftime('%H:%M')
+
+                # 找到匹配的时间点
+                scheduled_time_str = None
+                for time_str in schedule_times:
+                    if time_str == current_time_str:
+                        scheduled_time_str = time_str
+                        break
+
+                # 如果没有精确匹配，使用当前时间
+                if not scheduled_time_str:
+                    scheduled_time_str = current_time_str
+
+                task_execution = TaskExecutionService.create_scheduled_task(
+                    plan_id=plan_id,
+                    task_type='auto_finetune',
+                    time_str=scheduled_time_str
+                )
+
+                # 标记任务开始
+                TaskExecutionService.start_task_execution(task_execution.id)
+
+            except Exception as record_error:
+                logger.error(f"创建任务执行记录失败: plan_id={plan_id}, error={record_error}")
+
             # 触发训练
             from services.training_service import TrainingService
             logger.info(f"开始调用训练服务: plan_id={plan_id}")
@@ -281,12 +369,37 @@ class ScheduleService:
 
                 if training_id:
                     logger.info(f"✅ 定时微调已启动: plan_id={plan_id}, training_id={training_id}")
+
+                    # 记录成功结果
+                    if task_execution:
+                        TaskExecutionService.complete_task_execution(
+                            task_id=task_execution.id,
+                            success=True,
+                            output_data={'training_id': training_id}
+                        )
                 else:
                     logger.error(f"❌ 定时微调启动失败: plan_id={plan_id}")
+
+                    # 记录失败结果
+                    if task_execution:
+                        TaskExecutionService.complete_task_execution(
+                            task_id=task_execution.id,
+                            success=False,
+                            error_message='训练服务启动失败'
+                        )
+
             except Exception as training_error:
                 logger.error(f"训练服务调用失败: plan_id={plan_id}, error={training_error}")
                 import traceback
                 traceback.print_exc()
+
+                # 记录异常结果
+                if task_execution:
+                    TaskExecutionService.complete_task_execution(
+                        task_id=task_execution.id,
+                        success=False,
+                        error_message=f'训练服务异常: {str(training_error)}'
+                    )
 
         except Exception as e:
             logger.error(f"触发微调失败: plan_id={plan_id}, error={e}")
@@ -319,12 +432,164 @@ class ScheduleService:
             traceback.print_exc()
 
     @classmethod
+    async def _trigger_inference(cls, plan_id: int):
+        """
+        触发预测任务（由调度器调用）
+
+        Args:
+            plan_id: 计划ID
+        """
+        try:
+            current_time_beijing = datetime.now(cls.BEIJING_TZ)
+            logger.info(f"⏰ 定时预测任务触发: plan_id={plan_id}, time(UTC+8)={current_time_beijing.strftime('%Y-%m-%d %H:%M:%S')}")
+
+            # 检查计划状态
+            with get_db() as db:
+                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                if not plan:
+                    logger.error(f"计划不存在: plan_id={plan_id}")
+                    return
+
+                logger.info(f"计划状态检查: plan_id={plan_id}, status={plan.status}, auto_inference_enabled={plan.auto_inference_enabled}")
+
+                # 检查计划是否运行中
+                if plan.status != 'running':
+                    logger.warning(f"计划未运行，跳过预测: plan_id={plan_id}, status={plan.status}")
+                    return
+
+                # 再次检查是否启用自动预测
+                if not plan.auto_inference_enabled:
+                    logger.warning(f"计划未启用自动预测，跳过: plan_id={plan_id}")
+                    return
+
+                # 检查是否有时间表配置
+                schedule_times = plan.auto_inference_schedule or []
+                if not schedule_times:
+                    logger.warning(f"计划未配置预测时间表，跳过: plan_id={plan_id}")
+                    return
+
+                logger.info(f"计划配置检查通过: plan_id={plan_id}, schedule_times={schedule_times}")
+
+            # 创建任务执行记录
+            from services.task_execution_service import TaskExecutionService
+            task_execution = None
+
+            try:
+                # 从计划配置中找到匹配当前时间的任务
+                current_datetime = datetime.now(cls.BEIJING_TZ)
+                current_time_str = current_datetime.strftime('%H:%M')
+
+                # 找到匹配的时间点
+                scheduled_time_str = None
+                for time_str in schedule_times:
+                    if time_str == current_time_str:
+                        scheduled_time_str = time_str
+                        break
+
+                # 如果没有精确匹配，使用当前时间
+                if not scheduled_time_str:
+                    scheduled_time_str = current_time_str
+
+                task_execution = TaskExecutionService.create_scheduled_task(
+                    plan_id=plan_id,
+                    task_type='auto_inference',
+                    time_str=scheduled_time_str
+                )
+
+                # 标记任务开始
+                TaskExecutionService.start_task_execution(task_execution.id)
+
+            except Exception as record_error:
+                logger.error(f"创建预测任务执行记录失败: plan_id={plan_id}, error={record_error}")
+
+            # 触发预测
+            from services.inference_service import InferenceService
+            logger.info(f"开始调用推理服务: plan_id={plan_id}")
+
+            try:
+                inference_id = await InferenceService.start_inference_by_plan(plan_id, manual=False)
+
+                if inference_id:
+                    logger.info(f"✅ 定时预测已启动: plan_id={plan_id}, inference_id={inference_id}")
+
+                    # 记录成功结果
+                    if task_execution:
+                        TaskExecutionService.complete_task_execution(
+                            task_id=task_execution.id,
+                            success=True,
+                            output_data={'inference_id': inference_id}
+                        )
+                else:
+                    logger.error(f"❌ 定时预测启动失败: plan_id={plan_id}")
+
+                    # 记录失败结果
+                    if task_execution:
+                        TaskExecutionService.complete_task_execution(
+                            task_id=task_execution.id,
+                            success=False,
+                            error_message='推理服务启动失败'
+                        )
+
+            except Exception as inference_error:
+                logger.error(f"推理服务调用失败: plan_id={plan_id}, error={inference_error}")
+                import traceback
+                traceback.print_exc()
+
+                # 记录异常结果
+                if task_execution:
+                    TaskExecutionService.complete_task_execution(
+                        task_id=task_execution.id,
+                        success=False,
+                        error_message=f'推理服务异常: {str(inference_error)}'
+                    )
+
+        except Exception as e:
+            logger.error(f"触发预测失败: plan_id={plan_id}, error={e}")
+            import traceback
+            traceback.print_exc()
+
+    @classmethod
+    def _trigger_inference_wrapper(cls, plan_id: int):
+        """
+        包装器方法，用于在APScheduler中调用async函数
+
+        Args:
+            plan_id: 计划ID
+        """
+        try:
+            # 检查是否已有事件循环
+            try:
+                loop = asyncio.get_running_loop()
+                # 如果有运行中的循环，在新线程中运行
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(cls._run_async_in_new_loop_for_inference, plan_id)
+                    future.result()
+            except RuntimeError:
+                # 没有运行中的循环，直接运行
+                asyncio.run(cls._trigger_inference(plan_id))
+        except Exception as e:
+            logger.error(f"预测包装器调用失败: plan_id={plan_id}, error={e}")
+            import traceback
+            traceback.print_exc()
+
+    @classmethod
     def _run_async_in_new_loop(cls, plan_id: int):
-        """在新的事件循环中运行异步函数"""
+        """在新的事件循环中运行异步函数（微调）"""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
             loop.run_until_complete(cls._trigger_finetune(plan_id))
+        finally:
+            loop.close()
+
+    @classmethod
+    def _run_async_in_new_loop_for_inference(cls, plan_id: int):
+        """在新的事件循环中运行异步函数（预测）"""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(cls._trigger_inference(plan_id))
         finally:
             loop.close()
 
