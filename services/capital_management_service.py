@@ -162,16 +162,25 @@ class CapitalManagementService:
 
             # 如果使用自定义金额
             if custom_amount is not None:
-                if custom_amount > available_usdt:
-                    risk_warnings.append(f"自定义金额 ${custom_amount:.2f} 超过可用余额 ${available_usdt:.2f}")
+                # 转换为float类型
+                try:
+                    custom_amount_float = float(custom_amount)
+                except (ValueError, TypeError):
+                    return {
+                        'success': False,
+                        'error': f'无效的自定义金额格式: {custom_amount}'
+                    }
+
+                if custom_amount_float > available_usdt:
+                    risk_warnings.append(f"自定义金额 ${custom_amount_float:.2f} 超过可用余额 ${available_usdt:.2f}")
                     return {
                         'success': False,
                         'error': '余额不足',
                         'available_usdt': available_usdt,
-                        'requested_amount': custom_amount
+                        'requested_amount': custom_amount_float
                     }
 
-                order_amount = custom_amount
+                order_amount = custom_amount_float
             else:
                 # 使用动态平摊金额
                 order_amount = next_order_amount
@@ -190,10 +199,28 @@ class CapitalManagementService:
                     order_amount = max_single_order
                     risk_warnings.append(f"调整为最大限制金额: ${order_amount:.2f}")
 
+            # 确保price是float类型
+            try:
+                price_float = float(price)
+            except (ValueError, TypeError):
+                return {
+                    'success': False,
+                    'error': f'无效的价格格式: {price}'
+                }
+
             # 计算数量
             if custom_size is not None:
-                order_size = custom_size
-                calculated_amount = order_size * price
+                # 转换为float类型
+                try:
+                    custom_size_float = float(custom_size)
+                except (ValueError, TypeError):
+                    return {
+                        'success': False,
+                        'error': f'无效的自定义数量格式: {custom_size}'
+                    }
+
+                order_size = custom_size_float
+                calculated_amount = order_size * price_float
                 if side == 'buy' and calculated_amount > available_usdt:
                     return {
                         'success': False,
@@ -202,7 +229,7 @@ class CapitalManagementService:
             else:
                 # 根据金额计算数量
                 if side == 'buy':
-                    order_size = order_amount / price
+                    order_size = order_amount / price_float
                 else:
                     # 卖出时需要检查是否有足够的持仓
                     trading_tools = self._get_trading_tools()
@@ -227,11 +254,11 @@ class CapitalManagementService:
                                     'available_size': available_size
                                 }
 
-                            order_size = min(order_amount / price, available_size)
+                            order_size = min(order_amount / price_float, available_size)
                         else:
-                            order_size = order_amount / price
+                            order_size = order_amount / price_float
                     else:
-                        order_size = order_amount / price
+                        order_size = order_amount / price_float
 
             # 精度处理
             order_size = self._round_to_precision(order_size, 6)  # 保留6位小数
@@ -248,6 +275,12 @@ class CapitalManagementService:
             }
 
         except Exception as e:
+            logger.error(f"计算订单参数失败: {e}")
+            # 添加调试信息
+            print(f"DEBUG: price type: {type(price)}, value: {price}")
+            print(f"DEBUG: custom_amount type: {type(custom_amount)}, value: {custom_amount}")
+            print(f"DEBUG: custom_size type: {type(custom_size)}, value: {custom_size}")
+            print(f"DEBUG: available_usdt type: {type(available_usdt)}, value: {available_usdt}")
             logger.error(f"计算订单参数失败: {e}")
             return {
                 'success': False,

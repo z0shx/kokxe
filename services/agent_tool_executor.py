@@ -169,12 +169,14 @@ class AgentToolExecutor:
                 return await self._cancel_order(params)
             elif tool_name == "amend_order":
                 return await self._amend_order(params)
-            elif tool_name == "cancel_all_orders":
-                return await self._cancel_all_orders(params)
             elif tool_name == "get_prediction_history":
                 return await self._get_prediction_history(params)
+            elif tool_name == "query_prediction_data":
+                return await self._query_prediction_data(params)
             elif tool_name == "query_historical_kline_data":
                 return await self._query_historical_kline_data(params)
+            elif tool_name == "run_latest_model_inference":
+                return await self._run_latest_model_inference(params)
             elif tool_name == "get_current_utc_time":
                 return await self._get_current_utc_time(params)
             else:
@@ -217,19 +219,36 @@ class AgentToolExecutor:
 
     async def _get_order_info(self, params: Dict) -> Dict:
         """查询订单信息"""
-        endpoint = "/api/v5/trade/order"
-        query_params = {"instId": params["inst_id"]}
+        try:
+            inst_id = params.get("inst_id")
+            order_id = params.get("order_id")
+            client_order_id = params.get("client_order_id")
 
-        if params.get("order_id"):
-            query_params["ordId"] = params["order_id"]
-        if params.get("client_order_id"):
-            query_params["clOrdId"] = params["client_order_id"]
+            if not inst_id:
+                return {"success": False, "error": "缺少必需参数 inst_id"}
 
-        result = self.rest_client._request("GET", endpoint, params=query_params, auth=True)
-        if result.get("code") == "0":
-            return {"success": True, "data": result.get("data", [])}
-        else:
-            return {"success": False, "error": result.get("msg", "查询失败")}
+            if not order_id and not client_order_id:
+                return {"success": False, "error": "必须提供 order_id 或 client_order_id 中的一个"}
+
+            # 使用 REST API 直接查询订单信息
+            endpoint = "/api/v5/trade/order"
+            query_params = {"instId": inst_id}
+
+            if order_id:
+                query_params["ordId"] = order_id
+            if client_order_id:
+                query_params["clOrdId"] = client_order_id
+
+            result = self.rest_client._request("GET", endpoint, params=query_params, auth=True)
+
+            if result.get("code") == "0":
+                return {"success": True, "data": result.get("data", [])}
+            else:
+                return {"success": False, "error": result.get("msg", "查询失败")}
+
+        except Exception as e:
+            logger.error(f"[{self.environment}] 查询订单信息失败: {e}")
+            return {"success": False, "error": f"查询订单信息失败: {str(e)}"}
 
     async def _get_pending_orders(self, params: Dict) -> Dict:
         """查询未成交订单"""
@@ -246,23 +265,35 @@ class AgentToolExecutor:
 
     async def _get_order_history(self, params: Dict) -> Dict:
         """查询历史订单"""
-        endpoint = "/api/v5/trade/orders-history"
-        query_params = {"instType": "SPOT"}
+        try:
+            inst_id = params.get("inst_id")
+            begin = params.get("begin")
+            end = params.get("end")
+            limit = params.get("limit", "100")
 
-        if params.get("inst_id"):
-            query_params["instId"] = params["inst_id"]
-        if params.get("begin"):
-            query_params["begin"] = params["begin"]
-        if params.get("end"):
-            query_params["end"] = params["end"]
-        if params.get("limit"):
-            query_params["limit"] = params["limit"]
+            # 使用 REST API 直接查询历史订单
+            endpoint = "/api/v5/trade/orders-history-archive"
+            query_params = {"instType": "SPOT"}
 
-        result = self.rest_client._request("GET", endpoint, params=query_params, auth=True)
-        if result.get("code") == "0":
-            return {"success": True, "data": result.get("data", [])}
-        else:
-            return {"success": False, "error": result.get("msg", "查询失败")}
+            if inst_id:
+                query_params["instId"] = inst_id
+            if begin:
+                query_params["begin"] = begin
+            if end:
+                query_params["end"] = end
+            if limit:
+                query_params["limit"] = str(limit)
+
+            result = self.rest_client._request("GET", endpoint, params=query_params, auth=True)
+
+            if result.get("code") == "0":
+                return {"success": True, "data": result.get("data", [])}
+            else:
+                return {"success": False, "error": result.get("msg", "查询失败")}
+
+        except Exception as e:
+            logger.error(f"[{self.environment}] 查询历史订单失败: {e}")
+            return {"success": False, "error": f"查询历史订单失败: {str(e)}"}
 
     async def _get_fills(self, params: Dict) -> Dict:
         """查询成交明细"""
@@ -389,33 +420,7 @@ class AgentToolExecutor:
         else:
             return {"success": False, "error": result.get("msg", "改单失败")}
 
-    async def _cancel_all_orders(self, params: Dict) -> Dict:
-        """批量撤单"""
-        # 先查询所有挂单
-        pending_result = await self._get_pending_orders(params)
-        if not pending_result["success"]:
-            return pending_result
-
-        orders = pending_result["data"]
-        if not orders:
-            return {"success": True, "message": "没有需要撤销的订单", "data": []}
-
-        # 逐个撤单
-        results = []
-        for order in orders:
-            cancel_result = await self._cancel_order({
-                "inst_id": order["instId"],
-                "order_id": order["ordId"]
-            })
-            results.append(cancel_result)
-
-        success_count = sum(1 for r in results if r["success"])
-        return {
-            "success": True,
-            "message": f"撤销了 {success_count}/{len(orders)} 个订单",
-            "data": results
-        }
-
+    
     async def _get_prediction_history(self, params: Dict) -> Dict:
         """查询历史预测数据"""
         from services.inference_service import InferenceService
@@ -434,13 +439,10 @@ class AgentToolExecutor:
                 limit = 50
 
             # 如果未指定training_id，需要通过当前计划获取
-            # 这里假设该方法在Agent上下文中调用，需要plan_id
-            # 我们从self中获取plan_id（需要在初始化时保存）
-            # 由于executor初始化时没有plan_id，我们先检查params中是否有
-
             if not training_id:
-                # 如果params中有plan_id，使用它获取最新训练记录
-                plan_id = params.get("plan_id")
+                # 优先使用self.plan_id，如果没有则从params中获取
+                plan_id = getattr(self, 'plan_id', None) or params.get("plan_id")
+
                 if not plan_id:
                     return {
                         "success": False,
@@ -648,6 +650,141 @@ class AgentToolExecutor:
             return {
                 "success": False,
                 "error": f"查询失败: {str(e)}"
+            }
+
+    async def _query_prediction_data(self, params: Dict) -> Dict:
+        """查询数据库中的预测数据"""
+        from database.db import get_db
+        from database.models import PredictionData
+        from sqlalchemy import and_, asc, desc
+        from datetime import datetime
+
+        try:
+            start_time = params.get("start_time")
+            end_time = params.get("end_time")
+            limit = min(params.get("limit", 100), 500)  # 限制最大500条
+            order_by = params.get("order_by", "time_desc")
+            inference_batch_id = params.get("inference_batch_id")
+
+            with get_db() as db:
+                # 构建查询条件
+                query = db.query(PredictionData)
+
+                # 添加时间范围过滤
+                if start_time:
+                    try:
+                        start_dt = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
+                        query = query.filter(PredictionData.timestamp >= start_dt)
+                    except ValueError:
+                        return {"success": False, "error": f"开始时间格式错误: {start_time}"}
+
+                if end_time:
+                    try:
+                        end_dt = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
+                        query = query.filter(PredictionData.timestamp <= end_dt)
+                    except ValueError:
+                        return {"success": False, "error": f"结束时间格式错误: {end_time}"}
+
+                # 添加批次ID过滤
+                if inference_batch_id:
+                    query = query.filter(PredictionData.inference_batch_id == inference_batch_id)
+
+                # 添加排序
+                if order_by == "time_asc":
+                    query = query.order_by(asc(PredictionData.timestamp))
+                else:  # 默认按时间倒序
+                    query = query.order_by(desc(PredictionData.timestamp))
+
+                # 应用限制
+                predictions = query.limit(limit).all()
+
+                # 转换为字典格式
+                data = []
+                for pred in predictions:
+                    data.append({
+                        "timestamp": pred.timestamp.isoformat() if pred.timestamp else None,
+                        "inference_batch_id": pred.inference_batch_id,
+                        "training_record_id": pred.training_record_id,
+                        "plan_id": pred.plan_id,
+                        "open": pred.open,
+                        "high": pred.high,
+                        "low": pred.low,
+                        "close": pred.close,
+                        "volume": pred.volume,
+                        "amount": pred.amount,
+                        "close_min": pred.close_min,
+                        "close_max": pred.close_max,
+                        "upward_prob": getattr(pred, 'upward_prob', None),
+                        "volatility_prob": getattr(pred, 'volatility_prob', None)
+                    })
+
+                return {
+                    "success": True,
+                    "data": data,
+                    "total": len(data),
+                    "message": f"查询到 {len(data)} 条预测数据"
+                }
+
+        except Exception as e:
+            logger.error(f"[{self.environment}] 查询预测数据失败: {e}")
+            return {"success": False, "error": f"查询预测数据失败: {str(e)}"}
+
+    async def _run_latest_model_inference(self, params: Dict) -> Dict:
+        """运行最新训练模型的推理"""
+        from services.inference_service import InferenceService
+        from database.db import get_db
+        from database.models import TrainingRecord
+        from sqlalchemy import and_, desc
+
+        try:
+            # 获取当前计划的最新训练记录
+            plan_id = getattr(self, 'plan_id', None) or params.get("plan_id")
+
+            if not plan_id:
+                return {
+                    "success": False,
+                    "error": "无法获取当前计划的ID"
+                }
+
+            with get_db() as db:
+                latest_training = db.query(TrainingRecord).filter(
+                    and_(
+                        TrainingRecord.plan_id == plan_id,
+                        TrainingRecord.status == 'completed',
+                        TrainingRecord.is_active == True
+                    )
+                ).order_by(desc(TrainingRecord.created_at)).first()
+
+                if not latest_training:
+                    return {
+                        "success": False,
+                        "error": "未找到可用的已完成训练记录"
+                    }
+
+                logger.info(f"开始执行模型推理，训练记录ID: {latest_training.id}")
+
+            # 执行模型推理
+            success = await InferenceService.start_inference(
+                training_id=latest_training.id
+            )
+
+            if success:
+                return {
+                    "success": True,
+                    "message": f"模型推理成功完成，训练记录ID: {latest_training.id}",
+                    "training_id": latest_training.id
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "模型推理失败"
+                }
+
+        except Exception as e:
+            logger.error(f"[{self.environment}] 执行模型推理失败: {e}")
+            return {
+                "success": False,
+                "error": f"执行模型推理失败: {str(e)}"
             }
 
     async def _get_current_utc_time(self, params: Dict) -> Dict:

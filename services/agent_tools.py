@@ -325,61 +325,7 @@ AGENT_TOOLS = {
         risk_level="medium"
     ),
 
-    "cancel_all_orders": AgentTool(
-        name="cancel_all_orders",
-        description="""批量撤销所有未成交订单。紧急情况下可以一次性撤销所有挂单。
-
-使用场景：
-1. 市场异常波动时需要快速平仓
-2. 策略失效需要停止所有交易
-3. 重新调整交易策略前清空所有订单
-
-注意：此操作不可逆，请谨慎使用""",
-        category=ToolCategory.TRADE,
-        parameters={
-            "inst_id": {
-                "type": "string",
-                "description": "交易对，如 BTC-USDT。不填则撤销所有交易对的订单",
-                "required": False
-            }
-        },
-        required_params=[],
-        risk_level="high"
-    ),
-
-    "place_stop_loss_order": AgentTool(
-        name="place_stop_loss_order",
-        description="""设置止损订单。当价格达到指定止损比例时自动卖出，用于控制风险。
-
-重要提示：
-1. 止损基于配置的止损百分比，计算当前持仓的平均成本
-2. 止损价格 = 平均成本 * (1 - 止损百分比)
-3. 下单前会检查当前持仓情况和止损必要性
-4. 止损订单使用市价单，确保快速成交
-5. 建议在持仓后及时设置止损保护""",
-        category=ToolCategory.TRADE,
-        parameters={
-            "inst_id": {
-                "type": "string",
-                "description": "交易对，如 BTC-USDT",
-                "required": True
-            },
-            "stop_loss_percentage": {
-                "type": "string",
-                "description": "止损百分比，如 0.2 表示20%的止损。如果不指定，使用计划配置的默认值",
-                "required": False
-            },
-            "client_order_id": {
-                "type": "string",
-                "description": "客户端订单ID，用于追踪止损订单",
-                "required": False
-            }
-        },
-        required_params=["inst_id"],
-        risk_level="high"
-    ),
-
-"get_prediction_history": AgentTool(
+    "get_prediction_history": AgentTool(
         name="get_prediction_history",
         description="""查询Kronos模型的历史预测数据。返回指定训练版本的所有历史推理批次及其预测结果。
 
@@ -597,54 +543,6 @@ AGENT_TOOLS = {
         },
         required_params=[],
         risk_level="medium"
-    ),
-
-    "delete_prediction_data_by_batch": AgentTool(
-        name="delete_prediction_data_by_batch",
-        description="""删除预测数据（按推理批次）。可以删除指定批次ID或时间范围内的预测数据，用于数据清理或重新推理前的准备工作。
-
-使用场景：
-1. 清理错误或有问题的预测数据
-2. 重新推理前删除旧数据
-3. 数据空间管理和优化
-4. 测试数据清理流程
-
-删除规则：
-- 按批次ID删除：删除指定批次ID的所有预测数据
-- 按时间范围删除：删除指定时间范围内的所有预测数据
-- 删除操作不可恢复，请谨慎使用
-- 只删除预测数据，不影响训练记录
-
-返回信息包括：
-- 删除的数据记录数
-- 被删除的批次ID列表
-- 删除的时间范围信息
-- 操作确认状态""",
-        category=ToolCategory.MONITOR,
-        parameters={
-            "batch_id": {
-                "type": "integer",
-                "description": "推理批次ID。指定批次ID时，将删除该批次的所有预测数据",
-                "required": False
-            },
-            "start_time": {
-                "type": "string",
-                "description": "开始时间，格式：YYYY-MM-DD HH:MM:SS（UTC+0时间）。与batch_id二选一",
-                "required": False
-            },
-            "end_time": {
-                "type": "string",
-                "description": "结束时间，格式：YYYY-MM-DD HH:MM:SS（UTC+0时间）。与start_time配合使用",
-                "required": False
-            },
-            "confirm_delete": {
-                "type": "boolean",
-                "description": "确认删除操作。必须设置为true才会执行删除（安全措施）",
-                "required": True
-            }
-        },
-        required_params=["confirm_delete"],
-        risk_level="high"
     ),
 }
 

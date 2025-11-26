@@ -588,17 +588,8 @@ class PlanCreateUI(BaseUIComponent, DatabaseMixin):
                 return fig
 
             # 创建K线图
-            # 将UTC时间转换为UTC+8（北京时间）显示
-            timestamps_utc8 = []
-            for k in klines:
-                ts = k['timestamp']
-                # 如果是naive datetime，假设它是UTC
-                if ts.tzinfo is None:
-                    from datetime import timezone
-                    ts = ts.replace(tzinfo=timezone.utc)
-                # 转换为UTC+8
-                ts_utc8 = ts + timedelta(hours=8)
-                timestamps_utc8.append(ts_utc8)
+            # 时间戳已经是UTC+8，直接使用
+            timestamps_utc8 = [k['timestamp'] for k in klines]
 
             fig = go.Figure(data=[go.Candlestick(
                 x=timestamps_utc8,
