@@ -464,15 +464,31 @@ class AgentStreamService:
     ) -> AsyncGenerator[str, None]:
         """执行工具并流式返回结果"""
         try:
-            tool_name = tool_call["name"]
-            tool_id = tool_call["id"]
-            arguments_str = tool_call["arguments"]
+            # 确保tool_name是字符串
+            tool_name = str(tool_call.get("name", ""))
+            if not tool_name:
+                yield json.dumps({
+                    "type": "tool_error",
+                    "tool_name": "unknown",
+                    "tool_id": tool_call.get("id", "unknown"),
+                    "error": "工具名称为空"
+                })
+                return
+
+            tool_id = tool_call.get("id", "")
+            arguments_str = tool_call.get("arguments", "")
 
             # 解析参数
             try:
                 arguments = json.loads(arguments_str) if arguments_str else {}
             except json.JSONDecodeError:
-                arguments = {"raw_args": arguments_str}
+                arguments = {}
+                yield json.dumps({
+                    "type": "tool_error",
+                    "tool_name": tool_name,
+                    "tool_id": tool_id,
+                    "error": f"工具参数解析失败: {arguments_str}"
+                })
 
             yield json.dumps({
                 "type": "tool_call_arguments",
@@ -508,9 +524,27 @@ class AgentStreamService:
             tool_func = getattr(trading_tools, tool_name, None)
 
             if tool_func and callable(tool_func):
-                # 在线程池中执行同步工具
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(None, tool_func, **arguments)
+                # 过滤参数，只传递工具函数期望的参数
+                import inspect
+                try:
+                    sig = inspect.signature(tool_func)
+                    valid_params = {}
+                    for param_name, param in sig.parameters.items():
+                        if param_name in arguments:
+                            valid_params[param_name] = arguments[param_name]
+                        elif param.default == inspect.Parameter.empty and param.kind != inspect.Parameter.VAR_KEYWORD:
+                            # 必需参数缺失
+                            valid_params[param_name] = None
+
+                    # 在线程池中执行同步工具
+                    loop = asyncio.get_event_loop()
+                    result = await loop.run_in_executor(None, lambda: tool_func(**valid_params))
+                except TypeError as te:
+                    logger.error(f"工具参数错误: {te}")
+                    result = {"success": False, "error": f"工具参数错误: {str(te)}"}
+                except Exception as exec_error:
+                    logger.error(f"工具执行错误: {exec_error}")
+                    result = {"success": False, "error": f"工具执行错误: {str(exec_error)}"}
             else:
                 result = {"success": False, "error": f"工具 '{tool_name}' 不存在或不可调用"}
 

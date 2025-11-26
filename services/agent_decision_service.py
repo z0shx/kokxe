@@ -452,6 +452,10 @@ class AgentDecisionService:
                     "input_schema": {
                         "type": "object",
                         "properties": {
+                            "inst_id": {
+                                "type": "string",
+                                "description": "交易对（如 BTC-USDT）"
+                            },
                             "side": {
                                 "type": "string",
                                 "enum": ["buy", "sell"],
@@ -463,15 +467,20 @@ class AgentDecisionService:
                             },
                             "order_type": {
                                 "type": "string",
-                                "enum": ["market", "limit"],
+                                "enum": ["limit"],
                                 "description": "订单类型"
                             },
                             "price": {
                                 "type": "number",
-                                "description": "限价单价格（市价单不需要）"
+                                "description": "限价单价格（限价单必须）"
+                            },
+                            "td_mode": {
+                                "type": "string",
+                                "enum": ["cash", "cross", "isolated"],
+                                "description": "交易模式（默认cash）"
                             }
                         },
-                        "required": ["side", "size", "order_type"]
+                        "required": ["inst_id", "side", "size", "order_type"]
                     }
                 }
             ]
@@ -534,6 +543,10 @@ class AgentDecisionService:
                         "parameters": {
                             "type": "object",
                             "properties": {
+                                "inst_id": {
+                                    "type": "string",
+                                    "description": "交易对（如 BTC-USDT）"
+                                },
                                 "side": {
                                     "type": "string",
                                     "enum": ["buy", "sell"],
@@ -550,10 +563,15 @@ class AgentDecisionService:
                                 },
                                 "price": {
                                     "type": "number",
-                                    "description": "限价单价格（市价单不需要）"
+                                    "description": "限价单价格（限价单必须）"
+                                },
+                                "td_mode": {
+                                    "type": "string",
+                                    "enum": ["cash", "cross", "isolated"],
+                                    "description": "交易模式（默认cash）"
                                 }
                             },
-                            "required": ["side", "size", "order_type"]
+                            "required": ["inst_id", "side", "size", "order_type"]
                         }
                     }
                 }
@@ -618,6 +636,10 @@ class AgentDecisionService:
                         "parameters": {
                             "type": "object",
                             "properties": {
+                                "inst_id": {
+                                    "type": "string",
+                                    "description": "交易对（如 BTC-USDT）"
+                                },
                                 "side": {
                                     "type": "string",
                                     "enum": ["buy", "sell"],
@@ -634,10 +656,15 @@ class AgentDecisionService:
                                 },
                                 "price": {
                                     "type": "number",
-                                    "description": "限价单价格"
+                                    "description": "限价单价格（限价单必须）"
+                                },
+                                "td_mode": {
+                                    "type": "string",
+                                    "enum": ["cash", "cross", "isolated"],
+                                    "description": "交易模式（默认cash）"
                                 }
                             },
-                            "required": ["side", "size", "order_type"]
+                            "required": ["inst_id", "side", "size", "order_type"]
                         }
                     }
                 }
@@ -704,6 +731,10 @@ class AgentDecisionService:
                         "parameters": {
                             "type": "object",
                             "properties": {
+                                "inst_id": {
+                                    "type": "string",
+                                    "description": "交易对（如 BTC-USDT）"
+                                },
                                 "side": {
                                     "type": "string",
                                     "enum": ["buy", "sell"],
@@ -720,10 +751,15 @@ class AgentDecisionService:
                                 },
                                 "price": {
                                     "type": "number",
-                                    "description": "限价单价格"
+                                    "description": "限价单价格（限价单必须）"
+                                },
+                                "td_mode": {
+                                    "type": "string",
+                                    "enum": ["cash", "cross", "isolated"],
+                                    "description": "交易模式（默认cash）"
                                 }
                             },
-                            "required": ["side", "size", "order_type"]
+                            "required": ["inst_id", "side", "size", "order_type"]
                         }
                     }
                 }
@@ -2070,12 +2106,14 @@ class AgentDecisionService:
                     "input_schema": {
                         "type": "object",
                         "properties": {
+                            "inst_id": {"type": "string", "description": "交易对（如 BTC-USDT）"},
                             "side": {"type": "string", "enum": ["buy", "sell"]},
                             "size": {"type": "number"},
                             "order_type": {"type": "string", "enum": ["market", "limit"]},
-                            "price": {"type": "number"}
+                            "price": {"type": "number", "description": "限价单价格（限价单必须）"},
+                            "td_mode": {"type": "string", "enum": ["cash", "cross", "isolated"], "description": "交易模式（默认cash）"}
                         },
-                        "required": ["side", "size", "order_type"]
+                        "required": ["inst_id", "side", "size", "order_type"]
                     }
                 }
             ]
@@ -2151,12 +2189,14 @@ class AgentDecisionService:
                         "parameters": {
                             "type": "object",
                             "properties": {
+                                "inst_id": {"type": "string", "description": "交易对（如 BTC-USDT）"},
                                 "side": {"type": "string", "enum": ["buy", "sell"]},
                                 "size": {"type": "number"},
                                 "order_type": {"type": "string", "enum": ["market", "limit"]},
-                                "price": {"type": "number"}
+                                "price": {"type": "number", "description": "限价单价格（限价单必须）"},
+                                "td_mode": {"type": "string", "enum": ["cash", "cross", "isolated"], "description": "交易模式（默认cash）"}
                             },
-                            "required": ["side", "size", "order_type"]
+                            "required": ["inst_id", "side", "size", "order_type"]
                         }
                     }
                 }
@@ -2242,12 +2282,14 @@ class AgentDecisionService:
                         "parameters": {
                             "type": "object",
                             "properties": {
+                                "inst_id": {"type": "string", "description": "交易对（如 BTC-USDT）"},
                                 "side": {"type": "string", "enum": ["buy", "sell"]},
                                 "size": {"type": "number"},
                                 "order_type": {"type": "string", "enum": ["market", "limit"]},
-                                "price": {"type": "number"}
+                                "price": {"type": "number", "description": "限价单价格（限价单必须）"},
+                                "td_mode": {"type": "string", "enum": ["cash", "cross", "isolated"], "description": "交易模式（默认cash）"}
                             },
-                            "required": ["side", "size", "order_type"]
+                            "required": ["inst_id", "side", "size", "order_type"]
                         }
                     }
                 }
@@ -2323,12 +2365,14 @@ class AgentDecisionService:
                         "parameters": {
                             "type": "object",
                             "properties": {
+                                "inst_id": {"type": "string", "description": "交易对（如 BTC-USDT）"},
                                 "side": {"type": "string", "enum": ["buy", "sell"]},
                                 "size": {"type": "number"},
                                 "order_type": {"type": "string", "enum": ["market", "limit"]},
-                                "price": {"type": "number"}
+                                "price": {"type": "number", "description": "限价单价格（限价单必须）"},
+                                "td_mode": {"type": "string", "enum": ["cash", "cross", "isolated"], "description": "交易模式（默认cash）"}
                             },
-                            "required": ["side", "size", "order_type"]
+                            "required": ["inst_id", "side", "size", "order_type"]
                         }
                     }
                 }

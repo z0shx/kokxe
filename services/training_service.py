@@ -22,6 +22,9 @@ _training_queue = []
 # 训练进度缓存 {training_id: {'progress': float, 'stage': str, 'message': str}}
 _training_progress = {}
 
+# 活跃训练任务缓存 {training_id: task}
+_active_training_tasks = {}
+
 
 def _convert_numpy_to_python(obj):
     """
@@ -81,6 +84,45 @@ class TrainingService:
             'timestamp': datetime.now()
         }
         logger.debug(f"训练进度更新: training_id={training_id}, progress={progress:.2%}, stage={stage}, message={message}")
+
+    @classmethod
+    def recover_stuck_training_records(cls):
+        """恢复卡住的训练记录"""
+        try:
+            with get_db() as db:
+                stuck_records = db.query(TrainingRecord).filter(
+                    TrainingRecord.status == 'training'
+                ).all()
+
+                for record in stuck_records:
+                    logger.warning(f"发现卡住的训练记录: id={record.id}, version={record.version}, plan_id={record.plan_id}")
+
+                    # 如果训练开始时间超过24小时，标记为失败
+                    if record.train_start_time:
+                        hours_elapsed = (datetime.utcnow() - record.train_start_time).total_seconds() / 3600
+                        if hours_elapsed > 24:
+                            logger.error(f"训练记录卡住超过24小时，标记为失败: id={record.id}")
+                            record.status = 'failed'
+                            record.train_end_time = datetime.utcnow()
+                            record.train_duration = int(hours_elapsed * 3600)
+                            record.error_message = f"训练卡住超过24小时，自动标记为失败"
+                            db.commit()
+                        else:
+                            logger.info(f"训练记录仍在合理时间内: id={record.id}, 已耗时{hours_elapsed:.1f}小时")
+                    else:
+                        # 没有开始时间，直接标记为失败
+                        logger.error(f"训练记录没有开始时间，标记为失败: id={record.id}")
+                        record.status = 'failed'
+                        record.error_message = "训练记录没有开始时间，自动标记为失败"
+                        db.commit()
+
+                if stuck_records:
+                    logger.info(f"处理了 {len(stuck_records)} 个卡住的训练记录")
+                else:
+                    logger.info("没有发现卡住的训练记录")
+
+        except Exception as e:
+            logger.error(f"恢复卡住的训练记录失败: {e}")
 
     @classmethod
     async def start_training(cls, plan_id: int, manual: bool = False) -> Optional[int]:
@@ -155,7 +197,9 @@ class TrainingService:
                 )
 
             # 异步执行训练（不阻塞）
-            asyncio.create_task(cls._execute_training(training_id, plan_id, manual))
+            task = asyncio.create_task(cls._execute_training(training_id, plan_id, manual))
+            _active_training_tasks[training_id] = task
+            logger.info(f"✅ 训练任务已创建: training_id={training_id}")
 
             return training_id
 
@@ -175,10 +219,10 @@ class TrainingService:
             plan_id: 计划ID
             manual: 是否手动触发
         """
-        # 获取训练锁（确保串行执行）
-        async with _training_lock:
-            try:
-                logger.info(f"开始执行训练: training_id={training_id}")
+        try:
+            # 获取训练锁（确保串行执行）
+            async with _training_lock:
+                logger.info(f"开始执行训练: training_id={training_id}, plan_id={plan_id}, manual={manual}")
 
                 # 更新状态为训练中
                 with get_db() as db:
@@ -189,21 +233,25 @@ class TrainingService:
                         'train_start_time': datetime.utcnow()
                     })
                     db.commit()
+                    logger.info(f"✅ 训练状态已更新为training: training_id={training_id}")
 
                 # 执行实际的训练（在线程池中运行，避免阻塞事件循环）
                 loop = asyncio.get_event_loop()
+                logger.info(f"开始同步训练: training_id={training_id}")
                 result = await loop.run_in_executor(
                     None,
                     cls._train_model_sync,
                     training_id,
                     plan_id
                 )
+                logger.info(f"同步训练完成: training_id={training_id}, success={result.get('success', False)}")
 
                 # 更新训练结果
                 try:
+                    logger.info(f"开始更新训练结果到数据库: training_id={training_id}")
                     with get_db() as db:
                         train_end_time = datetime.utcnow()
-                        logger.info(f"准备更新训练结果: training_id={training_id}, success={result['success']}")
+                        logger.info(f"准备更新训练结果: training_id={training_id}, success={result['success']}, end_time={train_end_time}")
 
                         record = db.query(TrainingRecord).filter(
                             TrainingRecord.id == training_id
@@ -216,19 +264,25 @@ class TrainingService:
                         logger.info(f"当前记录状态: status={record.status}, start_time={record.train_start_time}")
 
                         # 更新字段
+                        old_status = record.status
                         record.status = 'completed' if result['success'] else 'failed'
                         record.train_end_time = train_end_time
-                        record.train_duration = int((train_end_time - record.train_start_time).total_seconds())
+                        if record.train_start_time:
+                            record.train_duration = int((train_end_time - record.train_start_time).total_seconds())
+                        else:
+                            record.train_duration = 0
+                            logger.warning(f"训练开始时间为空，设置持续时间为0: training_id={training_id}")
+
                         record.train_metrics = _convert_numpy_to_python(result.get('metrics', {}))
                         record.tokenizer_path = result.get('tokenizer_path')
                         record.predictor_path = result.get('predictor_path')
                         record.error_message = result.get('error')
 
-                        logger.info(f"更新后状态: status={record.status}, duration={record.train_duration}")
+                        logger.info(f"更新后状态: {old_status} -> {record.status}, duration={record.train_duration}")
 
                         # 尝试提交
                         db.commit()
-                        logger.info(f"✅ 训练记录更新成功: training_id={training_id}")
+                        logger.info(f"✅ 训练记录更新成功: training_id={training_id}, status={record.status}")
 
                         # 如果成功，更新计划的最新训练记录ID
                         if result['success']:
@@ -276,12 +330,15 @@ class TrainingService:
                         from services.inference_service import InferenceService
                         asyncio.create_task(InferenceService.start_inference(training_id))
 
-            except Exception as e:
-                logger.error(f"训练执行失败: training_id={training_id}, error={e}")
-                import traceback
-                traceback.print_exc()
+                logger.info(f"✅ 训练任务完全完成: training_id={training_id}")
+
+        except Exception as e:
+            logger.error(f"训练执行失败: training_id={training_id}, error={e}")
+            import traceback
+            traceback.print_exc()
 
                 # 更新状态为失败
+            try:
                 with get_db() as db:
                     db.query(TrainingRecord).filter(
                         TrainingRecord.id == training_id
@@ -291,6 +348,15 @@ class TrainingService:
                         'error_message': str(e)
                     })
                     db.commit()
+                    logger.info(f"✅ 失败状态已更新: training_id={training_id}")
+            except Exception as db_error:
+                logger.error(f"更新失败状态时出错: training_id={training_id}, db_error={db_error}")
+
+        finally:
+            # 清理活跃任务缓存
+            if training_id in _active_training_tasks:
+                del _active_training_tasks[training_id]
+                logger.info(f"✅ 已清理活跃任务缓存: training_id={training_id}")
 
     @classmethod
     def _train_model_sync(cls, training_id: int, plan_id: int) -> Dict:

@@ -47,6 +47,15 @@ def initialize_app():
         logger.error(f"❌ 数据库初始化失败: {e}")
         raise
 
+    # 恢复卡住的训练记录
+    try:
+        logger.info("正在检查并恢复卡住的训练记录...")
+        from services.training_service import TrainingService
+        TrainingService.recover_stuck_training_records()
+        logger.info("✅ 训练记录恢复检查完成")
+    except Exception as e:
+        logger.error(f"❌ 训练记录恢复失败: {e}")
+
     # 初始化调度器并重新加载定时任务
     try:
         logger.info("正在初始化定时任务调度器...")
@@ -633,6 +642,10 @@ def create_app():
 
                             trading_limits_status = gr.Markdown("")
 
+                        with gr.Row():
+                            refresh_agent_btn = gr.Button("🔄 刷新决策记录", size="sm", variant="secondary")
+                            clear_agent_records_btn = gr.Button("🗑️ 清除记录", size="sm", variant="secondary")
+
                         agent_df = gr.Dataframe(
                             interactive=True,  # 改为可交互以支持点击事件
                             wrap=True,
@@ -667,10 +680,6 @@ def create_app():
   
                     
                         # 工具确认功能已废弃 - AI Agent现在可以直接使用启用的工具
-                        # 清除推理记录
-                        with gr.Accordion("📋 记录管理", open=False):
-                            clear_agent_records_btn = gr.Button("🗑️ 清除推理记录", size="sm", variant="stop")
-                            clear_agent_result = gr.Markdown("")
 
                     # === 账户信息区域 ===
                     with gr.Accordion("💰 账户信息", open=True):
@@ -1578,59 +1587,71 @@ def create_app():
                             # 使用AgentStreamService进行流式对话
                             response_content = ""
                             thinking_content = ""
+                            error_occurred = False
 
-                            async for chunk in AgentStreamService.chat_with_tools_stream(
-                                message=message,
-                                history=chat_history,
-                                plan_id=int(pid),
-                                training_record_id=latest_training.id
-                            ):
-                                try:
-                                    data = json.loads(chunk)
-                                    chunk_type = data.get("type", "")
-                                    content = data.get("content", "")
+                            try:
+                                async for chunk in AgentStreamService.chat_with_tools_stream(
+                                    message=message,
+                                    history=chat_history,
+                                    plan_id=int(pid),
+                                    training_record_id=latest_training.id
+                                ):
+                                    try:
+                                        data = json.loads(chunk)
+                                        chunk_type = data.get("type", "")
+                                        content = data.get("content", "")
 
-                                    if chunk_type == "thinking_start":
-                                        thinking_content = "🧠 开始思考...\n\n"
-                                    elif chunk_type == "thinking":
-                                        thinking_content += content
-                                    elif chunk_type == "content":
-                                        response_content = content
-                                    elif chunk_type == "tool_call_start":
-                                        tool_name = data.get("tool_name", "")
-                                        thinking_content += f"\n\n🔧 **调用工具**: `{tool_name}`"
-                                    elif chunk_type == "tool_call_arguments":
-                                        tool_name = data.get("tool_name", "")
-                                        arguments = data.get("arguments", {})
-                                        thinking_content += f"\n📋 **参数**: ```json\n{json.dumps(arguments, indent=2, ensure_ascii=False)}\n```"
-                                    elif chunk_type == "tool_result":
-                                        tool_name = data.get("tool_name", "")
-                                        result = data.get("result", {})
-                                        success = result.get("success", False)
-                                        status_emoji = "✅" if success else "❌"
+                                        if chunk_type == "thinking_start":
+                                            thinking_content = "🧠 开始思考...\n\n"
+                                        elif chunk_type == "thinking":
+                                            thinking_content += content
+                                        elif chunk_type == "content":
+                                            response_content = content
+                                        elif chunk_type == "tool_call_start":
+                                            tool_name = data.get("tool_name", "")
+                                            thinking_content += f"\n\n🔧 **调用工具**: `{tool_name}`"
+                                        elif chunk_type == "tool_call_arguments":
+                                            tool_name = data.get("tool_name", "")
+                                            arguments = data.get("arguments", {})
+                                            thinking_content += f"\n📋 **参数**: ```json\n{json.dumps(arguments, indent=2, ensure_ascii=False)}\n```"
+                                        elif chunk_type == "tool_result":
+                                            tool_name = data.get("tool_name", "")
+                                            result = data.get("result", {})
+                                            success = result.get("success", False)
+                                            status_emoji = "✅" if success else "❌"
 
-                                        # 格式化结果，确保可读性
-                                        result_str = json.dumps(result, indent=2, ensure_ascii=False)
-                                        thinking_content += f"\n{status_emoji} **工具结果**: `{tool_name}`\n```json\n{result_str}\n```"
-                                    elif chunk_type == "tool_error":
-                                        tool_name = data.get("tool_name", "")
-                                        error = data.get("error", "")
-                                        thinking_content += f"\n❌ **工具错误**: `{tool_name}`\n```\n{error}\n```"
-                                    elif chunk_type == "error":
-                                        response_content = content
-                                        break
+                                            # 格式化结果，确保可读性
+                                            result_str = json.dumps(result, indent=2, ensure_ascii=False)
+                                            thinking_content += f"\n{status_emoji} **工具结果**: `{tool_name}`\n```json\n{result_str}\n```"
+                                        elif chunk_type == "tool_error":
+                                            tool_name = data.get("tool_name", "")
+                                            error = data.get("error", "")
+                                            thinking_content += f"\n❌ **工具错误**: `{tool_name}`\n```\n{error}\n```"
+                                        elif chunk_type == "error":
+                                            thinking_content += f"\n❌ **错误**: {content}"
+                                            error_occurred = True
 
-                                except json.JSONDecodeError:
-                                    continue
-                                except Exception as chunk_error:
-                                    logger.error(f"处理流式数据块失败: {chunk_error}")
-                                    continue
+                                    except json.JSONDecodeError:
+                                        continue
+                                    except Exception as chunk_error:
+                                        logger.error(f"处理流式数据块失败: {chunk_error}")
+                                        thinking_content += f"\n⚠️ **数据处理错误**: {str(chunk_error)}"
+                                        continue
+
+                            except Exception as stream_error:
+                                logger.error(f"流式生成器异常: {stream_error}")
+                                thinking_content += f"\n\n❌ **流式生成器异常**: {str(stream_error)}"
+                                error_occurred = True
 
                             # 构建最终回复，包含思考过程（如果有）
                             if thinking_content:
                                 final_content = f"{thinking_content}\n\n---\n\n{response_content}"
                             else:
                                 final_content = response_content
+
+                            # 如果发生了错误但没有回复内容，添加默认错误信息
+                            if error_occurred and not final_content:
+                                final_content = thinking_content or "抱歉，处理过程中出现了错误，但我已经尽力完成了您的请求。"
 
                             history[-1]["content"] = final_content or "抱歉，我无法生成回复。"
 
@@ -1669,19 +1690,49 @@ def create_app():
                     outputs=[agent_chatbot, agent_input]
                 )
 
+                # 刷新决策记录和聊天上下文
+                def refresh_agent_wrapper(pid):
+                    if not pid:
+                        return gr.DataFrame(), [{"role": "assistant", "content": "❌ 请先选择计划"}]
+
+                    try:
+                        # 刷新决策列表
+                        agent_df_updated = detail_ui.load_agent_decisions(int(pid))
+
+                        # 刷新最新的聊天上下文
+                        latest_messages = detail_ui.get_latest_conversation_messages(int(pid))
+
+                        return agent_df_updated, latest_messages
+                    except Exception as e:
+                        logger.error(f"刷新Agent记录失败: {e}")
+                        return gr.DataFrame(), [{"role": "assistant", "content": f"❌ 刷新失败: {str(e)}"}]
+
                 # 清除推理记录
                 def clear_agent_records_wrapper(pid):
                     if not pid:
-                        return "❌ 请先选择计划", gr.DataFrame()
-                    result = detail_ui.clear_agent_records(int(pid))
-                    # 刷新推理记录列表
-                    agent_df_updated = detail_ui.load_agent_decisions(int(pid))
-                    return result, agent_df_updated
+                        return gr.DataFrame(), [{"role": "assistant", "content": "❌ 请先选择计划"}]
+
+                    try:
+                        result = detail_ui.clear_agent_records(int(pid))
+                        # 刷新推理记录列表
+                        agent_df_updated = detail_ui.load_agent_decisions(int(pid))
+                        # 将结果显示在聊天中
+                        status_message = f"✅ {result}"
+                        return agent_df_updated, [{"role": "assistant", "content": status_message}]
+                    except Exception as e:
+                        logger.error(f"清除Agent记录失败: {e}")
+                        return gr.DataFrame(), [{"role": "assistant", "content": f"❌ 清除失败: {str(e)}"}]
+
+                refresh_agent_btn.click(
+                    fn=refresh_agent_wrapper,
+                    inputs=[plan_id_input],
+                    outputs=[agent_df, agent_chatbot]
+                )
 
                 clear_agent_records_btn.click(
                     fn=clear_agent_records_wrapper,
                     inputs=[plan_id_input],
-                    outputs=[clear_agent_result, agent_df]
+                    outputs=[agent_df, agent_chatbot]
                 )
 
                 # 刷新账户信息
