@@ -302,22 +302,60 @@ class AgentToolExecutor:
     # ============================================
 
     async def _place_limit_order(self, params: Dict) -> Dict:
-        """下限价单"""
-        await self._ensure_ws_connected()
+        """下限价单（集成资金管理策略）"""
+        from services.capital_management_service import CapitalManagementService
 
-        result = await self.ws_client.place_order(
-            inst_id=params["inst_id"],
-            side=params["side"],
-            order_type="limit",
-            size=params["size"],
-            price=params["price"],
-            client_order_id=params.get("client_order_id")
-        )
+        inst_id = params["inst_id"]
+        side = params["side"]
+        price = float(params["price"])
+        custom_size = params.get("size")
+        custom_amount = params.get("total_amount")
+        client_order_id = params.get("client_order_id")
 
-        if result.get("code") == "0":
-            return {"success": True, "data": result.get("data", [])}
-        else:
-            return {"success": False, "error": result.get("msg", "下单失败")}
+        # 使用资金管理服务进行下单
+        capital_service = CapitalManagementService(self.plan_id)
+
+        try:
+            result = await capital_service.place_order_with_capital_management(
+                inst_id=inst_id,
+                side=side,
+                price=price,
+                custom_amount=custom_amount,
+                custom_size=custom_size if custom_size else None,
+                client_order_id=client_order_id
+            )
+
+            # 格式化返回结果
+            if result.get('success'):
+                return {
+                    "success": True,
+                    "data": [{
+                        "ordId": result.get('order_id'),
+                        "sCode": "0",
+                        "sMsg": ""
+                    }],
+                    "capital_management": result.get('capital_management', {}),
+                    "order_details": {
+                        "inst_id": inst_id,
+                        "side": side,
+                        "price": price,
+                        "size": result.get('capital_management', {}).get('order_amount', 0) / price,
+                        "amount": result.get('capital_management', {}).get('order_amount', 0)
+                    }
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": result.get('error', '下单失败'),
+                    "capital_info": result.get('capital_management', {}).get('capital_info', {})
+                }
+
+        except Exception as e:
+            logger.error(f"资金管理下单异常: {e}")
+            return {
+                "success": False,
+                "error": f"资金管理下单异常: {str(e)}"
+            }
 
     async def _cancel_order(self, params: Dict) -> Dict:
         """撤单"""

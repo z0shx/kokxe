@@ -75,6 +75,12 @@ class TradingPlan(Base):
     trading_limits = Column(JSONB, comment='交易限制配置（JSON）')
     react_config = Column(JSONB, comment='ReAct推理配置（JSON）')
 
+    # 资金管理配置
+    initial_capital = Column(Float, default=1000.0, comment='初始本金（USDT）')
+    avg_orders_per_batch = Column(Integer, default=10, comment='平均每批订单数（用于平摊策略）')
+    max_single_order_ratio = Column(Float, default=0.2, comment='单次订单最大占总资金比例')
+    capital_management_enabled = Column(Boolean, default=True, comment='是否启用资金管理策略')
+
     # OKX API 配置
     okx_api_key = Column(String(100), comment='OKX API Key')
     okx_secret_key = Column(String(200), comment='OKX Secret Key')

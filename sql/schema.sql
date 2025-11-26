@@ -1,5 +1,5 @@
 -- KOKEX Database Schema
--- Generated at: 2025-11-26 13:34:19.141039
+-- Generated at: 2025-11-26 14:27:01.863503
 
 
 -- Table: agent_decisions
@@ -182,6 +182,10 @@ CREATE TABLE trading_plans (
 	agent_tools_config JSONB, 
 	trading_limits JSONB, 
 	react_config JSONB, 
+	initial_capital FLOAT, 
+	avg_orders_per_batch INTEGER, 
+	max_single_order_ratio FLOAT, 
+	capital_management_enabled BOOLEAN, 
 	okx_api_key VARCHAR(100), 
 	okx_secret_key VARCHAR(200), 
 	okx_passphrase VARCHAR(100), 
