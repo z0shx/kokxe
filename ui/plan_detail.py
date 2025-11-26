@@ -119,6 +119,13 @@ class PlanDetailUI:
         schedule = plan.auto_finetune_schedule or []
         schedule_str = ', '.join(schedule) if schedule else '未配置'
 
+        # 自动预测间隔时间
+        inference_interval_hours = getattr(plan, 'auto_inference_interval_hours', 4)
+        if inference_interval_hours and inference_interval_hours > 0:
+            inference_schedule_str = f'{inference_interval_hours}小时间隔'
+        else:
+            inference_schedule_str = '未配置'
+
         # 计划状态
         plan_status_emoji = {
             'created': '⚪ 已创建',
@@ -139,6 +146,8 @@ class PlanDetailUI:
 **最新模型版本**: `{training_version}` | **AI Agent最后运行**: {agent_time}
 
 **自动微调时间**: {schedule_str}
+
+**自动预测时间**: {inference_schedule_str}
 
 **创建时间**: {format_datetime_full_beijing(plan.created_at)}
 
@@ -2056,6 +2065,104 @@ class PlanDetailUI:
 
         except Exception as e:
             logger.error(f"删除自动微调时间点失败: {e}")
+            return f"❌ 删除失败: {str(e)}", []
+
+    def get_inference_schedule(self, plan_id: int) -> list:
+        """获取自动预测间隔时间"""
+        try:
+            with get_db() as db:
+                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                if not plan:
+                    return [4]  # 默认4小时
+                interval_hours = getattr(plan, 'auto_inference_interval_hours', 4)
+                return [interval_hours] if interval_hours else [4]  # 默认4小时
+        except Exception as e:
+            logger.error(f"获取自动预测间隔时间失败: {e}")
+            return [4]
+
+    def add_inference_schedule_time(self, plan_id: int, time_str: str) -> tuple:
+        """
+        添加自动预测时间点
+
+        Args:
+            plan_id: 计划ID
+            time_str: 时间字符串，格式 HH:MM
+
+        Returns:
+            (结果消息, 更新后的时间表列表)
+        """
+        try:
+            # 验证时间格式
+            import re
+            if not re.match(r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$', time_str.strip()):
+                return "❌ 时间格式错误，请使用HH:MM格式（例如：06:00, 18:30）", []
+
+            time_str = time_str.strip()
+
+            with get_db() as db:
+                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                if not plan:
+                    return "❌ 计划不存在", []
+
+                # 为了兼容性，将时间点转换为间隔时间
+                # 解析HH:MM，转换为小时数作为间隔
+                try:
+                    if ':' in time_str:
+                        hour, minute = time_str.split(':')
+                        interval_hours = int(hour) + 1  # 简单转换：时间点+1小时作为间隔
+                    else:
+                        interval_hours = 4  # 默认4小时
+                except:
+                    interval_hours = 4  # 出错时使用默认值
+
+                # 验证间隔时间
+                if interval_hours <= 0:
+                    interval_hours = 4
+                elif interval_hours > 168:  # 7天
+                    interval_hours = 168
+
+                db.query(TradingPlan).filter(TradingPlan.id == plan_id).update({
+                    'auto_inference_interval_hours': interval_hours,
+                    'auto_inference_enabled': True  # 设置间隔时间时自动启用
+                })
+                db.commit()
+
+                logger.info(f"已设置自动预测间隔时间: plan_id={plan_id}, interval={interval_hours}小时")
+                return f"✅ 已设置为{interval_hours}小时间隔", [interval_hours]
+
+        except Exception as e:
+            logger.error(f"添加自动预测时间点失败: {e}")
+            return f"❌ 添加失败: {str(e)}", []
+
+    def remove_inference_schedule_time(self, plan_id: int, time_str: str) -> tuple:
+        """
+        删除自动预测时间点
+
+        Args:
+            plan_id: 计划ID
+            time_str: 时间字符串，格式 HH:MM
+
+        Returns:
+            (结果消息, 更新后的时间表列表)
+        """
+        try:
+            with get_db() as db:
+                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                if not plan:
+                    return "❌ 计划不存在", []
+
+                # 兼容性方法：重置为默认4小时间隔
+                db.query(TradingPlan).filter(TradingPlan.id == plan_id).update({
+                    'auto_inference_interval_hours': 4,
+                    'auto_inference_enabled': False  # 重置时禁用
+                })
+                db.commit()
+
+                logger.info(f"已重置自动预测间隔时间: plan_id={plan_id}, interval=4小时")
+                return f"✅ 已重置为4小时间隔", [4]
+
+        except Exception as e:
+            logger.error(f"删除自动预测时间点失败: {e}")
             return f"❌ 删除失败: {str(e)}", []
 
     def get_data_date_range(self, inst_id: str, interval: str):

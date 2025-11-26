@@ -741,6 +741,7 @@ class PlanCreateUI(BaseUIComponent, DatabaseMixin):
         train_start_date: str,
         train_end_date: str,
         auto_finetune_times: str,  # 新增：自动微调时间点（逗号分隔）
+        auto_inference_interval: int,  # 新增：自动预测间隔时间（小时）
         # 数据配置参数
         lookback_window: int,
         predict_window: int,
@@ -822,6 +823,9 @@ class PlanCreateUI(BaseUIComponent, DatabaseMixin):
             # 解析自动微调时间点
             auto_schedule = [t.strip() for t in auto_finetune_times.split(',') if t.strip()]
             logger.info(f"自动微调时间表: {auto_schedule}")
+
+            # 自动预测间隔时间已经作为整数传入，无需解析
+            logger.info(f"自动预测间隔时间: {auto_inference_interval}小时")
 
             # 获取微调模型保存路径
             model_save_base_path = ModelService.get_finetuned_save_path(inst_id, interval)
@@ -908,6 +912,7 @@ class PlanCreateUI(BaseUIComponent, DatabaseMixin):
                 data_end_time=data_end_time,
                 finetune_params=finetune_params,
                 auto_finetune_schedule=auto_schedule,  # 使用用户配置的时间点
+                auto_inference_interval_hours=auto_inference_interval,  # 使用用户配置的预测间隔时间
                 llm_config_id=llm_config_id,
                 agent_prompt=agent_prompt,
                 agent_tools_config=agent_tools_config,
@@ -1065,6 +1070,33 @@ class PlanCreateUI(BaseUIComponent, DatabaseMixin):
 
                 with gr.Row():
                     clear_times_btn = gr.Button("🗑️ 清空所有时间点", size="sm")
+
+                # 自动预测间隔配置
+                gr.Markdown("#### 自动预测间隔配置")
+
+                with gr.Row():
+                    gr.Markdown("**选择预测间隔时间（小时）**:")
+
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        inference_3h_btn = gr.Button("3小时", size="sm", variant="secondary")
+                    with gr.Column(scale=1):
+                        inference_6h_btn = gr.Button("6小时", size="sm", variant="secondary")
+                    with gr.Column(scale=1):
+                        inference_12h_btn = gr.Button("12小时", size="sm", variant="secondary")
+                    with gr.Column(scale=1):
+                        inference_24h_btn = gr.Button("24小时", size="sm", variant="secondary")
+
+                with gr.Row():
+                    auto_inference_interval = gr.Number(
+                        label="预测间隔时间（小时）",
+                        value=4,
+                        minimum=1,
+                        maximum=168,  # 7天
+                        step=1,
+                        interactive=True,
+                        info="系统会按固定间隔自动触发模型预测（默认4小时）"
+                    )
 
                 # 数据配置参数
                 gr.Markdown("#### 数据配置")
@@ -1457,6 +1489,23 @@ class PlanCreateUI(BaseUIComponent, DatabaseMixin):
                 """清空所有时间点"""
                 return "00:00", "✅ 已清空，保留默认时间 00:00"
 
+            def set_inference_interval_3h():
+                """设置3小时间隔"""
+                return 3, "✅ 已设置为3小时间隔"
+
+            def set_inference_interval_6h():
+                """设置6小时间隔"""
+                return 6, "✅ 已设置为6小时间隔"
+
+            def set_inference_interval_12h():
+                """设置12小时间隔"""
+                return 12, "✅ 已设置为12小时间隔"
+
+            def set_inference_interval_24h():
+                """设置24小时间隔"""
+                return 24, "✅ 已设置为24小时间隔"
+
+            # 自动微调时间事件
             add_time_btn.click(
                 fn=add_finetune_time,
                 inputs=[auto_finetune_times, auto_finetune_time_input],
@@ -1466,6 +1515,27 @@ class PlanCreateUI(BaseUIComponent, DatabaseMixin):
             clear_times_btn.click(
                 fn=clear_finetune_times,
                 outputs=[auto_finetune_times, data_status]
+            )
+
+            # 自动预测间隔时间事件
+            inference_3h_btn.click(
+                fn=set_inference_interval_3h,
+                outputs=[auto_inference_interval, data_status]
+            )
+
+            inference_6h_btn.click(
+                fn=set_inference_interval_6h,
+                outputs=[auto_inference_interval, data_status]
+            )
+
+            inference_12h_btn.click(
+                fn=set_inference_interval_12h,
+                outputs=[auto_inference_interval, data_status]
+            )
+
+            inference_24h_btn.click(
+                fn=set_inference_interval_24h,
+                outputs=[auto_inference_interval, data_status]
             )
 
             # 重置数据
@@ -1530,6 +1600,7 @@ class PlanCreateUI(BaseUIComponent, DatabaseMixin):
                     plan_name, inst_id, interval,
                     train_start_date, train_end_date,
                     auto_finetune_times,  # 新增：自动微调时间点
+                    auto_inference_interval,  # 新增：自动预测间隔时间
                     # 数据配置参数
                     lookback_window, predict_window, max_context, clip_value,
                     train_ratio, val_ratio,

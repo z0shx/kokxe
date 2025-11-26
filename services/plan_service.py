@@ -35,13 +35,14 @@ class PlanService:
         data_end_time: datetime,
         finetune_params: dict,
         auto_finetune_schedule: list,
-        llm_config_id: Optional[int],
-        agent_prompt: str,
-        agent_tools_config: dict,
-        trading_limits: dict,
-        okx_api_key: str,
-        okx_secret_key: str,
-        okx_passphrase: str,
+        auto_inference_interval_hours: Optional[int] = 4,
+        llm_config_id: Optional[int] = None,
+        agent_prompt: str = "",
+        agent_tools_config: dict = None,
+        trading_limits: dict = None,
+        okx_api_key: str = "",
+        okx_secret_key: str = "",
+        okx_passphrase: str = "",
         is_demo: bool = True,
         model_version: Optional[str] = None
     ) -> Optional[int]:
@@ -55,6 +56,7 @@ class PlanService:
             with get_db() as db:
                 # 根据时间表判断是否启用自动化功能
                 auto_enabled = bool(auto_finetune_schedule)
+                auto_inference_enabled = bool(auto_inference_interval_hours and auto_inference_interval_hours > 0)
 
                 plan = TradingPlan(
                     plan_name=plan_name,
@@ -65,13 +67,14 @@ class PlanService:
                     data_end_time=data_end_time,
                     finetune_params=finetune_params,
                     auto_finetune_schedule=auto_finetune_schedule,
+                    auto_inference_interval_hours=auto_inference_interval_hours or 4,
                     auto_finetune_enabled=auto_enabled,  # 根据时间表自动设置
-                    auto_inference_enabled=auto_enabled,  # 训练完成后自动推理
+                    auto_inference_enabled=auto_inference_enabled,  # 根据预测时间表自动设置
                     auto_agent_enabled=auto_enabled,      # 推理完成后自动触发Agent
                     llm_config_id=llm_config_id,
                     agent_prompt=agent_prompt,
-                    agent_tools_config=agent_tools_config,
-                    trading_limits=trading_limits,
+                    agent_tools_config=agent_tools_config or {},
+                    trading_limits=trading_limits or {},
                     okx_api_key=okx_api_key,
                     okx_secret_key=okx_secret_key,
                     okx_passphrase=okx_passphrase,

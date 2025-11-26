@@ -320,6 +320,27 @@ def create_app():
                         )
                         schedule_operation_result = gr.Markdown("")
 
+                        # 自动预测间隔时间管理
+                        gr.Markdown("**🔮 自动预测间隔时间**")
+                        with gr.Row():
+                            inference_interval_input = gr.Number(
+                                label="预测间隔时间（小时）",
+                                value=4,
+                                minimum=1,
+                                maximum=168,
+                                step=1,
+                                scale=3
+                            )
+                            set_inference_interval_btn = gr.Button("💾 设置间隔", size="sm", scale=1)
+
+                        inference_schedule_display = gr.Textbox(
+                            label="当前预测间隔",
+                            placeholder="暂无间隔设置",
+                            interactive=False,
+                            lines=1
+                        )
+                        inference_schedule_operation_result = gr.Markdown("")
+
                     # === 模型训练区域 ===
                     with gr.Accordion("🎯 模型训练记录", open=True):
                         # 微调参数配置
@@ -731,7 +752,7 @@ def create_app():
                             "**WebSocket状态**: ⚪ 未连接", "**计划状态**: ⚪ 已创建",  # ws_status_md, plan_status_md
                             gr.update(visible=True), gr.update(visible=False), gr.update(visible=True), gr.update(visible=False),  # ws_start_btn, ws_stop_btn, plan_start_btn, plan_stop_btn
                             False, False, False, False, "",  # automation switches & result
-                            "", "",  # schedule_time_list, schedule_operation_result
+                            "", "", "", "",  # schedule_time_list, schedule_operation_result, inference_schedule_display, inference_schedule_operation_result
                             512, 48, 16, 25, 50, 1e-4, "",  # 微调参数
                             "", "", "", "",  # train_data_range_info, train_start_date, train_end_date, train_data_config_result
                             512, 48,  # inference_lookback_window, inference_predict_window
@@ -821,6 +842,10 @@ def create_app():
                     schedule_list = detail_ui.get_finetune_schedule(int(plan_id))
                     schedule_text = ', '.join(schedule_list) if schedule_list else '暂无时间点'
 
+                    # 获取自动预测时间表
+                    inference_schedule_list = detail_ui.get_inference_schedule(int(plan_id))
+                    inference_schedule_text = ', '.join(str(x) for x in inference_schedule_list) + '小时间隔' if inference_schedule_list else '暂无预测时间点'
+
                     # 获取LLM配置和提示词模板列表
                     llm_configs = detail_ui.get_llm_configs()
                     prompt_templates = detail_ui.get_prompt_templates()
@@ -856,6 +881,8 @@ def create_app():
                         "",  # automation_config_result
                         schedule_text,  # schedule_time_list
                         "",  # schedule_operation_result
+                        inference_schedule_text,  # inference_schedule_display
+                        "",  # inference_schedule_operation_result
                         safe_int(params.get('lookback_window'), 512),
                         safe_int(params.get('predict_window'), 48),
                         safe_int(params.get('batch_size'), 16),
@@ -962,6 +989,29 @@ def create_app():
                     schedule_text = ', '.join(schedule_list) if schedule_list else '暂无时间点'
                     return message, schedule_text
 
+                def set_inference_interval_wrapper(pid, interval_hours):
+                    if not pid:
+                        return "❌ 请先选择计划", ""
+                    message, interval_list = detail_ui.add_inference_schedule_time(int(pid), f"{interval_hours}:00")  # 兼容性调用
+                    interval_text = f"{interval_list[0]}小时间隔" if interval_list else '4小时间隔'
+                    return message, interval_text
+
+                def add_inference_schedule_time_wrapper(pid, time_str):
+                    if not pid:
+                        return "❌ 请先选择计划", ""
+                    # 为了兼容性，将时间点转换为间隔时间设置
+                    message, interval_list = detail_ui.add_inference_schedule_time(int(pid), time_str)
+                    interval_text = f"{interval_list[0]}小时间隔" if interval_list else '4小时间隔'
+                    return message, interval_text
+
+                def remove_inference_schedule_time_wrapper(pid, time_str):
+                    if not pid:
+                        return "❌ 请先选择计划", ""
+                    # 兼容性调用，实际上会重置为默认间隔
+                    message, interval_list = detail_ui.remove_inference_schedule_time(int(pid), time_str)
+                    interval_text = f"{interval_list[0]}小时间隔" if interval_list else '4小时间隔'
+                    return message, interval_text
+
                 add_schedule_time_btn.click(
                     fn=add_schedule_time_wrapper,
                     inputs=[plan_id_input, schedule_time_input],
@@ -973,6 +1023,26 @@ def create_app():
                     inputs=[plan_id_input, schedule_time_input],
                     outputs=[schedule_operation_result, schedule_time_list]
                 )
+
+                # 自动预测间隔时间事件
+                set_inference_interval_btn.click(
+                    fn=set_inference_interval_wrapper,
+                    inputs=[plan_id_input, inference_interval_input],
+                    outputs=[inference_schedule_operation_result, inference_schedule_display]
+                )
+
+                # 保留兼容性事件（如果还有其他地方使用的话）
+                # add_inference_schedule_time_btn.click(
+                #     fn=add_inference_schedule_time_wrapper,
+                #     inputs=[plan_id_input, "08:00"],  # 默认时间点
+                #     outputs=[inference_schedule_operation_result, inference_schedule_display]
+                # )
+
+                # remove_inference_schedule_time_btn.click(
+                #     fn=remove_inference_schedule_time_wrapper,
+                #     inputs=[plan_id_input, "08:00"],  # 默认时间点
+                #     outputs=[inference_schedule_operation_result, inference_schedule_display]
+                # )
 
                 # WebSocket控制事件
                 async def ws_start_wrapper(pid):
@@ -1045,7 +1115,7 @@ def create_app():
                         auto_finetune_switch, auto_inference_switch,  # 自动化开关
                         auto_agent_switch,  # auto_tool_execution_switch已移除
                         automation_config_result,  # 自动化配置结果
-                        schedule_time_list, schedule_operation_result,  # 时间表管理
+                        schedule_time_list, schedule_operation_result, inference_schedule_display, inference_schedule_operation_result,  # 时间表管理
                         lookback_window, predict_window, batch_size,
                         tokenizer_epochs, predictor_epochs, learning_rate, params_status,
                         train_data_range_info, train_start_date, train_end_date, train_data_config_result,  # 训练数据范围
@@ -1119,7 +1189,7 @@ def create_app():
                         auto_finetune_switch, auto_inference_switch,  # 自动化开关
                         auto_agent_switch,  # auto_tool_execution_switch已移除
                         automation_config_result,  # 自动化配置结果
-                        schedule_time_list, schedule_operation_result,  # 时间表管理
+                        schedule_time_list, schedule_operation_result, inference_schedule_display, inference_schedule_operation_result,  # 时间表管理
                         lookback_window, predict_window, batch_size,  # 模型参数
                         tokenizer_epochs, predictor_epochs, learning_rate, params_status,
                         train_data_range_info, train_start_date, train_end_date, train_data_config_result,

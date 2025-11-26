@@ -170,59 +170,54 @@ class ScheduleService:
                 else:
                     logger.warning(f"计划启用了自动微调但未配置时间: plan_id={plan_id}")
 
-            # 处理自动预测任务
+            # 处理自动预测任务（使用间隔时间模式）
             if plan.auto_inference_enabled:
-                schedule_times = plan.auto_inference_schedule or []
-                if schedule_times:
-                    logger.info(f"启动自动预测任务: plan_id={plan_id}, schedule_times={schedule_times}")
+                interval_hours = plan.auto_inference_interval_hours or 4
+                if interval_hours > 0:
+                    logger.info(f"启动自动预测任务: plan_id={plan_id}, interval_hours={interval_hours}")
 
-                    for time_str in schedule_times:
-                        try:
-                            # 解析时间 (HH:MM)
-                            hour, minute = map(int, time_str.split(':'))
-                            logger.info(f"解析预测时间: time_str={time_str}, hour={hour}, minute={minute}")
+                    try:
+                        # 创建间隔触发器（每N小时执行一次）
+                        from apscheduler.triggers.interval import IntervalTrigger
+                        trigger = IntervalTrigger(hours=interval_hours, timezone='Asia/Shanghai')
 
-                            # 创建cron触发器（每天指定时间执行）
-                            trigger = CronTrigger(hour=hour, minute=minute, timezone='Asia/Shanghai')
+                        # 任务ID：plan_id + 任务类型
+                        job_id = f"plan_{plan_id}_inference_interval"
 
-                            # 任务ID：plan_id + 任务类型 + 时间
-                            job_id = f"plan_{plan_id}_inference_{time_str.replace(':', '')}"
+                        # 检查任务是否已存在
+                        existing_job = scheduler.get_job(job_id)
+                        if existing_job:
+                            logger.info(f"任务已存在，先移除: {job_id}")
+                            scheduler.remove_job(job_id)
 
-                            # 检查任务是否已存在
-                            existing_job = scheduler.get_job(job_id)
-                            if existing_job:
-                                logger.info(f"任务已存在，先移除: {job_id}")
-                                scheduler.remove_job(job_id)
+                        # 添加任务
+                        scheduler.add_job(
+                            func=cls._trigger_inference_wrapper,
+                            trigger=trigger,
+                            args=[plan_id],
+                            id=job_id,
+                            name=f"自动预测-计划{plan_id}-{interval_hours}h间隔",
+                            replace_existing=True,
+                            misfire_grace_time=300  # 允许5分钟的延迟执行
+                        )
 
-                            # 添加任务
-                            scheduler.add_job(
-                                func=cls._trigger_inference_wrapper,
-                                trigger=trigger,
-                                args=[plan_id],
-                                id=job_id,
-                                name=f"自动预测-计划{plan_id}-{time_str}",
-                                replace_existing=True,
-                                misfire_grace_time=300  # 允许5分钟的延迟执行
-                            )
+                        task_count += 1
 
-                            task_count += 1
+                        # 立即检查任务的下次执行时间
+                        job = scheduler.get_job(job_id)
+                        next_run_time = job.next_run_time
+                        if next_run_time:
+                            next_run_beijing = next_run_time.astimezone(cls.BEIJING_TZ)
+                            logger.info(f"已添加自动预测任务: plan_id={plan_id}, interval={interval_hours}h, job_id={job_id}, 下次执行(UTC+8)={next_run_beijing.strftime('%Y-%m-%d %H:%M:%S')}")
+                        else:
+                            logger.warning(f"预测任务创建成功但无下次执行时间: plan_id={plan_id}, interval={interval_hours}h, job_id={job_id}")
 
-                            # 立即检查任务的下次执行时间
-                            job = scheduler.get_job(job_id)
-                            next_run_time = job.next_run_time
-                            if next_run_time:
-                                next_run_beijing = next_run_time.astimezone(cls.BEIJING_TZ)
-                                logger.info(f"已添加自动预测任务: plan_id={plan_id}, time={time_str}, job_id={job_id}, 下次执行(UTC+8)={next_run_beijing.strftime('%Y-%m-%d %H:%M:%S')}")
-                            else:
-                                logger.warning(f"预测任务创建成功但无下次执行时间: plan_id={plan_id}, time={time_str}, job_id={job_id}")
-
-                        except Exception as e:
-                            logger.error(f"创建预测任务失败: time={time_str}, error={e}")
-                            import traceback
-                            traceback.print_exc()
-                            continue
+                    except Exception as e:
+                        logger.error(f"创建预测任务失败: interval_hours={interval_hours}, error={e}")
+                        import traceback
+                        traceback.print_exc()
                 else:
-                    logger.warning(f"计划启用了自动预测但未配置时间: plan_id={plan_id}")
+                    logger.warning(f"计划启用了自动预测但间隔时间无效: plan_id={plan_id}, interval_hours={interval_hours}")
 
             # 重新输出调度器状态
             cls._log_scheduler_status()
@@ -462,38 +457,30 @@ class ScheduleService:
                     logger.warning(f"计划未启用自动预测，跳过: plan_id={plan_id}")
                     return
 
-                # 检查是否有时间表配置
-                schedule_times = plan.auto_inference_schedule or []
-                if not schedule_times:
-                    logger.warning(f"计划未配置预测时间表，跳过: plan_id={plan_id}")
+                # 检查是否有间隔时间配置
+                interval_hours = plan.auto_inference_interval_hours or 4
+                if interval_hours <= 0:
+                    logger.warning(f"计划未配置预测间隔时间，跳过: plan_id={plan_id}")
                     return
 
-                logger.info(f"计划配置检查通过: plan_id={plan_id}, schedule_times={schedule_times}")
+                logger.info(f"计划配置检查通过: plan_id={plan_id}, interval_hours={interval_hours}")
 
             # 创建任务执行记录
             from services.task_execution_service import TaskExecutionService
             task_execution = None
 
             try:
-                # 从计划配置中找到匹配当前时间的任务
+                # 创建间隔预测任务记录
                 current_datetime = datetime.now(cls.BEIJING_TZ)
-                current_time_str = current_datetime.strftime('%H:%M')
 
-                # 找到匹配的时间点
-                scheduled_time_str = None
-                for time_str in schedule_times:
-                    if time_str == current_time_str:
-                        scheduled_time_str = time_str
-                        break
-
-                # 如果没有精确匹配，使用当前时间
-                if not scheduled_time_str:
-                    scheduled_time_str = current_time_str
-
-                task_execution = TaskExecutionService.create_scheduled_task(
+                task_execution = TaskExecutionService.create_task_execution(
                     plan_id=plan_id,
-                    task_type='auto_inference',
-                    time_str=scheduled_time_str
+                    task_type="auto_inference",
+                    task_name=f"自动预测-计划{plan_id}-{interval_hours}h间隔",
+                    task_description=f"每{interval_hours}小时自动执行一次预测",
+                    trigger_type="scheduled",
+                    trigger_source=f"plan_{plan_id}_interval_scheduler",
+                    input_data={"interval_hours": interval_hours}
                 )
 
                 # 标记任务开始
