@@ -673,37 +673,67 @@ class PlanDetailUI:
         return fig
 
     def load_agent_decisions(self, plan_id: int) -> pd.DataFrame:
-        """加载Agent决策记录（右侧）"""
+        """加载Agent对话记录（右侧）"""
         try:
             with get_db() as db:
-                decisions = db.query(AgentDecision).filter(
-                    AgentDecision.plan_id == plan_id
-                ).order_by(desc(AgentDecision.decision_time)).limit(50).all()
+                # 查询该计划相关的对话会话
+                conversations = db.query(AgentConversation).filter(
+                    AgentConversation.plan_id == plan_id
+                ).order_by(desc(AgentConversation.last_message_at)).limit(20).all()
 
-                if not decisions:
+                if not conversations:
                     return pd.DataFrame()
 
                 df_data = []
-                for decision in decisions:
+                for conv in conversations:
+                    # 获取该会话的消息数量
+                    message_count = db.query(func.count(AgentMessage.id)).filter(
+                        AgentMessage.conversation_id == conv.id
+                    ).scalar()
+
+                    # 统计工具调用次数
+                    tool_call_count = db.query(func.count(AgentMessage.id)).filter(
+                        and_(
+                            AgentMessage.conversation_id == conv.id,
+                            AgentMessage.message_type.in_(['tool_call', 'tool_result'])
+                        )
+                    ).scalar()
+
                     status_emoji = {
+                        'active': '💬',
                         'completed': '✅',
-                        'failed': '❌',
-                        'partial': '⚠️'
-                    }.get(decision.status, '❓')
+                        'error': '❌',
+                        'paused': '⏸️'
+                    }.get(conv.status, '💬')
+
+                    # 获取最新消息的内容预览
+                    latest_message = db.query(AgentMessage).filter(
+                        AgentMessage.conversation_id == conv.id
+                    ).order_by(desc(AgentMessage.created_at)).first()
+
+                    content_preview = ""
+                    if latest_message:
+                        # 截取内容前50个字符作为预览
+                        content = latest_message.content or ""
+                        if len(content) > 50:
+                            content_preview = content[:47] + "..."
+                        else:
+                            content_preview = content
 
                     df_data.append({
-                        'ID': decision.id,
-                        '时间': format_datetime_full_beijing(decision.decision_time),
-                        '决策类型': decision.decision_type or 'N/A',
-                        '状态': f"{status_emoji} {decision.status}",
-                        '模型版本': f"v{decision.training_record_id}" if decision.training_record_id else 'N/A',
-                        '工具调用': len(decision.tool_calls) if decision.tool_calls else 0
+                        'ID': conv.id,
+                        '时间': format_datetime_full_beijing(conv.last_message_at) if conv.last_message_at else 'N/A',
+                        '会话类型': conv.conversation_type or 'analysis',
+                        '状态': f"{status_emoji} {conv.status}",
+                        '消息数': message_count,
+                        '工具调用': tool_call_count,
+                        '预览': content_preview
                     })
 
                 return pd.DataFrame(df_data)
 
         except Exception as e:
-            logger.error(f"加载Agent决策失败: {e}")
+            logger.error(f"加载Agent对话记录失败: {e}")
             return pd.DataFrame()
 
     def load_inference_records(self, plan_id: int) -> pd.DataFrame:
@@ -3721,25 +3751,41 @@ class PlanDetailUI:
             return pd.DataFrame()
 
     def clear_agent_records(self, plan_id: int) -> str:
-        """清除AI Agent推理记录"""
+        """清除AI Agent对话记录"""
         try:
             if not plan_id:
                 return "❌ 请先选择计划"
 
             with get_db() as db:
-                # 删除该计划的所有Agent决策记录
-                deleted_count = db.query(AgentDecision).filter(
-                    AgentDecision.plan_id == plan_id
+                # 先获取要删除的对话会话数量
+                conversations = db.query(AgentConversation).filter(
+                    AgentConversation.plan_id == plan_id
+                ).all()
+
+                if not conversations:
+                    return "✅ 没有找到需要清除的对话记录"
+
+                # 获取会话ID列表
+                conversation_ids = [conv.id for conv in conversations]
+
+                # 删除所有相关的消息记录
+                deleted_messages = db.query(AgentMessage).filter(
+                    AgentMessage.conversation_id.in_(conversation_ids)
+                ).delete(synchronize_session=False)
+
+                # 删除对话会话记录
+                deleted_conversations = db.query(AgentConversation).filter(
+                    AgentConversation.plan_id == plan_id
                 ).delete()
 
                 db.commit()
 
-                logger.info(f"清除计划 {plan_id} 的 {deleted_count} 条AI Agent推理记录")
+                logger.info(f"清除计划 {plan_id} 的 {deleted_conversations} 个对话会话和 {deleted_messages} 条消息记录")
 
-                return f"✅ 已清除 {deleted_count} 条推理记录"
+                return f"✅ 已清除 {deleted_conversations} 个对话会话和 {deleted_messages} 条消息记录"
 
         except Exception as e:
-            logger.error(f"清除推理记录失败: {e}")
+            logger.error(f"清除对话记录失败: {e}")
             import traceback
             traceback.print_exc()
             return f"❌ 清除失败: {str(e)}"

@@ -355,22 +355,26 @@ class EnhancedAgentStreamService:
             async for chunk in response:
                 delta = chunk.choices[0].delta
 
-                # 处理thinking（如果有）
+                # 处理thinking（如果有）- 只发送增量内容
                 if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
-                    thinking_content += delta.reasoning_content
+                    # 只发送新的增量内容，不累积
+                    new_thinking = delta.reasoning_content
+                    thinking_content += new_thinking  # 内部累积用于状态跟踪
                     yield json.dumps({
                         "type": "thinking",
-                        "content": thinking_content,
+                        "content": new_thinking,  # 只发送增量
                         "chunk_count": chunk_count
                     })
                     chunk_count += 1
 
-                # 处理正常内容
+                # 处理正常内容 - 只发送增量内容
                 if delta.content:
-                    content += delta.content
+                    # 只发送新的增量内容，不累积
+                    new_content = delta.content
+                    content += new_content  # 内部累积用于状态跟踪
                     yield json.dumps({
                         "type": "content",
-                        "content": content,
+                        "content": new_content,  # 只发送增量
                         "chunk_count": chunk_count
                     })
                     chunk_count += 1
@@ -410,7 +414,8 @@ class EnhancedAgentStreamService:
                                         chunk_count += 1
                                         # 工具调用失败，继续对话而不是抛出异常
                                 else:
-                                    logger.warning(f"工具调用参数不完整，跳过执行: {current_tool_call['name']}")
+                                    tool_name_for_log = current_tool_call.get('name', 'Unknown')
+                                    logger.warning(f"工具调用参数不完整，跳过执行: {tool_name_for_log}")
 
                             current_tool_call = {
                                 "id": tool_call.id,
@@ -462,7 +467,8 @@ class EnhancedAgentStreamService:
                         chunk_count += 1
                         # 工具调用失败，继续对话而不是抛出异常
                 else:
-                    logger.warning(f"最后工具调用参数不完整，跳过执行: {current_tool_call['name']}")
+                    tool_name_for_log = current_tool_call.get('name', 'Unknown')
+                    logger.warning(f"最后工具调用参数不完整，跳过执行: {tool_name_for_log}")
 
         except Exception as e:
             logger.error(f"thinking模式流式响应失败: {e}")
@@ -550,7 +556,8 @@ class EnhancedAgentStreamService:
                                         chunk_count += 1
                                         # 工具调用失败，继续对话而不是抛出异常
                                 else:
-                                    logger.warning(f"工具调用参数不完整，跳过执行: {current_tool_call['name']}")
+                                    tool_name_for_log = current_tool_call.get('name', 'Unknown')
+                                    logger.warning(f"工具调用参数不完整，跳过执行: {tool_name_for_log}")
 
                             current_tool_call = {
                                 "id": tool_call.id,
@@ -602,7 +609,8 @@ class EnhancedAgentStreamService:
                         chunk_count += 1
                         # 工具调用失败，继续对话而不是抛出异常
                 else:
-                    logger.warning(f"最后工具调用参数不完整，跳过执行: {current_tool_call['name']}")
+                    tool_name_for_log = current_tool_call.get('name', 'Unknown')
+                    logger.warning(f"最后工具调用参数不完整，跳过执行: {tool_name_for_log}")
 
         except Exception as e:
             logger.error(f"普通模式流式响应失败: {e}")
@@ -722,7 +730,8 @@ class EnhancedAgentStreamService:
                     interval=arguments.get("interval"),
                     start_time=arguments.get("start_time"),
                     end_time=arguments.get("end_time"),
-                    limit=arguments.get("limit")
+                    limit=arguments.get("limit"),
+                    order_by=arguments.get("order_by")
                 )
             elif tool_name == "place_order":
                 result = trading_tools.place_order(

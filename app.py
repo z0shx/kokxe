@@ -667,13 +667,13 @@ def create_app():
                             trading_limits_status = gr.Markdown("")
 
                         with gr.Row():
-                            refresh_agent_btn = gr.Button("🔄 刷新决策记录", size="sm", variant="secondary")
+                            refresh_agent_btn = gr.Button("🔄 刷新对话记录", size="sm", variant="secondary")
                             clear_agent_records_btn = gr.Button("🗑️ 清除记录", size="sm", variant="secondary")
 
                         agent_df = gr.DataFrame(
                             interactive=True,  # 改为可交互以支持点击事件
                             wrap=True,
-                            label="Agent决策列表"
+                            label="Agent对话记录"
                         )
 
                         # 移除agent_detail，因为详情将显示在chatbot中

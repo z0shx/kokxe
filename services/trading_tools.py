@@ -1205,7 +1205,8 @@ class OKXTradingTools:
         interval: str = '1H',
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
-        limit: Optional[int] = None
+        limit: Optional[int] = None,
+        order_by: Optional[str] = None
     ) -> Dict:
         """
         查询历史K线数据
@@ -1216,6 +1217,7 @@ class OKXTradingTools:
             start_time: 开始时间，格式如 "2025-01-01 00:00:00"
             end_time: 结束时间，格式如 "2025-01-31 23:59:59"
             limit: 限制条数
+            order_by: 排序方式，'time_asc'(时间升序) 或 'time_desc'(时间降序)
 
         Returns:
             K线数据
@@ -1224,6 +1226,7 @@ class OKXTradingTools:
             from database.db import get_db
             from database.models import KlineData
             from datetime import datetime
+            from sqlalchemy import asc, desc
 
             with get_db() as db:
                 # 基础查询条件，加入interval过滤
@@ -1264,7 +1267,14 @@ class OKXTradingTools:
                         }
 
                 # 按时间排序和限制
-                query = query.order_by(desc(KlineData.timestamp))
+                if order_by == "time_asc":
+                    query = query.order_by(asc(KlineData.timestamp))
+                elif order_by == "time_desc":
+                    query = query.order_by(desc(KlineData.timestamp))
+                else:
+                    # 默认按时间降序排列（最新的在前）
+                    query = query.order_by(desc(KlineData.timestamp))
+
                 if limit:
                     query = query.limit(min(limit, 500))
 
