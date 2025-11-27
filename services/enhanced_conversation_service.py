@@ -105,9 +105,134 @@ class EnhancedConversationService:
             raise
 
     @staticmethod
+    def validate_tools_configuration() -> bool:
+        """
+        验证工具配置是否正确
+
+        Returns:
+            bool: 工具配置是否有效
+        """
+        try:
+            from services.agent_tools import get_all_tools
+
+            tools = get_all_tools()
+            if not tools:
+                logger.warning("没有找到任何可用工具")
+                return False
+
+            # 检查关键工具是否存在
+            critical_tools = [
+                "get_account_balance",
+                "get_current_price",
+                "place_order",
+                "get_order_info"
+            ]
+
+            missing_tools = []
+            for tool_name in critical_tools:
+                if tool_name not in tools:
+                    missing_tools.append(tool_name)
+
+            if missing_tools:
+                logger.error(f"缺少关键工具: {missing_tools}")
+                return False
+
+            logger.info(f"工具配置验证通过，共有 {len(tools)} 个工具可用")
+            return True
+
+        except Exception as e:
+            logger.error(f"工具配置验证失败: {e}")
+            return False
+
+    @staticmethod
+    def generate_tools_description() -> str:
+        """
+        生成可调用工具的说明描述
+
+        Returns:
+            工具说明字符串
+        """
+        try:
+            from services.agent_tools import get_all_tools
+
+            tools = get_all_tools()
+            if not tools:
+                logger.error("没有找到任何可用工具，无法生成工具说明")
+                return ""
+
+            # 验证工具配置
+            if not EnhancedConversationService.validate_tools_configuration():
+                logger.warning("工具配置验证失败，但仍尝试生成说明")
+
+            # 按分类组织工具
+            tools_by_category = {
+                "query": [],
+                "trade": [],
+                "monitor": []
+            }
+
+            for tool_name, tool in tools.items():
+                category = tools_by_category.get(tool.category.value, [])
+                category.append({
+                    "name": tool_name,
+                    "description": tool.description,
+                    "required_params": tool.required_params,
+                    "risk_level": tool.risk_level
+                })
+
+            description = "\n\n## 🛠️ 可用工具说明\n\n"
+
+            # 查询类工具
+            if tools_by_category["query"]:
+                description += "### 🔍 查询类工具 (低风险)\n\n"
+                for tool in tools_by_category["query"]:
+                    desc = f"**{tool['name']}**: {tool['description']}\n"
+                    if tool['required_params']:
+                        desc += f"- 必填参数: {', '.join(tool['required_params'])}\n"
+                    desc += f"- 风险级别: {tool['risk_level']}\n\n"
+                    description += desc
+
+            # 交易类工具
+            if tools_by_category["trade"]:
+                description += "### 💰 交易类工具 (中高风险)\n\n"
+                description += "**重要提醒**: 下单前必须先调用 `get_account_balance` 确认资金充足\n\n"
+                for tool in tools_by_category["trade"]:
+                    desc = f"**{tool['name']}**: {tool['description']}\n"
+                    if tool['required_params']:
+                        desc += f"- 必填参数: {', '.join(tool['required_params'])}\n"
+                    desc += f"- 风险级别: {tool['risk_level']}\n\n"
+                    description += desc
+
+            # 监控类工具
+            if tools_by_category["monitor"]:
+                description += "### 📊 数据管理工具 (低风险)\n\n"
+                for tool in tools_by_category["monitor"]:
+                    desc = f"**{tool['name']}**: {tool['description']}\n"
+                    if tool['required_params']:
+                        desc += f"- 必填参数: {', '.join(tool['required_params'])}\n"
+                    desc += f"- 风险级别: {tool['risk_level']}\n\n"
+                    description += desc
+
+            description += """### 📋 工具使用规范
+
+1. **查询优先**: 做交易决策前先查询账户余额、持仓和当前价格
+2. **资金确认**: 下单前必须调用 `get_account_balance` 确保有足够资金
+3. **风险评估**: 高风险工具使用时要谨慎，确保符合风险管理要求
+4. **参数验证**: 确保所有必填参数都已提供且格式正确
+5. **订单确认**: 下单后调用相应查询工具确认订单状态
+
+当需要执行交易操作时，请使用 `place_order` 工具进行下单。"""
+
+            return description
+
+        except Exception as e:
+            logger.error(f"生成工具说明失败: {e}")
+            return ""
+
+    @staticmethod
     def get_system_prompt_content(plan: TradingPlan) -> str:
         """
-        获取系统提示词内容（优先使用agent_prompt字段）
+        获取系统提示词内容（优先使用agent_prompt字段，并自动追加工具说明）
 
         Args:
             plan: 交易计划对象
@@ -116,50 +241,71 @@ class EnhancedConversationService:
             系统提示词内容
         """
         try:
+            base_prompt = ""
+            prompt_source = ""
+
             # 优先使用计划的agent_prompt字段
             agent_prompt = getattr(plan, 'agent_prompt', None)
             if agent_prompt and agent_prompt.strip():
+                base_prompt = agent_prompt.strip()
+                prompt_source = "计划配置的agent_prompt"
                 logger.info(f"使用计划配置的agent_prompt")
-                return agent_prompt.strip()
+            else:
+                # 如果没有agent_prompt，检查数据库中是否有prompt_template_id字段
+                with get_db() as db:
+                    # 检查trading_plans表是否有prompt_template_id字段
+                    result = db.execute(sa_text("""
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_name = 'trading_plans' AND column_name = 'prompt_template_id'
+                    """))
+                    has_field = result.fetchone() is not None
 
-            # 如果没有agent_prompt，检查数据库中是否有prompt_template_id字段
-            with get_db() as db:
-                # 检查trading_plans表是否有prompt_template_id字段
-                result = db.execute(sa_text("""
-                    SELECT column_name
-                    FROM information_schema.columns
-                    WHERE table_name = 'trading_plans' AND column_name = 'prompt_template_id'
-                """))
-                has_field = result.fetchone() is not None
+                    if has_field:
+                        prompt_template_id = getattr(plan, 'prompt_template_id', None)
+                        if prompt_template_id:
+                            template = db.query(AgentPromptTemplate).filter(
+                                AgentPromptTemplate.id == prompt_template_id,
+                                AgentPromptTemplate.is_active == True
+                            ).first()
 
-                if has_field:
-                    prompt_template_id = getattr(plan, 'prompt_template_id', None)
-                    if prompt_template_id:
-                        template = db.query(AgentPromptTemplate).filter(
-                            AgentPromptTemplate.id == prompt_template_id,
+                            if template:
+                                base_prompt = template.content
+                                prompt_source = f"计划配置的提示词模板: {template.name}"
+                                logger.info(f"使用计划配置的提示词模板: {template.name}")
+
+                    # 如果仍然没有找到，使用默认模板
+                    if not base_prompt:
+                        default_template = db.query(AgentPromptTemplate).filter(
+                            AgentPromptTemplate.is_default == True,
                             AgentPromptTemplate.is_active == True
                         ).first()
 
-                        if template:
-                            logger.info(f"使用计划配置的提示词模板: {template.name}")
-                            return template.content
+                        if default_template:
+                            base_prompt = default_template.content
+                            prompt_source = f"默认提示词模板: {default_template.name}"
+                            logger.info(f"使用默认提示词模板: {default_template.name}")
 
-                # 否则使用默认模板
-                default_template = db.query(AgentPromptTemplate).filter(
-                    AgentPromptTemplate.is_default == True,
-                    AgentPromptTemplate.is_active == True
-                ).first()
-
-                if default_template:
-                    logger.info(f"使用默认提示词模板: {default_template.name}")
-                    return default_template.content
-
-                # 最后使用硬编码的基础提示词
+            # 最后使用硬编码的基础提示词
+            if not base_prompt:
+                base_prompt = EnhancedConversationService._get_default_system_prompt(plan)
+                prompt_source = "硬编码的基础提示词"
                 logger.warning("未找到配置的提示词，使用基础提示词")
-                return EnhancedConversationService._get_default_system_prompt(plan)
+
+            # 自动追加工具说明
+            tools_description = EnhancedConversationService.generate_tools_description()
+
+            if tools_description:
+                final_prompt = base_prompt + tools_description
+                logger.info(f"系统提示词已生成，来源: {prompt_source}，已自动追加工具说明")
+                return final_prompt
+            else:
+                logger.warning("工具说明生成失败，仅使用基础提示词")
+                return base_prompt
 
         except Exception as e:
             logger.error(f"获取系统提示词失败: {e}")
+            # 即使出错也要尝试返回基础提示词
             return EnhancedConversationService._get_default_system_prompt(plan)
 
     @staticmethod
