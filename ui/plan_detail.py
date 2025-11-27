@@ -1213,28 +1213,92 @@ class PlanDetailUI:
 
     def get_latest_conversation_messages(self, plan_id: int) -> List[Dict]:
         """
-        获取最新的对话会话消息（仅限手动对话）
-        注意：这里只返回manual_chat类型的对话，不显示推理结果
+        获取最新的对话消息 - 包括推理和手动对话，显示完整过程
 
         Returns:
             List[Dict]: Chatbot messages 格式 [{"role": "assistant", "content": ...}]
         """
         try:
-            # 使用增强推理服务获取对话
-            from services.enhanced_inference_service import enhanced_inference_service
-            from services.enhanced_conversation_service import ConversationType
+            from services.agent_service import ConversationType
+            from database.models import AgentConversation, AgentMessage, TradingPlan
+            from database.db import get_db
 
-            messages = enhanced_inference_service.get_latest_conversation_messages(
-                plan_id=plan_id,
-                conversation_type=ConversationType.MANUAL_CHAT
-            )
+            with get_db() as db:
+                # 获取最新的推理对话
+                latest_inference = db.query(AgentConversation).filter(
+                    AgentConversation.plan_id == plan_id,
+                    AgentConversation.conversation_type == ConversationType.AUTO_INFERENCE.value
+                ).order_by(AgentConversation.created_at.desc()).first()
 
-            # 只有当消息不为空时才返回
-            if messages and len(messages) > 0 and messages[0].get("content") != "暂无对话记录":
-                return messages
+                chat_messages = []
 
-            # 如果没有任何对话，返回欢迎消息
-            return [{"role": "assistant", "content": "👋 欢迎使用AI Agent对话系统\n\n开始您的第一次对话或点击「执行推理」获取市场分析。"}]
+                if latest_inference:
+                    # 获取推理对话的所有消息
+                    messages = db.query(AgentMessage).filter(
+                        AgentMessage.conversation_id == latest_inference.id
+                    ).order_by(AgentMessage.created_at.asc()).all()
+
+                    for msg in messages:
+                        if msg.role == "system":
+                            # 系统消息显示为助手消息
+                            chat_messages.append({
+                                "role": "assistant",
+                                "content": f"🔧 **系统提示**: {msg.content}"
+                            })
+                        elif msg.role == "assistant":
+                            content = msg.content
+                            # 检查是否是工具调用
+                            try:
+                                import json
+                                tool_data = json.loads(content)
+                                if isinstance(tool_data, dict):
+                                    if "name" in tool_data and "arguments" in tool_data:
+                                        # 工具调用
+                                        content = f"🛠️ **工具调用**: `{tool_data['name']}`\n```json\n{content}\n```"
+                                    elif "success" in tool_data or "error" in tool_data:
+                                        # 工具结果
+                                        status = "✅ 成功" if tool_data.get("success") else "❌ 失败"
+                                        content = f"🔧 **工具结果** ({status}):\n```json\n{content}\n```"
+                            except (json.JSONDecodeError, TypeError):
+                                # 普通消息
+                                pass
+
+                            chat_messages.append({
+                                "role": "assistant",
+                                "content": content
+                            })
+                        else:
+                            chat_messages.append({
+                                "role": msg.role,
+                                "content": msg.content
+                            })
+
+                # 如果没有推理对话，获取手动对话
+                if not chat_messages:
+                    manual_messages = db.query(AgentMessage).join(AgentConversation).filter(
+                        AgentConversation.plan_id == plan_id,
+                        AgentConversation.conversation_type == ConversationType.MANUAL_CHAT.value
+                    ).order_by(AgentMessage.created_at.desc()).limit(50).all()
+
+                    for msg in reversed(manual_messages):  # 按时间正序显示
+                        role = "assistant" if msg.role == "assistant" else "user"
+                        chat_messages.append({
+                            "role": role,
+                            "content": msg.content
+                        })
+
+                # 如果没有任何对话，返回欢迎消息并检查配置
+                if not chat_messages:
+                    # 检查计划的LLM配置
+                    plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                    if plan and plan.llm_config_id:
+                        welcome_msg = "👋 欢迎使用AI Agent对话系统\n\n✅ LLM配置已完成\n\n💡 开始您的第一次对话或点击「执行推理」获取市场分析。"
+                    else:
+                        welcome_msg = "👋 欢迎使用AI Agent对话系统\n\n⚠️ **未配置LLM** - 请先在「⚙️ Agent配置」中设置LLM提供商\n\n💡 配置完成后即可开始对话或执行推理。"
+
+                    return [{"role": "assistant", "content": welcome_msg}]
+
+                return chat_messages
 
         except Exception as e:
             logger.error(f"获取最新对话消息失败: {e}")

@@ -17,7 +17,7 @@ from ui.plan_create import create_plan_ui
 from ui.plan_list import create_plan_list_ui
 from ui.config_center import create_config_center_ui
 from utils.logger import setup_logger
-from services.enhanced_inference_service import enhanced_inference_service
+from services.agent_service import agent_service
 
 logger = setup_logger(__name__, "app.log")
 
@@ -1621,8 +1621,8 @@ def create_app():
                     try:
                         plan_id = int(pid)
 
-                        # 使用增强的推理服务
-                        async for response_chunk in enhanced_inference_service.execute_manual_inference(plan_id):
+                        # 使用Agent服务
+                        async for response_chunk in agent_service.stream_manual_inference(plan_id):
                             yield response_chunk
 
                     except Exception as e:
@@ -1666,8 +1666,8 @@ def create_app():
                     try:
                         plan_id = int(pid)
 
-                        # 使用增强的对话服务
-                        async for response_chunk in enhanced_inference_service.continue_conversation(plan_id, message):
+                        # 使用Agent服务
+                        async for response_chunk in agent_service.stream_conversation(plan_id, message):
                             if isinstance(response_chunk, list) and len(response_chunk) > 0:
                                 return response_chunk, ""
 
