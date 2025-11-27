@@ -266,6 +266,46 @@ class EnhancedAgentStreamService:
             logger.warning(f"工具参数JSON解析失败: {e}, 原始参数: {arguments_str}")
             return {}
 
+    @staticmethod
+    def _is_json_complete(json_str: str) -> bool:
+        """检查JSON字符串是否完整"""
+        if not json_str:
+            return False
+
+        json_str = json_str.strip()
+
+        # 基本检查：开始和结束符号
+        if not (json_str.startswith('{') and json_str.endswith('}')):
+            return False
+
+        # 大括号计数检查
+        brace_count = 0
+        in_string = False
+        escape_next = False
+
+        for char in json_str:
+            if escape_next:
+                escape_next = False
+                continue
+
+            if char == '\\':
+                escape_next = True
+                continue
+
+            if char == '"' and not escape_next:
+                in_string = not in_string
+                continue
+
+            if not in_string:
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        return True
+
+        return False
+
     @classmethod
     def _supports_thinking_mode(cls, llm_config) -> bool:
         """检查是否支持thinking模式"""
@@ -340,33 +380,37 @@ class EnhancedAgentStreamService:
                     for tool_call in delta.tool_calls:
                         if not current_tool_call or current_tool_call.get("id") != tool_call.id:
                             if current_tool_call:
-                                # 执行前一个工具调用
-                                try:
-                                    async for result_chunk in cls._execute_tool_call_stream(
-                                        current_tool_call["name"],
-                                        cls._safe_parse_arguments(current_tool_call["arguments"]),
-                                        plan.id
-                                    ):
+                                # 等待前一个工具调用的参数完整
+                                if cls._is_json_complete(current_tool_call["arguments"]):
+                                    logger.info(f"工具调用参数完整，开始执行: {current_tool_call['name']}")
+                                    try:
+                                        async for result_chunk in cls._execute_tool_call_stream(
+                                            current_tool_call["name"],
+                                            cls._safe_parse_arguments(current_tool_call["arguments"]),
+                                            plan.id
+                                        ):
+                                            yield json.dumps({
+                                                "type": "tool_result",
+                                                "tool_name": current_tool_call["name"],
+                                                "result": result_chunk,
+                                                "chunk_count": chunk_count
+                                            })
+                                            chunk_count += 1
+                                    except Exception as e:
+                                        logger.error(f"工具调用失败，继续对话: {current_tool_call['name']}, error: {e}")
                                         yield json.dumps({
                                             "type": "tool_result",
                                             "tool_name": current_tool_call["name"],
-                                            "result": result_chunk,
+                                            "result": {
+                                                "success": False,
+                                                "error": f"工具调用失败: {str(e)}"
+                                            },
                                             "chunk_count": chunk_count
                                         })
                                         chunk_count += 1
-                                except Exception as e:
-                                    logger.error(f"工具调用失败，继续对话: {current_tool_call['name']}, error: {e}")
-                                    yield json.dumps({
-                                        "type": "tool_result",
-                                        "tool_name": current_tool_call["name"],
-                                        "result": {
-                                            "success": False,
-                                            "error": f"工具调用失败: {str(e)}"
-                                        },
-                                        "chunk_count": chunk_count
-                                    })
-                                    chunk_count += 1
-                                    # 工具调用失败，继续对话而不是抛出异常
+                                        # 工具调用失败，继续对话而不是抛出异常
+                                else:
+                                    logger.warning(f"工具调用参数不完整，跳过执行: {current_tool_call['name']}")
 
                             current_tool_call = {
                                 "id": tool_call.id,
@@ -375,43 +419,50 @@ class EnhancedAgentStreamService:
                             }
 
                             yield json.dumps({
-                                "type": "tool_call",
+                                "type": "tool_call_start",
                                 "tool_name": tool_call.function.name,
-                                "arguments": tool_call.function.arguments or "",  # 保持原始字符串，避免分片解析错误
+                                "arguments": "",  # 不显示参数片段，避免混淆
                                 "chunk_count": chunk_count
                             })
                             chunk_count += 1
                         else:
+                            # 累积参数片段
                             current_tool_call["arguments"] += tool_call.function.arguments or ""
+                            logger.debug(f"累积参数片段: {repr(tool_call.function.arguments)}")
 
             # 执行最后的工具调用
             if current_tool_call:
-                try:
-                    async for result_chunk in cls._execute_tool_call_stream(
-                        current_tool_call["name"],
-                        cls._safe_parse_arguments(current_tool_call["arguments"]),
-                        plan.id
-                    ):
+                # 等待参数完整
+                if cls._is_json_complete(current_tool_call["arguments"]):
+                    logger.info(f"最后工具调用参数完整，开始执行: {current_tool_call['name']}")
+                    try:
+                        async for result_chunk in cls._execute_tool_call_stream(
+                            current_tool_call["name"],
+                            cls._safe_parse_arguments(current_tool_call["arguments"]),
+                            plan.id
+                        ):
+                            yield json.dumps({
+                                "type": "tool_result",
+                                "tool_name": current_tool_call["name"],
+                                "result": result_chunk,
+                                "chunk_count": chunk_count
+                            })
+                            chunk_count += 1
+                    except Exception as e:
+                        logger.error(f"最后工具调用失败，继续对话: {current_tool_call['name']}, error: {e}")
                         yield json.dumps({
                             "type": "tool_result",
                             "tool_name": current_tool_call["name"],
-                            "result": result_chunk,
+                            "result": {
+                                "success": False,
+                                "error": f"工具调用失败: {str(e)}"
+                            },
                             "chunk_count": chunk_count
                         })
                         chunk_count += 1
-                except Exception as e:
-                    logger.error(f"最后工具调用失败，继续对话: {current_tool_call['name']}, error: {e}")
-                    yield json.dumps({
-                        "type": "tool_result",
-                        "tool_name": current_tool_call["name"],
-                        "result": {
-                            "success": False,
-                            "error": f"工具调用失败: {str(e)}"
-                        },
-                        "chunk_count": chunk_count
-                    })
-                    chunk_count += 1
-                    # 工具调用失败，继续对话而不是抛出异常
+                        # 工具调用失败，继续对话而不是抛出异常
+                else:
+                    logger.warning(f"最后工具调用参数不完整，跳过执行: {current_tool_call['name']}")
 
         except Exception as e:
             logger.error(f"thinking模式流式响应失败: {e}")
@@ -469,33 +520,37 @@ class EnhancedAgentStreamService:
                     for tool_call in delta.tool_calls:
                         if not current_tool_call or current_tool_call.get("id") != tool_call.id:
                             if current_tool_call:
-                                # 执行前一个工具调用
-                                try:
-                                    async for result_chunk in cls._execute_tool_call_stream(
-                                        current_tool_call["name"],
-                                        cls._safe_parse_arguments(current_tool_call["arguments"]),
-                                        plan.id
-                                    ):
+                                # 等待前一个工具调用的参数完整
+                                if cls._is_json_complete(current_tool_call["arguments"]):
+                                    logger.info(f"工具调用参数完整，开始执行: {current_tool_call['name']}")
+                                    try:
+                                        async for result_chunk in cls._execute_tool_call_stream(
+                                            current_tool_call["name"],
+                                            cls._safe_parse_arguments(current_tool_call["arguments"]),
+                                            plan.id
+                                        ):
+                                            yield json.dumps({
+                                                "type": "tool_result",
+                                                "tool_name": current_tool_call["name"],
+                                                "result": result_chunk,
+                                                "chunk_count": chunk_count
+                                            })
+                                            chunk_count += 1
+                                    except Exception as e:
+                                        logger.error(f"工具调用失败，继续对话: {current_tool_call['name']}, error: {e}")
                                         yield json.dumps({
                                             "type": "tool_result",
                                             "tool_name": current_tool_call["name"],
-                                            "result": result_chunk,
+                                            "result": {
+                                                "success": False,
+                                                "error": f"工具调用失败: {str(e)}"
+                                            },
                                             "chunk_count": chunk_count
                                         })
                                         chunk_count += 1
-                                except Exception as e:
-                                    logger.error(f"工具调用失败，继续对话: {current_tool_call['name']}, error: {e}")
-                                    yield json.dumps({
-                                        "type": "tool_result",
-                                        "tool_name": current_tool_call["name"],
-                                        "result": {
-                                            "success": False,
-                                            "error": f"工具调用失败: {str(e)}"
-                                        },
-                                        "chunk_count": chunk_count
-                                    })
-                                    chunk_count += 1
-                                    # 工具调用失败，继续对话而不是抛出异常
+                                        # 工具调用失败，继续对话而不是抛出异常
+                                else:
+                                    logger.warning(f"工具调用参数不完整，跳过执行: {current_tool_call['name']}")
 
                             current_tool_call = {
                                 "id": tool_call.id,
@@ -504,43 +559,50 @@ class EnhancedAgentStreamService:
                             }
 
                             yield json.dumps({
-                                "type": "tool_call",
+                                "type": "tool_call_start",
                                 "tool_name": tool_call.function.name,
-                                "arguments": tool_call.function.arguments or "",  # 保持原始字符串，避免分片解析错误
+                                "arguments": "",  # 不显示参数片段，避免混淆
                                 "chunk_count": chunk_count
                             })
                             chunk_count += 1
                         else:
+                            # 累积参数片段
                             current_tool_call["arguments"] += tool_call.function.arguments or ""
+                            logger.debug(f"累积参数片段: {repr(tool_call.function.arguments)}")
 
             # 执行最后的工具调用
             if current_tool_call:
-                try:
-                    async for result_chunk in cls._execute_tool_call_stream(
-                        current_tool_call["name"],
-                        cls._safe_parse_arguments(current_tool_call["arguments"]),
-                        plan.id
-                    ):
+                # 等待参数完整
+                if cls._is_json_complete(current_tool_call["arguments"]):
+                    logger.info(f"最后工具调用参数完整，开始执行: {current_tool_call['name']}")
+                    try:
+                        async for result_chunk in cls._execute_tool_call_stream(
+                            current_tool_call["name"],
+                            cls._safe_parse_arguments(current_tool_call["arguments"]),
+                            plan.id
+                        ):
+                            yield json.dumps({
+                                "type": "tool_result",
+                                "tool_name": current_tool_call["name"],
+                                "result": result_chunk,
+                                "chunk_count": chunk_count
+                            })
+                            chunk_count += 1
+                    except Exception as e:
+                        logger.error(f"最后工具调用失败，继续对话: {current_tool_call['name']}, error: {e}")
                         yield json.dumps({
                             "type": "tool_result",
                             "tool_name": current_tool_call["name"],
-                            "result": result_chunk,
+                            "result": {
+                                "success": False,
+                                "error": f"工具调用失败: {str(e)}"
+                            },
                             "chunk_count": chunk_count
                         })
                         chunk_count += 1
-                except Exception as e:
-                    logger.error(f"最后工具调用失败，继续对话: {current_tool_call['name']}, error: {e}")
-                    yield json.dumps({
-                        "type": "tool_result",
-                        "tool_name": current_tool_call["name"],
-                        "result": {
-                            "success": False,
-                            "error": f"工具调用失败: {str(e)}"
-                        },
-                        "chunk_count": chunk_count
-                    })
-                    chunk_count += 1
-                    # 工具调用失败，继续对话而不是抛出异常
+                        # 工具调用失败，继续对话而不是抛出异常
+                else:
+                    logger.warning(f"最后工具调用参数不完整，跳过执行: {current_tool_call['name']}")
 
         except Exception as e:
             logger.error(f"普通模式流式响应失败: {e}")

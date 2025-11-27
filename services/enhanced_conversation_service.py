@@ -435,26 +435,36 @@ class EnhancedConversationService:
                 chatbot_messages = []
 
                 for msg in messages:
-                    chatbot_msg = {
-                        "role": msg.role,
-                        "content": msg.content,
-                        "timestamp": msg.created_at.isoformat()
-                    }
-
-                    # 添加特殊格式化和元数据
+                    # 系统提示词转换为assistant角色以便在chatbot中正确显示
                     if msg.message_type == MessageSubType.SYSTEM_PROMPT.value:
-                        chatbot_msg["content"] = f"🤖 **系统提示词**\n\n{msg.content}"
-                        chatbot_msg["metadata"] = {"collapsible": True, "default_collapsed": False, "type": "system"}
+                        chatbot_msg = {
+                            "role": "assistant",  # 系统提示词使用assistant角色显示
+                            "content": f"🤖 **系统提示词**\n\n{msg.content}",
+                            "timestamp": msg.created_at.isoformat(),
+                            "metadata": {"collapsible": True, "default_collapsed": False, "type": "system"}
+                        }
                     elif msg.message_type == MessageSubType.KLINE_DATA.value:
-                        chatbot_msg["content"] = f"📊 **预测数据**\n\n{msg.content}"
-                        chatbot_msg["metadata"] = {"collapsible": True, "default_collapsed": False, "type": "data"}
-                    elif msg.message_type == MessageSubType.THINKING.value:
-                        chatbot_msg["content"] = f"🧠 **AI思考过程**\n\n{msg.content}"
-                        chatbot_msg["metadata"] = {"collapsible": True, "default_collapsed": True, "type": "thinking"}
-                    elif msg.message_type == MessageSubType.TOOL_CALL.value:
-                        chatbot_msg["metadata"] = {"collapsible": True, "default_collapsed": False, "type": "tool_call"}
-                    elif msg.message_type == MessageSubType.TOOL_RESULT.value:
-                        chatbot_msg["metadata"] = {"collapsible": True, "default_collapsed": False, "type": "tool_result"}
+                        chatbot_msg = {
+                            "role": "user",  # 预测数据作为用户输入显示
+                            "content": f"📊 **预测数据**\n\n{msg.content}",
+                            "timestamp": msg.created_at.isoformat(),
+                            "metadata": {"collapsible": True, "default_collapsed": False, "type": "data"}
+                        }
+                    else:
+                        chatbot_msg = {
+                            "role": msg.role,
+                            "content": msg.content,
+                            "timestamp": msg.created_at.isoformat()
+                        }
+
+                        # 添加特殊格式化和元数据
+                        if msg.message_type == MessageSubType.THINKING.value:
+                            chatbot_msg["content"] = f"🧠 **AI思考过程**\n\n{msg.content}"
+                            chatbot_msg["metadata"] = {"collapsible": True, "default_collapsed": True, "type": "thinking"}
+                        elif msg.message_type == MessageSubType.TOOL_CALL.value:
+                            chatbot_msg["metadata"] = {"collapsible": True, "default_collapsed": False, "type": "tool_call"}
+                        elif msg.message_type == MessageSubType.TOOL_RESULT.value:
+                            chatbot_msg["metadata"] = {"collapsible": True, "default_collapsed": False, "type": "tool_result"}
 
                     # 包含原始元数据（如果有的话）
                     if include_metadata and msg.metadata:

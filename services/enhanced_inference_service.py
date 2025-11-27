@@ -56,8 +56,10 @@ class EnhancedInferenceService:
             yield formatted_messages
 
             # 4. 开始AI分析对话
-            current_assistant_msg = ""
+            thinking_content = ""      # 分离thinking内容
+            analysis_content = ""      # 分离正文分析内容
             chunk_count = 0
+            thinking_completed = False  # 标记thinking是否完成
 
             async for chunk_str in enhanced_agent_stream_service.chat_with_tools_stream(
                 conversation_id=conversation_id,
@@ -70,28 +72,49 @@ class EnhancedInferenceService:
                     content = chunk_data.get("content", "")
                     chunk_count = chunk_data.get("chunk_count", 0)
 
-                    # 重新获取完整的对话上下文
-                    updated_context_messages = enhanced_conversation_service.get_conversation_messages(conversation_id)
-                    full_context = enhanced_conversation_service.format_for_chatbot(updated_context_messages)
-
+                    # 分别处理thinking和正文内容
                     if chunk_type == "thinking_start":
-                        current_assistant_msg = "🧠 **开始思考分析...**\n\n"
+                        thinking_content = "🧠 **AI思考过程**\n\n"
+                        thinking_completed = False
 
                     elif chunk_type == "thinking":
-                        current_assistant_msg = f"🧠 **AI思考过程**\n\n{content}"
+                        # 累积thinking内容
+                        thinking_content += content
+                        thinking_completed = False
 
                     elif chunk_type == "content":
-                        current_assistant_msg = content
+                        # 正文开始，标记thinking完成
+                        if not thinking_completed:
+                            thinking_completed = True
+
+                        # 累积正文内容
+                        if analysis_content:
+                            # 如果已有内容，添加分隔符
+                            analysis_content += "\n\n" + content
+                        else:
+                            analysis_content = content
 
                     elif chunk_type == "tool_call_start":
+                        thinking_completed = True  # 工具调用开始时thinking应该完成
                         tool_name = chunk_data.get("tool_name", "")
-                        current_assistant_msg = f"🛠️ **调用工具**: `{tool_name}`\n\n⏳ 正在执行..."
+                        tool_section = f"\n\n🛠️ **调用工具**: `{tool_name}`\n\n⏳ 正在执行..."
+
+                        if analysis_content:
+                            analysis_content += tool_section
+                        else:
+                            analysis_content = tool_section
 
                     elif chunk_type == "tool_call":
+                        thinking_completed = True
                         tool_name = chunk_data.get("tool_name", "")
                         arguments = chunk_data.get("arguments", {})
                         args_str = json.dumps(arguments, indent=2, ensure_ascii=False)
-                        current_assistant_msg = f"🛠️ **工具调用**: `{tool_name}`\n\n📋 **参数**:\n```json\n{args_str}\n```\n\n⏳ 正在执行..."
+                        tool_section = f"\n\n🛠️ **工具调用**: `{tool_name}`\n\n📋 **参数**:\n```json\n{args_str}\n```\n\n⏳ 正在执行..."
+
+                        if analysis_content:
+                            analysis_content += tool_section
+                        else:
+                            analysis_content = tool_section
 
                     elif chunk_type == "tool_result":
                         tool_name = chunk_data.get("tool_name", "")
@@ -100,18 +123,59 @@ class EnhancedInferenceService:
                         status_emoji = "✅" if success else "❌"
 
                         result_str = json.dumps(result, indent=2, ensure_ascii=False)
-                        current_assistant_msg = f"🛠️ **工具执行结果**: `{tool_name}` {status_emoji}\n\n```json\n{result_str}\n```\n\n🔄 继续分析..."
+                        tool_section = f"\n\n🛠️ **工具执行结果**: `{tool_name}` {status_emoji}\n\n```json\n{result_str}\n```\n\n🔄 继续分析..."
+
+                        if analysis_content:
+                            analysis_content += tool_section
+                        else:
+                            analysis_content = tool_section
 
                     elif chunk_type == "error":
                         error_msg = chunk_data.get("content", "未知错误")
-                        current_assistant_msg = f"❌ **推理错误**: {error_msg}"
+                        error_section = f"\n\n❌ **推理错误**: {error_msg}"
 
-                    # 构建完整的显示消息（包括所有上下文 + 当前AI响应）
-                    updated_messages = full_context + [
-                        {"role": "assistant", "content": current_assistant_msg, "metadata": {"streaming": True}}
-                    ]
+                        if analysis_content:
+                            analysis_content += error_section
+                        else:
+                            analysis_content = error_section
 
-                    yield updated_messages
+                    # 构建组合内容：thinking（如果存在） + 正文
+                    combined_content = ""
+                    message_metadata = {
+                        "streaming": True,
+                        "chunk_count": chunk_count,
+                        "has_thinking": bool(thinking_content),
+                        "thinking_completed": thinking_completed
+                    }
+
+                    if thinking_content:
+                        combined_content = thinking_content
+                        # 添加thinking部分的折叠元数据
+                        message_metadata.update({
+                            "collapsible_sections": [{
+                                "type": "thinking",
+                                "default_collapsed": True,  # thinking部分默认折叠
+                                "title": "🧠 AI思考过程",
+                                "completed": thinking_completed
+                            }]
+                        })
+
+                    if analysis_content:
+                        if combined_content:
+                            # 在thinking和正文之间添加分隔线
+                            combined_content += "\n\n---\n\n**分析结果**\n\n" + analysis_content
+                        else:
+                            combined_content = analysis_content
+
+                    # 构建完整消息列表：系统上下文 + AI回复
+                    assistant_message = {
+                        "role": "assistant",
+                        "content": combined_content,
+                        "metadata": message_metadata
+                    }
+
+                    complete_messages = formatted_messages + [assistant_message]
+                    yield complete_messages
 
                 except json.JSONDecodeError:
                     continue
@@ -119,16 +183,46 @@ class EnhancedInferenceService:
                     logger.error(f"处理推理块失败: {e}")
                     continue
 
-            # 推理完成 - 获取最终完整上下文
-            final_context_messages = enhanced_conversation_service.get_conversation_messages(conversation_id)
-            final_full_context = enhanced_conversation_service.format_for_chatbot(final_context_messages)
+            # 推理完成 - 最终整理
+            thinking_completed = True
+            final_content = ""
 
-            final_assistant_msg = current_assistant_msg + "\n\n✅ **推理完成**"
-            final_messages = final_full_context + [
-                {"role": "assistant", "content": final_assistant_msg, "metadata": {"completed": True}}
-            ]
+            if thinking_content:
+                final_content = thinking_content
 
-            yield final_messages
+            if analysis_content:
+                if final_content:
+                    final_content += "\n\n---\n\n**最终分析**\n\n" + analysis_content + "\n\n✅ **推理完成**"
+                else:
+                    final_content = analysis_content + "\n\n✅ **推理完成**"
+
+            # 构建最终消息
+            final_metadata = {
+                "completed": True,
+                "final": True,
+                "has_thinking": bool(thinking_content),
+                "thinking_completed": True
+            }
+
+            if thinking_content:
+                # 添加thinking部分的折叠元数据
+                final_metadata.update({
+                    "collapsible_sections": [{
+                        "type": "thinking",
+                        "default_collapsed": True,  # thinking部分默认折叠
+                        "title": "🧠 AI思考过程",
+                        "completed": True
+                    }]
+                })
+
+            final_message = {
+                "role": "assistant",
+                "content": final_content,
+                "metadata": final_metadata
+            }
+
+            final_complete_messages = formatted_messages + [final_message]
+            yield final_complete_messages
 
         except Exception as e:
             logger.error(f"执行手动推理失败: {e}")
@@ -175,7 +269,10 @@ class EnhancedInferenceService:
             yield messages_with_user
 
             # 开始AI回复
-            current_assistant_msg = ""
+            thinking_content = ""      # 分离thinking内容
+            analysis_content = ""      # 分离正文分析内容
+            chunk_count = 0
+            thinking_completed = False  # 标记thinking是否完成
 
             async for chunk_str in enhanced_agent_stream_service.chat_with_tools_stream(
                 conversation_id=conversation_id,
@@ -186,25 +283,50 @@ class EnhancedInferenceService:
                     chunk_data = json.loads(chunk_str)
                     chunk_type = chunk_data.get("type", "")
                     content = chunk_data.get("content", "")
+                    chunk_count = chunk_data.get("chunk_count", 0)
 
-                    # 重新获取完整的对话上下文
-                    updated_context_messages = enhanced_conversation_service.get_conversation_messages(conversation_id)
-                    full_context = enhanced_conversation_service.format_for_chatbot(updated_context_messages)
-
+                    # 分别处理thinking和正文内容
                     if chunk_type == "thinking_start":
-                        current_assistant_msg = "🧠 **开始思考分析...**\n\n"
+                        thinking_content = "🧠 **AI思考过程**\n\n"
+                        thinking_completed = False
 
                     elif chunk_type == "thinking":
-                        current_assistant_msg = f"🧠 **AI思考过程**\n\n{content}"
+                        # 累积thinking内容
+                        thinking_content += content
+                        thinking_completed = False
 
                     elif chunk_type == "content":
-                        current_assistant_msg = content
+                        # 正文开始，标记thinking完成
+                        if not thinking_completed:
+                            thinking_completed = True
+
+                        # 累积正文内容
+                        if analysis_content:
+                            analysis_content += "\n\n" + content
+                        else:
+                            analysis_content = content
+
+                    elif chunk_type == "tool_call_start":
+                        thinking_completed = True
+                        tool_name = chunk_data.get("tool_name", "")
+                        tool_section = f"\n\n🛠️ **调用工具**: `{tool_name}`\n\n⏳ 正在执行..."
+
+                        if analysis_content:
+                            analysis_content += tool_section
+                        else:
+                            analysis_content = tool_section
 
                     elif chunk_type == "tool_call":
+                        thinking_completed = True
                         tool_name = chunk_data.get("tool_name", "")
                         arguments = chunk_data.get("arguments", {})
                         args_str = json.dumps(arguments, indent=2, ensure_ascii=False)
-                        current_assistant_msg = f"🛠️ **工具调用**: `{tool_name}`\n\n📋 **参数**:\n```json\n{args_str}\n```\n\n⏳ 正在执行..."
+                        tool_section = f"\n\n🛠️ **工具调用**: `{tool_name}`\n\n📋 **参数**:\n```json\n{args_str}\n```\n\n⏳ 正在执行..."
+
+                        if analysis_content:
+                            analysis_content += tool_section
+                        else:
+                            analysis_content = tool_section
 
                     elif chunk_type == "tool_result":
                         tool_name = chunk_data.get("tool_name", "")
@@ -213,19 +335,58 @@ class EnhancedInferenceService:
                         status_emoji = "✅" if success else "❌"
 
                         result_str = json.dumps(result, indent=2, ensure_ascii=False)
-                        current_assistant_msg = f"🛠️ **工具执行结果**: `{tool_name}` {status_emoji}\n\n```json\n{result_str}\n```\n\n🔄 继续对话..."
+                        tool_section = f"\n\n🛠️ **工具执行结果**: `{tool_name}` {status_emoji}\n\n```json\n{result_str}\n```\n\n🔄 继续对话..."
+
+                        if analysis_content:
+                            analysis_content += tool_section
+                        else:
+                            analysis_content = tool_section
 
                     elif chunk_type == "error":
                         error_msg = chunk_data.get("content", "未知错误")
-                        current_assistant_msg = f"❌ **回复错误**: {error_msg}"
+                        error_section = f"\n\n❌ **回复错误**: {error_msg}"
 
-                    # 构建完整的显示消息（包括所有上下文 + 用户消息 + 当前AI响应）
-                    updated_messages = full_context + [
-                        {"role": "user", "content": user_message},
-                        {"role": "assistant", "content": current_assistant_msg, "metadata": {"streaming": True}}
-                    ]
+                        if analysis_content:
+                            analysis_content += error_section
+                        else:
+                            analysis_content = error_section
 
-                    yield updated_messages
+                    # 构建组合内容：thinking（如果存在） + 正文
+                    combined_content = ""
+                    message_metadata = {
+                        "streaming": True,
+                        "chunk_count": chunk_count,
+                        "has_thinking": bool(thinking_content),
+                        "thinking_completed": thinking_completed
+                    }
+
+                    if thinking_content:
+                        combined_content = thinking_content
+                        # 添加thinking部分的折叠元数据
+                        message_metadata.update({
+                            "collapsible_sections": [{
+                                "type": "thinking",
+                                "default_collapsed": True,  # thinking部分默认折叠
+                                "title": "🧠 AI思考过程",
+                                "completed": thinking_completed
+                            }]
+                        })
+
+                    if analysis_content:
+                        if combined_content:
+                            combined_content += "\n\n---\n\n**回复内容**\n\n" + analysis_content
+                        else:
+                            combined_content = analysis_content
+
+                    # 构建完整消息列表：历史消息 + 用户消息 + AI回复
+                    assistant_message = {
+                        "role": "assistant",
+                        "content": combined_content,
+                        "metadata": message_metadata
+                    }
+
+                    complete_messages = messages_with_user + [assistant_message]
+                    yield complete_messages
 
                 except json.JSONDecodeError:
                     continue
@@ -233,16 +394,46 @@ class EnhancedInferenceService:
                     logger.error(f"处理对话块失败: {e}")
                     continue
 
-            # 对话完成 - 获取最终完整上下文
-            final_context_messages = enhanced_conversation_service.get_conversation_messages(conversation_id)
-            final_full_context = enhanced_conversation_service.format_for_chatbot(final_context_messages)
+            # 对话完成 - 最终整理
+            thinking_completed = True
+            final_content = ""
 
-            final_messages = final_full_context + [
-                {"role": "user", "content": user_message},
-                {"role": "assistant", "content": current_assistant_msg, "metadata": {"completed": True}}
-            ]
+            if thinking_content:
+                final_content = thinking_content
 
-            yield final_messages
+            if analysis_content:
+                if final_content:
+                    final_content += "\n\n---\n\n**最终回复**\n\n" + analysis_content + "\n\n✅ **回复完成**"
+                else:
+                    final_content = analysis_content + "\n\n✅ **回复完成**"
+
+            # 构建最终消息
+            final_metadata = {
+                "completed": True,
+                "final": True,
+                "has_thinking": bool(thinking_content),
+                "thinking_completed": True
+            }
+
+            if thinking_content:
+                # 添加thinking部分的折叠元数据
+                final_metadata.update({
+                    "collapsible_sections": [{
+                        "type": "thinking",
+                        "default_collapsed": True,  # thinking部分默认折叠
+                        "title": "🧠 AI思考过程",
+                        "completed": True
+                    }]
+                })
+
+            final_message = {
+                "role": "assistant",
+                "content": final_content,
+                "metadata": final_metadata
+            }
+
+            final_complete_messages = messages_with_user + [final_message]
+            yield final_complete_messages
 
         except Exception as e:
             logger.error(f"继续对话失败: {e}")

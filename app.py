@@ -719,9 +719,10 @@ def create_app():
                     # === 订单记录区域 ===
                     with gr.Accordion("📋 订单记录", open=True):
                         with gr.Row():
-                            with gr.Column(scale=10):
+                            with gr.Column(scale=1):
                                 order_refresh_btn = gr.Button("🔄 刷新", size="sm")
-                            with gr.Column(scale=10):
+                        with gr.Row():
+                            with gr.Column():
                                 order_table = gr.DataFrame(
                                     label="订单记录",
                                     interactive=False
@@ -729,9 +730,9 @@ def create_app():
                     # === 任务执行记录区域 ===
                     with gr.Accordion("📋 任务执行记录", open=False):
                         with gr.Row():
-                            with gr.Column(scale=10):
+                            with gr.Column(scale=1):
                                 task_refresh_btn = gr.Button("🔄 刷新", size="sm")
-                            with gr.Column(scale=10):
+                        with gr.Row():
                                 task_executions_df = gr.DataFrame(
                                     label="任务执行历史",
                                     interactive=False
