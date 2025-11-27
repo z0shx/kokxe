@@ -11,6 +11,7 @@ from database.models import KlineData, WebSocketSubscription, TradingPlan
 from database.db import get_db
 from utils.logger import get_ws_logger
 from utils.data_downloader import DataDownloader
+from services.kline_event_service import kline_event_service
 import json
 
 
@@ -351,6 +352,16 @@ class WebSocketDataService:
             # 只在新数据时增加计数
             if is_new:
                 self.total_saved += 1
+
+                # 触发K线数据事件（仅在新数据时）
+                try:
+                    kline_event_service.trigger_new_kline_event(
+                        inst_id=self.inst_id,
+                        interval=self.interval,
+                        kline_data=parsed
+                    )
+                except Exception as e:
+                    self.logger.error(f"触发K线事件失败: {e}")
 
             # 更新最后数据时间
             self.last_data_time = parsed['timestamp']

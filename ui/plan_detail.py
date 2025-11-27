@@ -1190,22 +1190,21 @@ class PlanDetailUI:
             List[Dict]: Chatbot messages 格式 [{"role": "assistant", "content": ...}]
         """
         try:
-            # 只获取手动对话，不显示推理结果
-            latest_conversation = ConversationService.get_latest_conversation(
+            # 使用增强推理服务获取对话
+            from services.enhanced_inference_service import enhanced_inference_service
+            from services.enhanced_conversation_service import ConversationType
+
+            messages = enhanced_inference_service.get_latest_conversation_messages(
                 plan_id=plan_id,
-                conversation_type="manual_chat"
+                conversation_type=ConversationType.MANUAL_CHAT
             )
 
-            if latest_conversation:
-                messages = ConversationService.get_conversation_messages(latest_conversation.id)
-                formatted_messages = ConversationService.format_messages_for_chatbot(messages)
+            # 只有当消息不为空时才返回
+            if messages and len(messages) > 0 and messages[0].get("content") != "暂无对话记录":
+                return messages
 
-                # 只有当消息不为空时才返回
-                if formatted_messages:
-                    return formatted_messages
-
-            # 如果没有任何对话，回退到旧的决策记录系统
-            return self.get_latest_agent_decision_output(plan_id)
+            # 如果没有任何对话，返回欢迎消息
+            return [{"role": "assistant", "content": "👋 欢迎使用AI Agent对话系统\n\n开始您的第一次对话或点击「执行推理」获取市场分析。"}]
 
         except Exception as e:
             logger.error(f"获取最新对话消息失败: {e}")
@@ -2831,6 +2830,9 @@ class PlanDetailUI:
     def _build_inference_system_prompt(self, plan, latest_training) -> str:
         """构建推理系统提示词"""
         try:
+            # 导入工具获取函数
+            from services.agent_tools import get_all_tools
+
             # 获取预测数据
             prediction_data = []
             with get_db() as db:
@@ -3425,12 +3427,16 @@ class PlanDetailUI:
                 )
 
                 if ws_service:
+                    # 订阅K线事件
+                    from services.kline_event_service import kline_event_service
+                    kline_event_service.subscribe_plan(plan_id)
+
                     # 更新计划的ws_connected状态
                     db.query(TradingPlan).filter(TradingPlan.id == plan_id).update({
                         'ws_connected': True
                     })
                     db.commit()
-                    return "✅ WebSocket已启动"
+                    return "✅ WebSocket已启动，已订阅K线事件"
                 else:
                     return "❌ WebSocket启动失败"
 
@@ -3458,12 +3464,16 @@ class PlanDetailUI:
                     is_demo=plan.is_demo
                 )
 
+                # 取消订阅K线事件
+                from services.kline_event_service import kline_event_service
+                kline_event_service.unsubscribe_plan(plan_id)
+
                 # 更新计划的ws_connected状态
                 db.query(TradingPlan).filter(TradingPlan.id == plan_id).update({
                     'ws_connected': False
                 })
                 db.commit()
-                return "✅ WebSocket已停止"
+                return "✅ WebSocket已停止，已取消订阅K线事件"
 
         except Exception as e:
             logger.error(f"停止WebSocket失败: {e}")
@@ -3488,6 +3498,10 @@ class PlanDetailUI:
                 # 启动定时任务调度器
                 from services.schedule_service import ScheduleService
                 success = await ScheduleService.start_schedule(plan_id)
+
+                # 订阅K线事件
+                from services.kline_event_service import kline_event_service
+                kline_event_service.subscribe_plan(plan_id)
 
                 # 启动自动化调度器（如果配置了自动化）
                 automation_status = ""
@@ -3555,6 +3569,10 @@ class PlanDetailUI:
                         plan_id=plan_id
                     )
                     logger.info(f"账户WebSocket已停止: plan_id={plan_id}")
+
+                # 取消订阅K线事件
+                from services.kline_event_service import kline_event_service
+                kline_event_service.unsubscribe_plan(plan_id)
 
                 # 停止定时任务调度器
                 from services.schedule_service import ScheduleService
