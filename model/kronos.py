@@ -468,12 +468,33 @@ def auto_regressive_inference(tokenizer, model, x, x_stamp, y_stamp, max_context
 
 
 def calc_time_stamps(x_timestamp):
+    """
+    计算时间戳特征
+
+    Args:
+        x_timestamp: pandas Series 或 DatetimeIndex
+
+    Returns:
+        时间特征DataFrame
+    """
     time_df = pd.DataFrame()
-    time_df['minute'] = x_timestamp.dt.minute
-    time_df['hour'] = x_timestamp.dt.hour
-    time_df['weekday'] = x_timestamp.dt.weekday
-    time_df['day'] = x_timestamp.dt.day
-    time_df['month'] = x_timestamp.dt.month
+
+    # 处理 DatetimeIndex 和 Series 两种情况
+    if hasattr(x_timestamp, 'dt'):
+        # pandas Series with .dt accessor
+        time_df['minute'] = x_timestamp.dt.minute
+        time_df['hour'] = x_timestamp.dt.hour
+        time_df['weekday'] = x_timestamp.dt.weekday
+        time_df['day'] = x_timestamp.dt.day
+        time_df['month'] = x_timestamp.dt.month
+    else:
+        # DatetimeIndex (direct access without .dt)
+        time_df['minute'] = x_timestamp.minute
+        time_df['hour'] = x_timestamp.hour
+        time_df['weekday'] = x_timestamp.weekday
+        time_df['day'] = x_timestamp.day
+        time_df['month'] = x_timestamp.month
+
     return time_df
 
 

@@ -503,21 +503,22 @@ class WebSocketDataService:
                 if parsed:
                     # 保存到数据库
                     with get_db() as db:
-                        # 去除时区信息以匹配数据库
-                        timestamp_naive = parsed['timestamp'].replace(tzinfo=None)
+                        # 转换为UTC时间戳存储（保持时区信息）
+                        # OKX API返回的是UTC时间戳，转换为naive UTC时间存储
+                        timestamp_utc = parsed['timestamp'].replace(tzinfo=None)
 
                         # 检查是否已存在
                         existing = db.query(KlineData).filter(
                             KlineData.inst_id == self.inst_id,
                             KlineData.interval == self.interval,
-                            KlineData.timestamp == timestamp_naive
+                            KlineData.timestamp == timestamp_utc
                         ).first()
 
                         if not existing:
                             new_data = KlineData(
                                 inst_id=self.inst_id,
                                 interval=self.interval,
-                                timestamp=timestamp_naive,
+                                timestamp=timestamp_utc,
                                 open=parsed['open'],
                                 high=parsed['high'],
                                 low=parsed['low'],
@@ -579,16 +580,16 @@ class WebSocketDataService:
         Returns:
             是否为新数据（True=新插入，False=更新已有数据）
         """
-        # 数据库 TIMESTAMP 字段不带时区，需要去掉 timezone 信息
-        # parsed_data['timestamp'] 是 timezone-aware (UTC)
-        timestamp_naive = parsed_data['timestamp'].replace(tzinfo=None)
+        # 转换UTC时间戳为naive datetime存储
+        # parsed_data['timestamp'] 是 timezone-aware (UTC)，转换为naive UTC时间
+        timestamp_utc = parsed_data['timestamp'].replace(tzinfo=None)
 
         with get_db() as db:
             # 先检查数据是否存在
             existing = db.query(KlineData).filter(
                 KlineData.inst_id == self.inst_id,
                 KlineData.interval == self.interval,
-                KlineData.timestamp == timestamp_naive
+                KlineData.timestamp == timestamp_utc
             ).first()
 
             if existing:

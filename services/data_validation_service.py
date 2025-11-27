@@ -243,9 +243,8 @@ class DataValidationService:
                             for candle in kline_data:
                                 parsed = self.okx_client.parse_candle_data(candle)
                                 if parsed:
-                                    # 确保时间戳转换为UTC+8（北京时间）用于数据库存储
-                                    from utils.timezone_helper import convert_to_beijing_time
-                                    beijing_time = convert_to_beijing_time(parsed['timestamp']).replace(tzinfo=None)
+                                    # 保持UTC时间戳用于数据库存储，UI显示时再转换为北京时间
+                                    utc_time = parsed['timestamp'].replace(tzinfo=None)
 
                                     formatted_data.append({
                                         'instId': plan.inst_id,

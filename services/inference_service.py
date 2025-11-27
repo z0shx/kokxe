@@ -325,7 +325,8 @@ class InferenceService:
                     })
 
                 historical_df = pd.DataFrame(df_data)
-                historical_df['timestamps'] = pd.to_datetime(historical_df['timestamps'])
+                # 明确指定 timestamps 为 UTC 时间，防止本地时区解释
+                historical_df['timestamps'] = pd.to_datetime(historical_df['timestamps'], utc=True)
 
                 logger.info(f"历史数据准备完成: {len(historical_df)}条")
 
@@ -401,8 +402,8 @@ class InferenceService:
                 # 保存预测数据到数据库
                 # pred_df 的 index 是时间戳，包含平均值、不确定性范围和概率指标
                 for timestamp, row in pred_df.iterrows():
-                    # 存储原始UTC时间戳，在显示时再转换为北京时间
-                    # 避免双重时区转换导致的时间错误
+                    # 存储UTC时间戳，在UI显示时转换为北京时间
+                    # 确保时间戳处理的一致性，避免双重时区转换
 
                     # 转换所有numpy类型为Python原生类型
                     prediction = PredictionData(

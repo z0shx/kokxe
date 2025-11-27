@@ -723,21 +723,28 @@ class KronosInferencer:
 
             self.logger.info(f"最后时间戳: {last_timestamp}, 预测频率: {freq}")
 
-            # pd.date_range 返回 DatetimeIndex，需要转换为 Series
-            # 生成北京时间戳（UTC+8），直接存储和显示
-            from utils.timezone_helper import convert_to_beijing_time
+            # 处理时区感知的时间戳
+            if hasattr(last_timestamp, 'tz') and last_timestamp.tz is not None:
+                # 时间戳有时区信息，使用该时区
+                start_timestamp = last_timestamp
+                timezone = last_timestamp.tz
+                self.logger.info(f"使用时区感知时间戳: {timezone}")
+            else:
+                # 时间戳无时区信息，假设为UTC
+                start_timestamp = last_timestamp
+                timezone = 'UTC'
+                self.logger.info(f"使用naive时间戳，假设为UTC")
 
-            # 生成UTC时间戳
-            y_timestamp_utc = pd.date_range(
-                start=last_timestamp,
+            # 生成未来时间戳
+            y_timestamp = pd.date_range(
+                start=start_timestamp,
                 periods=pred_len + 1,
                 freq=freq,
-                tz='UTC'  # 明确指定为UTC时区
+                tz=timezone
             )[1:]  # 排除起始时间
 
-            # 转换为北京时间戳（UTC+8）
-            beijing_timestamps = [convert_to_beijing_time(ts) for ts in y_timestamp_utc]
-            y_timestamp = pd.Series(beijing_timestamps)
+            # 移除时区信息以匹配数据库存储格式
+            y_timestamp = y_timestamp.tz_localize(None)
 
             # 执行推理
             self.logger.info(f"开始推理: 历史数据{len(x_df)}条, 预测{pred_len}条")

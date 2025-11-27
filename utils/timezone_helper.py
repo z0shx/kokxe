@@ -158,15 +158,6 @@ def get_current_beijing_str(format_str: str = '%Y-%m-%d %H:%M:%S') -> str:
     return get_current_beijing_time().strftime(format_str)
 
 
-# 便捷函数，用于向后兼容
-def to_beijing_time(dt: Optional[Union[datetime, str]]) -> str:
-    """向后兼容函数，等同于format_datetime_full_beijing"""
-    return format_datetime_full_beijing(dt)
-
-
-def to_beijing_time_short(dt: Optional[Union[datetime, str]]) -> str:
-    """向后兼容函数，等同于format_datetime_short_beijing"""
-    return format_datetime_short_beijing(dt)
 
 
 # 批量转换函数
