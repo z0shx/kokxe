@@ -333,7 +333,7 @@ def create_app():
                                 scale=2
                             )
                             set_inference_interval_btn = gr.Button("💾 设置间隔", size="sm", scale=1)
-                            manual_inference_btn = gr.Button("🔮 手动触发", size="sm", variant="secondary", scale=1)
+                            manual_prediction_trigger_btn = gr.Button("🔮 手动触发", size="sm", variant="secondary", scale=1)
 
                         inference_schedule_display = gr.Textbox(
                             label="当前预测间隔",
@@ -697,7 +697,7 @@ def create_app():
                             agent_send_btn = gr.Button("发送", size="sm", scale=1, min_width=80)
 
                         with gr.Row():
-                            manual_inference_btn = gr.Button("🎯 执行推理", variant="primary")
+                            manual_agent_inference_btn = gr.Button("🎯 执行推理", variant="primary")
                             clear_chat_btn = gr.Button("🗑️ 清空对话", size="sm")
 
   
@@ -1096,7 +1096,7 @@ def create_app():
                     outputs=[schedule_operation_result]
                 )
 
-                manual_inference_btn.click(
+                manual_prediction_trigger_btn.click(
                     fn=manual_inference_wrapper,
                     inputs=[plan_id_input],
                     outputs=[inference_schedule_operation_result]
@@ -1621,7 +1621,7 @@ def create_app():
                     async for history in detail_ui.manual_inference_stream(int(pid)):
                         yield history
 
-                manual_inference_btn.click(
+                manual_agent_inference_btn.click(
                     fn=manual_inference_wrapper_stream,
                     inputs=[plan_id_input],
                     outputs=[agent_chatbot],

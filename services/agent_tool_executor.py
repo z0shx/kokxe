@@ -74,6 +74,37 @@ class AgentToolExecutor:
             await self.ws_client.connect()
             await self.ws_client.connect_business()
 
+    @staticmethod
+    def _normalize_tool_params(tool_name: str, params: Dict) -> Dict:
+        """
+        标准化工具参数，处理LLM可能使用的缩写参数名
+
+        Args:
+            tool_name: 工具名称
+            params: 原始参数字典
+
+        Returns:
+            标准化后的参数字典
+        """
+        normalized_params = params.copy()
+
+        # 处理place_order工具的参数映射
+        if tool_name == "place_order":
+            # 参数映射表：缩写名 -> 标准名
+            param_mapping = {
+                "px": "price",          # 价格
+                "sz": "size",           # 数量
+                "ord_type": "order_type" # 订单类型
+            }
+
+            # 应用参数映射
+            for short_name, standard_name in param_mapping.items():
+                if short_name in normalized_params and standard_name not in normalized_params:
+                    normalized_params[standard_name] = normalized_params[short_name]
+                    del normalized_params[short_name]
+
+        return normalized_params
+
     def _check_trading_limits(self, tool_name: str, params: Dict) -> tuple[bool, str]:
         """
         检查交易限制
@@ -147,7 +178,7 @@ class AgentToolExecutor:
                     plan_id=self.plan_id,
                     tool_name=tool_name,
                     error_message=error_msg,
-                    tool_params=params,
+                    tool_params=normalized_params,
                     conversation_id=self.conversation_id
                 )
 
@@ -157,8 +188,11 @@ class AgentToolExecutor:
                 plan_context={"plan_id": self.plan_id}
             )
 
+        # 参数标准化（处理LLM可能使用的缩写参数名）
+        normalized_params = self.__class__._normalize_tool_params(tool_name, params)
+
         # 验证参数
-        is_valid, error_msg = validate_tool_params(tool_name, params)
+        is_valid, error_msg = validate_tool_params(tool_name, normalized_params)
         if not is_valid:
             logger.error(f"[{self.environment}] 参数验证失败: {error_msg}")
 
@@ -168,7 +202,7 @@ class AgentToolExecutor:
                     plan_id=self.plan_id,
                     tool_name=tool_name,
                     error_message=error_msg,
-                    tool_params=params,
+                    tool_params=normalized_params,
                     conversation_id=self.conversation_id
                 )
 
@@ -179,7 +213,7 @@ class AgentToolExecutor:
             )
 
         # 检查交易限制
-        is_allowed, limit_msg = self._check_trading_limits(tool_name, params)
+        is_allowed, limit_msg = self._check_trading_limits(tool_name, normalized_params)
         if not is_allowed:
             logger.warning(f"[{self.environment}] 交易限制: {limit_msg}")
 
@@ -189,7 +223,7 @@ class AgentToolExecutor:
                     plan_id=self.plan_id,
                     tool_name=tool_name,
                     error_message=limit_msg,
-                    tool_params=params,
+                    tool_params=normalized_params,
                     conversation_id=self.conversation_id
                 )
 
@@ -203,35 +237,35 @@ class AgentToolExecutor:
         try:
             result = None
             if tool_name == "get_account_balance":
-                result = await self._get_account_balance(params)
+                result = await self._get_account_balance(normalized_params)
             elif tool_name == "get_account_positions":
-                result = await self._get_account_positions(params)
+                result = await self._get_account_positions(normalized_params)
             elif tool_name == "get_order_info":
-                return await self._get_order_info(params)
+                return await self._get_order_info(normalized_params)
             elif tool_name == "get_pending_orders":
-                return await self._get_pending_orders(params)
+                return await self._get_pending_orders(normalized_params)
             elif tool_name == "get_order_history":
-                return await self._get_order_history(params)
+                return await self._get_order_history(normalized_params)
             elif tool_name == "get_fills":
-                return await self._get_fills(params)
+                return await self._get_fills(normalized_params)
             elif tool_name == "get_current_price":
-                return await self._get_current_price(params)
+                return await self._get_current_price(normalized_params)
             elif tool_name == "place_limit_order":
-                return await self._place_limit_order(params)
+                return await self._place_limit_order(normalized_params)
             elif tool_name == "cancel_order":
-                return await self._cancel_order(params)
+                return await self._cancel_order(normalized_params)
             elif tool_name == "amend_order":
-                return await self._amend_order(params)
+                return await self._amend_order(normalized_params)
             elif tool_name == "get_prediction_history":
-                return await self._get_prediction_history(params)
+                return await self._get_prediction_history(normalized_params)
             elif tool_name == "query_prediction_data":
-                return await self._query_prediction_data(params)
+                return await self._query_prediction_data(normalized_params)
             elif tool_name == "query_historical_kline_data":
-                return await self._query_historical_kline_data(params)
+                return await self._query_historical_kline_data(normalized_params)
             elif tool_name == "run_latest_model_inference":
-                return await self._run_latest_model_inference(params)
+                return await self._run_latest_model_inference(normalized_params)
             elif tool_name == "get_current_utc_time":
-                return await self._get_current_utc_time(params)
+                return await self._get_current_utc_time(normalized_params)
             else:
                 return {"success": False, "error": f"工具 {tool_name} 未实现"}
 
@@ -245,7 +279,7 @@ class AgentToolExecutor:
                     plan_id=self.plan_id,
                     tool_name=tool_name,
                     error_message=error_msg,
-                    tool_params=params,
+                    tool_params=normalized_params,
                     conversation_id=self.conversation_id
                 )
 

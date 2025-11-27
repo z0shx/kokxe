@@ -1491,6 +1491,9 @@ class PlanDetailUI:
     def get_inference_params(self, plan_id: int) -> dict:
         """获取推理参数"""
         try:
+            # 首先确保参数结构正确
+            self.ensure_finetune_params_structure(plan_id)
+
             with get_db() as db:
                 plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
                 if not plan:
@@ -1519,6 +1522,73 @@ class PlanDetailUI:
                 'sample_count': 30,
                 'data_offset': 0
             }
+
+    def ensure_finetune_params_structure(self, plan_id: int) -> bool:
+        """
+        确保finetune_params结构正确，如果不正确则修复
+
+        Args:
+            plan_id: 计划ID
+
+        Returns:
+            是否进行了修复
+        """
+        try:
+            with get_db() as db:
+                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                if not plan:
+                    return False
+
+                finetune_params = plan.finetune_params or {}
+                needs_fix = False
+
+                # 确保嵌套结构存在
+                if 'data' not in finetune_params:
+                    finetune_params['data'] = {}
+                    needs_fix = True
+
+                if 'inference' not in finetune_params:
+                    finetune_params['inference'] = {}
+                    needs_fix = True
+
+                # 处理扁平结构参数（兼容性）
+                # 如果参数在顶层，移动到对应的嵌套结构中
+                if 'lookback_window' in finetune_params and 'lookback_window' not in finetune_params['data']:
+                    finetune_params['data']['lookback_window'] = finetune_params['lookback_window']
+                    del finetune_params['lookback_window']  # 移除顶层参数
+                    needs_fix = True
+
+                if 'predict_window' in finetune_params and 'predict_window' not in finetune_params['data']:
+                    finetune_params['data']['predict_window'] = finetune_params['predict_window']
+                    del finetune_params['predict_window']  # 移除顶层参数
+                    needs_fix = True
+
+                # 设置默认推理参数（如果不存在）
+                inference_defaults = {
+                    'temperature': 1.0,
+                    'top_p': 0.9,
+                    'sample_count': 30,
+                    'data_offset': 0
+                }
+
+                for key, default_value in inference_defaults.items():
+                    if key not in finetune_params['inference']:
+                        finetune_params['inference'][key] = default_value
+                        needs_fix = True
+
+                # 如果需要修复，更新数据库
+                if needs_fix:
+                    db.query(TradingPlan).filter(TradingPlan.id == plan_id).update({
+                        'finetune_params': finetune_params
+                    })
+                    db.commit()
+                    logger.info(f"已修复计划{plan_id}的参数结构")
+
+                return needs_fix
+
+        except Exception as e:
+            logger.error(f"确保参数结构失败: plan_id={plan_id}, error={e}")
+            return False
 
     def save_inference_params(
         self,

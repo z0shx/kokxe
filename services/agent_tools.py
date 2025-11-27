@@ -500,6 +500,59 @@ AGENT_TOOLS = {
         risk_level="low"
     ),
 
+    "place_order": AgentTool(
+        name="place_order",
+        description="下单（买入或卖出）。执行市价单或限价单交易，支持现货交易。下单前请确保账户有足够资金。",
+        category=ToolCategory.TRADE,
+        parameters={
+            "inst_id": {
+                "type": "string",
+                "description": "交易对，如 ETH-USDT, BTC-USDT",
+                "required": True
+            },
+            "side": {
+                "type": "string",
+                "enum": ["buy", "sell"],
+                "description": "交易方向：buy=买入, sell=卖出",
+                "required": True
+            },
+            "size": {
+                "type": "number",
+                "description": "交易数量（USDT金额或币种数量，取决于交易对）",
+                "required": True
+            },
+            "order_type": {
+                "type": "string",
+                "enum": ["market", "limit"],
+                "description": "订单类型：market=市价单，limit=限价单",
+                "required": True
+            },
+            "price": {
+                "type": "number",
+                "description": "限价单价格（仅限价单需要，市价单忽略此参数）",
+                "required": False
+            },
+            "td_mode": {
+                "type": "string",
+                "enum": ["cash", "cross", "isolated"],
+                "description": "交易模式：cash=现货，cross=全仓，isolated=逐仓（默认cash）",
+                "required": False
+            },
+            "tag": {
+                "type": "string",
+                "description": "订单标签，用于标识订单来源或策略",
+                "required": False
+            },
+            "use_percent": {
+                "type": "boolean",
+                "description": "是否使用百分比计算数量（配合资金管理使用）",
+                "required": False
+            }
+        },
+        required_params=["inst_id", "side", "size", "order_type"],
+        risk_level="high"
+    ),
+
     "run_latest_model_inference": AgentTool(
         name="run_latest_model_inference",
         description="""执行最新微调版本模型的预测推理，得到最新的预测数据。使用当前计划关联的最新训练模型，对最新的市场数据进行推理，生成新的预测结果。

@@ -268,12 +268,26 @@ class InferenceService:
 
                 # 获取推理参数
                 finetune_params = plan.finetune_params or {}
-                lookback_window = finetune_params.get('data', {}).get('lookback_window', 512)
-                predict_window = finetune_params.get('data', {}).get('predict_window', 48)
-                T = finetune_params.get('inference', {}).get('temperature', 1.0)
-                top_p = finetune_params.get('inference', {}).get('top_p', 0.9)
-                sample_count = finetune_params.get('inference', {}).get('sample_count', 30)  # 默认30条蒙特卡罗路径
-                data_offset = finetune_params.get('inference', {}).get('data_offset', 0)  # 数据偏移量
+
+                # 确保参数结构正确，处理可能的结构不匹配问题
+                if 'data' not in finetune_params:
+                    finetune_params['data'] = {}
+                if 'inference' not in finetune_params:
+                    finetune_params['inference'] = {}
+
+                # 处理扁平结构参数（兼容性）
+                # 如果参数在顶层，移动到对应的嵌套结构中
+                if 'lookback_window' in finetune_params and 'lookback_window' not in finetune_params['data']:
+                    finetune_params['data']['lookback_window'] = finetune_params['lookback_window']
+                if 'predict_window' in finetune_params and 'predict_window' not in finetune_params['data']:
+                    finetune_params['data']['predict_window'] = finetune_params['predict_window']
+
+                lookback_window = finetune_params['data'].get('lookback_window', 512)
+                predict_window = finetune_params['data'].get('predict_window', 48)
+                T = finetune_params['inference'].get('temperature', 1.0)
+                top_p = finetune_params['inference'].get('top_p', 0.9)
+                sample_count = finetune_params['inference'].get('sample_count', 30)  # 默认30条蒙特卡罗路径
+                data_offset = finetune_params['inference'].get('data_offset', 0)  # 数据偏移量
 
                 logger.info(
                     f"开始推理: training_id={training_id}, "
