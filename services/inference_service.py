@@ -401,6 +401,9 @@ class InferenceService:
                 # 保存预测数据到数据库
                 # pred_df 的 index 是时间戳，包含平均值、不确定性范围和概率指标
                 for timestamp, row in pred_df.iterrows():
+                    # 存储原始UTC时间戳，在显示时再转换为北京时间
+                    # 避免双重时区转换导致的时间错误
+
                     # 转换所有numpy类型为Python原生类型
                     prediction = PredictionData(
                         plan_id=plan.id,
@@ -852,6 +855,8 @@ class InferenceService:
 
                     pred_time = start_time + timedelta(minutes=interval_minutes * (i + 1))
 
+                    # 存储原始时间戳，在显示时再转换为北京时间
+                    # 避免双重时区转换导致的时间错误
                     prediction = PredictionData(
                         plan_id=plan.id,
                         training_record_id=training_id,

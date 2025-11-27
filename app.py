@@ -307,10 +307,11 @@ def create_app():
                             schedule_time_input = gr.Textbox(
                                 label="",
                                 placeholder="HH:MM (如: 08:00)",
-                                scale=3
+                                scale=2
                             )
                             add_schedule_time_btn = gr.Button("➕ 添加", size="sm", scale=1)
                             remove_schedule_time_btn = gr.Button("➖ 删除", size="sm", scale=1)
+                            manual_finetune_btn = gr.Button("🚀 手动触发", size="sm", variant="secondary", scale=1)
 
                         schedule_time_list = gr.Textbox(
                             label="当前时间表",
@@ -329,9 +330,10 @@ def create_app():
                                 minimum=1,
                                 maximum=168,
                                 step=1,
-                                scale=3
+                                scale=2
                             )
                             set_inference_interval_btn = gr.Button("💾 设置间隔", size="sm", scale=1)
+                            manual_inference_btn = gr.Button("🔮 手动触发", size="sm", variant="secondary", scale=1)
 
                         inference_schedule_display = gr.Textbox(
                             label="当前预测间隔",
@@ -805,19 +807,43 @@ def create_app():
                             # 获取训练数据统计信息
                             range_info = detail_ui.get_training_data_stats(int(plan_id))
 
+                            # 获取数据库中的最新数据范围
+                            min_date, max_date, total_count = detail_ui.get_data_date_range(plan.inst_id, plan.interval)
+
                             # 从 finetune_params 中获取已配置的日期范围
                             finetune_params = plan.finetune_params or {}
                             data_config = finetune_params.get('data', {})
                             start_date = data_config.get('train_start_date', '')
                             end_date = data_config.get('train_end_date', '')
 
-                            # 如果没有配置，使用最近30天作为默认值
-                            if not start_date or not end_date:
-                                _, start_date_default, end_date_default = detail_ui.set_training_date_range(
-                                    plan.inst_id, plan.interval, 30
-                                )
-                                start_date = start_date or start_date_default
-                                end_date = end_date or end_date_default
+                            # 自动更新训练数据范围到最新数据
+                            if min_date and max_date:
+                                from datetime import datetime, timedelta
+
+                                # 如果没有配置训练范围，或者配置的结束日期早于最新数据日期
+                                if not start_date or not end_date:
+                                    # 使用最近30天作为默认值
+                                    start_date_default = (max_date - timedelta(days=30)).strftime('%Y-%m-%d')
+                                    end_date_default = max_date.strftime('%Y-%m-%d')
+                                    start_date = start_date or start_date_default
+                                    end_date = end_date or end_date_default
+                                else:
+                                    # 检查配置的结束日期是否需要更新到最新数据日期
+                                    try:
+                                        configured_end = datetime.strptime(end_date, '%Y-%m-%d')
+                                        if configured_end.date() < max_date.date():
+                                            # 自动更新结束日期到最新数据日期
+                                            end_date = max_date.strftime('%Y-%m-%d')
+
+                                            # 同时确保开始日期不会过晚
+                                            configured_start = datetime.strptime(start_date, '%Y-%m-%d')
+                                            if configured_start.date() >= max_date.date():
+                                                # 如果开始日期晚于或等于最新数据日期，重新设置为30天范围
+                                                start_date = (max_date - timedelta(days=30)).strftime('%Y-%m-%d')
+                                    except ValueError:
+                                        # 如果日期解析失败，使用默认值
+                                        start_date = (max_date - timedelta(days=30)).strftime('%Y-%m-%d')
+                                        end_date = max_date.strftime('%Y-%m-%d')
                         else:
                             range_info, start_date, end_date = "", "", ""
 
@@ -996,6 +1022,38 @@ def create_app():
                     interval_text = f"{interval_list[0]}小时间隔" if interval_list else '4小时间隔'
                     return message, interval_text
 
+                def manual_finetune_wrapper(pid):
+                    """手动触发微调训练"""
+                    if not pid:
+                        return "❌ 请先选择计划"
+
+                    try:
+                        from services.schedule_service import ScheduleService
+                        result = ScheduleService.trigger_finetune(int(pid))
+                        if result['success']:
+                            return f"✅ 手动微调训练已启动: {result['message']}"
+                        else:
+                            return f"❌ 手动微调训练失败: {result['error']}"
+                    except Exception as e:
+                        logger.error(f"手动触发微调失败: {e}")
+                        return f"❌ 手动微调训练失败: {str(e)}"
+
+                def manual_inference_wrapper(pid):
+                    """手动触发预测推理"""
+                    if not pid:
+                        return "❌ 请先选择计划"
+
+                    try:
+                        from services.schedule_service import ScheduleService
+                        result = ScheduleService.trigger_inference(int(pid))
+                        if result['success']:
+                            return f"✅ 手动预测推理已启动: {result['message']}"
+                        else:
+                            return f"❌ 手动预测推理失败: {result['error']}"
+                    except Exception as e:
+                        logger.error(f"手动触发预测失败: {e}")
+                        return f"❌ 手动预测推理失败: {str(e)}"
+
                 def add_inference_schedule_time_wrapper(pid, time_str):
                     if not pid:
                         return "❌ 请先选择计划", ""
@@ -1029,6 +1087,19 @@ def create_app():
                     fn=set_inference_interval_wrapper,
                     inputs=[plan_id_input, inference_interval_input],
                     outputs=[inference_schedule_operation_result, inference_schedule_display]
+                )
+
+                # 手动触发事件
+                manual_finetune_btn.click(
+                    fn=manual_finetune_wrapper,
+                    inputs=[plan_id_input],
+                    outputs=[schedule_operation_result]
+                )
+
+                manual_inference_btn.click(
+                    fn=manual_inference_wrapper,
+                    inputs=[plan_id_input],
+                    outputs=[inference_schedule_operation_result]
                 )
 
                 # 保留兼容性事件（如果还有其他地方使用的话）

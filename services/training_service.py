@@ -303,23 +303,66 @@ class TrainingService:
                     logger.error(f"❌ 数据库更新失败: training_id={training_id}, error={db_error}")
                     import traceback
                     traceback.print_exc()
-                    # 尝试将状态标记为失败
-                    try:
-                        with get_db() as db:
-                            db.query(TrainingRecord).filter(
-                                TrainingRecord.id == training_id
-                            ).update({
-                                'status': 'failed',
-                                'error_message': f'数据库更新失败: {str(db_error)}'
-                            })
-                            db.commit()
-                    except:
-                        pass
 
+                    # 多次尝试恢复状态更新，确保训练时长被正确记录
+                    for attempt in range(3):
+                        try:
+                            logger.warning(f"尝试状态恢复 (第{attempt+1}次): training_id={training_id}")
+                            with get_db() as db:
+                                # 重新获取记录以确保数据一致性
+                                record = db.query(TrainingRecord).filter(
+                                    TrainingRecord.id == training_id
+                                ).first()
+
+                                if record:
+                                    train_end_time = datetime.utcnow()
+                                    duration = 0
+                                    if record.train_start_time:
+                                        duration = int((train_end_time - record.train_start_time).total_seconds())
+
+                                    # 根据训练结果更新状态，但确保时长被正确记录
+                                    if result['success']:
+                                        record.status = 'completed'
+                                    else:
+                                        record.status = 'failed'
+
+                                    record.train_end_time = train_end_time
+                                    record.train_duration = duration
+                                    record.error_message = f"数据库更新异常(已恢复): {str(db_error)}"
+
+                                    # 保留训练指标和路径信息
+                                    if result.get('success') and result.get('metrics'):
+                                        record.train_metrics = _convert_numpy_to_python(result.get('metrics', {}))
+                                    if result.get('tokenizer_path'):
+                                        record.tokenizer_path = result.get('tokenizer_path')
+                                    if result.get('predictor_path'):
+                                        record.predictor_path = result.get('predictor_path')
+
+                                    db.commit()
+                                    logger.warning(f"✅ 状态恢复成功 (第{attempt+1}次): training_id={training_id}, status={record.status}, duration={duration}s")
+                                    break
+                        except Exception as retry_error:
+                            logger.error(f"状态恢复失败 (第{attempt+1}次): {retry_error}")
+                            if attempt == 2:  # 最后一次尝试
+                                logger.error(f"❌ 所有状态恢复尝试都失败: training_id={training_id}")
+                                import traceback
+                                traceback.print_exc()
+
+                # 获取最新的训练记录状态用于日志
+                final_record = None
+                try:
+                    with get_db() as db:
+                        final_record = db.query(TrainingRecord).filter(
+                            TrainingRecord.id == training_id
+                        ).first()
+                except:
+                    pass
+
+                duration_info = f"duration={final_record.train_duration}s" if final_record else "duration=unknown"
                 logger.info(
                     f"训练完成: training_id={training_id}, "
                     f"status={result['success']}, "
-                    f"duration={record.train_duration}s"
+                    f"{duration_info}"
                 )
 
                 # 如果启用了自动推理，触发推理任务

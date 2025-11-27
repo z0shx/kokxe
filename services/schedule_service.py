@@ -9,7 +9,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.jobstores.memory import MemoryJobStore
 from database.db import get_db
-from database.models import TradingPlan
+from database.models import TradingPlan, PredictionData
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__, "schedule_service.log")
@@ -24,6 +24,46 @@ class ScheduleService:
 
     # 定义UTC+8时区
     BEIJING_TZ = timezone(timedelta(hours=8))
+
+    @classmethod
+    def check_latest_prediction_time(cls, plan_id: int) -> Optional[datetime]:
+        """
+        检查计划最新的预测数据时间
+
+        Args:
+            plan_id: 计划ID
+
+        Returns:
+            最新预测数据的创建时间，如果没有预测数据则返回None
+        """
+        try:
+            with get_db() as db:
+                # 获取最新的训练记录ID
+                from database.models import TrainingRecord
+                latest_training = db.query(TrainingRecord).filter(
+                    TrainingRecord.plan_id == plan_id,
+                    TrainingRecord.status == 'completed'
+                ).order_by(TrainingRecord.created_at.desc()).first()
+
+                if not latest_training:
+                    logger.info(f"计划 {plan_id}: 没有找到完成的训练记录")
+                    return None
+
+                # 获取该训练记录的最新预测数据
+                latest_prediction = db.query(PredictionData).filter(
+                    PredictionData.training_record_id == latest_training.id
+                ).order_by(PredictionData.created_at.desc()).first()
+
+                if latest_prediction:
+                    logger.info(f"计划 {plan_id}: 最新预测数据时间: {latest_prediction.created_at}")
+                    return latest_prediction.created_at
+                else:
+                    logger.info(f"计划 {plan_id}: 训练记录 {latest_training.id} 没有预测数据")
+                    return None
+
+        except Exception as e:
+            logger.error(f"检查最新预测数据时间失败: plan_id={plan_id}, error={e}")
+            return None
 
     @classmethod
     def init_scheduler(cls):
@@ -427,16 +467,18 @@ class ScheduleService:
             traceback.print_exc()
 
     @classmethod
-    async def _trigger_inference(cls, plan_id: int):
+    async def _trigger_inference(cls, plan_id: int, manual_trigger: bool = False):
         """
         触发预测任务（由调度器调用）
 
         Args:
             plan_id: 计划ID
+            manual_trigger: 是否为手动触发（跳过间隔时间检查）
         """
         try:
             current_time_beijing = datetime.now(cls.BEIJING_TZ)
-            logger.info(f"⏰ 定时预测任务触发: plan_id={plan_id}, time(UTC+8)={current_time_beijing.strftime('%Y-%m-%d %H:%M:%S')}")
+            trigger_type = "手动" if manual_trigger else "定时"
+            logger.info(f"⏰ {trigger_type}预测任务触发: plan_id={plan_id}, time(UTC+8)={current_time_beijing.strftime('%Y-%m-%d %H:%M:%S')}")
 
             # 检查计划状态
             with get_db() as db:
@@ -465,22 +507,58 @@ class ScheduleService:
 
                 logger.info(f"计划配置检查通过: plan_id={plan_id}, interval_hours={interval_hours}")
 
+            # 手动触发时跳过间隔时间检查，自动触发时进行智能预测检查
+            if not manual_trigger:
+                # 智能预测触发：检查最新预测数据时间
+                latest_prediction_time = cls.check_latest_prediction_time(plan_id)
+                current_time = datetime.now(cls.BEIJING_TZ)
+
+                if latest_prediction_time:
+                    # 计算时间差
+                    time_diff = current_time - latest_prediction_time
+                    time_diff_hours = time_diff.total_seconds() / 3600
+
+                    logger.info(f"计划 {plan_id}: 最新预测时间: {latest_prediction_time}, 距今 {time_diff_hours:.2f} 小时")
+
+                    # 如果时间差小于配置的间隔时间，跳过本次预测
+                    if time_diff_hours < interval_hours:
+                        remaining_hours = interval_hours - time_diff_hours
+                        logger.info(f"⏸️ 计划 {plan_id}: 预测间隔未满足，跳过本次预测。还需等待 {remaining_hours:.2f} 小时")
+                        return
+                    else:
+                        logger.info(f"✅ 计划 {plan_id}: 预测间隔已满足，执行新的预测（间隔 {time_diff_hours:.2f} 小时）")
+                else:
+                    logger.info(f"✅ 计划 {plan_id}: 没有历史预测数据，执行首次预测")
+            else:
+                logger.info(f"✅ 计划 {plan_id}: 手动触发，跳过间隔时间检查，直接执行预测")
+
             # 创建任务执行记录
             from services.task_execution_service import TaskExecutionService
             task_execution = None
 
             try:
-                # 创建间隔预测任务记录
+                # 创建预测任务记录
                 current_datetime = datetime.now(cls.BEIJING_TZ)
+
+                if manual_trigger:
+                    task_name = f"手动预测-计划{plan_id}"
+                    task_description = "用户手动触发的预测任务"
+                    trigger_type = "manual"
+                    trigger_source = f"plan_{plan_id}_manual_trigger"
+                else:
+                    task_name = f"自动预测-计划{plan_id}-{interval_hours}h间隔"
+                    task_description = f"每{interval_hours}小时自动执行一次预测"
+                    trigger_type = "scheduled"
+                    trigger_source = f"plan_{plan_id}_interval_scheduler"
 
                 task_execution = TaskExecutionService.create_task_execution(
                     plan_id=plan_id,
                     task_type="auto_inference",
-                    task_name=f"自动预测-计划{plan_id}-{interval_hours}h间隔",
-                    task_description=f"每{interval_hours}小时自动执行一次预测",
-                    trigger_type="scheduled",
-                    trigger_source=f"plan_{plan_id}_interval_scheduler",
-                    input_data={"interval_hours": interval_hours}
+                    task_name=task_name,
+                    task_description=task_description,
+                    trigger_type=trigger_type,
+                    trigger_source=trigger_source,
+                    input_data={"interval_hours": interval_hours, "manual_trigger": manual_trigger}
                 )
 
                 # 标记任务开始
@@ -550,11 +628,11 @@ class ScheduleService:
                 # 如果有运行中的循环，在新线程中运行
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(cls._run_async_in_new_loop_for_inference, plan_id)
+                    future = executor.submit(cls._run_async_in_new_loop_for_inference, plan_id, manual_trigger=True)
                     future.result()
             except RuntimeError:
                 # 没有运行中的循环，直接运行
-                asyncio.run(cls._trigger_inference(plan_id))
+                asyncio.run(cls._trigger_inference(plan_id, manual_trigger=True))
         except Exception as e:
             logger.error(f"预测包装器调用失败: plan_id={plan_id}, error={e}")
             import traceback
@@ -571,12 +649,12 @@ class ScheduleService:
             loop.close()
 
     @classmethod
-    def _run_async_in_new_loop_for_inference(cls, plan_id: int):
+    def _run_async_in_new_loop_for_inference(cls, plan_id: int, manual_trigger: bool = False):
         """在新的事件循环中运行异步函数（预测）"""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(cls._trigger_inference(plan_id))
+            loop.run_until_complete(cls._trigger_inference(plan_id, manual_trigger=manual_trigger))
         finally:
             loop.close()
 
@@ -616,6 +694,141 @@ class ScheduleService:
             logger.error(f"重新加载定时任务失败: error={e}")
             import traceback
             traceback.print_exc()
+
+    @classmethod
+    def trigger_finetune(cls, plan_id: int):
+        """
+        手动触发微调训练
+
+        Args:
+            plan_id: 计划ID
+
+        Returns:
+            dict: 触发结果
+        """
+        try:
+            from database.db import get_db
+            from database.models import TradingPlan
+
+            with get_db() as db:
+                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                if not plan:
+                    return {
+                        'success': False,
+                        'error': '计划不存在'
+                    }
+
+                if not plan.auto_finetune_enabled:
+                    return {
+                        'success': False,
+                        'error': '自动微调未启用，请先启用自动微调功能'
+                    }
+
+                # 检查是否有正在进行的训练
+                from database.models import TrainingRecord
+                active_training = db.query(TrainingRecord).filter(
+                    TrainingRecord.plan_id == plan_id,
+                    TrainingRecord.status == 'training'
+                ).first()
+                if active_training:
+                    return {
+                        'success': False,
+                        'error': f'已有训练正在进行中 (训练ID: {active_training.id})'
+                    }
+
+            logger.info(f"手动触发微调训练: plan_id={plan_id}")
+
+            # 在新线程中执行异步触发
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(cls._trigger_finetune_wrapper, plan_id)
+                # 等待一段时间获取初步结果
+                try:
+                    future.result(timeout=5)  # 5秒超时
+                    return {
+                        'success': True,
+                        'message': '微调训练已启动，请查看任务执行记录'
+                    }
+                except concurrent.futures.TimeoutError:
+                    return {
+                        'success': True,
+                        'message': '微调训练已启动（正在后台执行）'
+                    }
+
+        except Exception as e:
+            logger.error(f"手动触发微调训练失败: plan_id={plan_id}, error={e}")
+            return {
+                'success': False,
+                'error': f'触发失败: {str(e)}'
+            }
+
+    @classmethod
+    def trigger_inference(cls, plan_id: int):
+        """
+        手动触发预测推理
+
+        Args:
+            plan_id: 计划ID
+
+        Returns:
+            dict: 触发结果
+        """
+        try:
+            from database.db import get_db
+            from database.models import TradingPlan
+
+            with get_db() as db:
+                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                if not plan:
+                    return {
+                        'success': False,
+                        'error': '计划不存在'
+                    }
+
+                if not plan.auto_inference_enabled:
+                    return {
+                        'success': False,
+                        'error': '自动预测未启用，请先启用自动预测功能'
+                    }
+
+                # 检查是否有已完成的训练记录
+                from database.models import TrainingRecord
+                latest_training = db.query(TrainingRecord).filter(
+                    TrainingRecord.plan_id == plan_id,
+                    TrainingRecord.status == 'completed'
+                ).order_by(TrainingRecord.created_at.desc()).first()
+
+                if not latest_training:
+                    return {
+                        'success': False,
+                        'error': '没有已完成的训练记录，请先完成模型训练'
+                    }
+
+            logger.info(f"手动触发预测推理: plan_id={plan_id}")
+
+            # 在新线程中执行异步触发
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(cls._trigger_inference_wrapper, plan_id)
+                # 等待一段时间获取初步结果
+                try:
+                    future.result(timeout=5)  # 5秒超时
+                    return {
+                        'success': True,
+                        'message': '预测推理已启动，请查看任务执行记录'
+                    }
+                except concurrent.futures.TimeoutError:
+                    return {
+                        'success': True,
+                        'message': '预测推理已启动（正在后台执行）'
+                    }
+
+        except Exception as e:
+            logger.error(f"手动触发预测推理失败: plan_id={plan_id}, error={e}")
+            return {
+                'success': False,
+                'error': f'触发失败: {str(e)}'
+            }
 
     @classmethod
     def test_scheduler(cls):

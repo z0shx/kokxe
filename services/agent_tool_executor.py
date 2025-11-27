@@ -9,6 +9,7 @@ from api.okx_websocket_client import OKXWebSocketClient
 from services.agent_tools import get_tool, validate_tool_params, ToolCategory
 from utils.logger import setup_logger
 from utils.timezone_helper import format_datetime_full_beijing, format_datetime_short_beijing, format_time_range_utc8, format_datetime_beijing
+from services.agent_error_handler import AgentErrorHandler
 
 logger = setup_logger(__name__, "agent_tool_executor.log")
 
@@ -22,7 +23,9 @@ class AgentToolExecutor:
         secret_key: str,
         passphrase: str,
         is_demo: bool = True,
-        trading_limits: Optional[Dict] = None
+        trading_limits: Optional[Dict] = None,
+        plan_id: Optional[int] = None,
+        conversation_id: Optional[int] = None
     ):
         """
         初始化工具执行器
@@ -33,12 +36,16 @@ class AgentToolExecutor:
             passphrase: OKX Passphrase
             is_demo: 是否模拟盘
             trading_limits: 交易限制配置
+            plan_id: 计划ID（用于错误记录）
+            conversation_id: 对话ID（用于错误记录）
         """
         self.api_key = api_key
         self.secret_key = secret_key
         self.passphrase = passphrase
         self.is_demo = is_demo
         self.trading_limits = trading_limits or {}
+        self.plan_id = plan_id
+        self.conversation_id = conversation_id
 
         self.environment = "DEMO" if is_demo else "LIVE"
 
@@ -53,7 +60,7 @@ class AgentToolExecutor:
         # WebSocket 客户端（懒加载）
         self.ws_client: Optional[OKXWebSocketClient] = None
 
-        logger.info(f"[{self.environment}] Agent 工具执行器初始化完成")
+        logger.info(f"[{self.environment}] Agent 工具执行器初始化完成，plan_id={plan_id}")
 
     async def _ensure_ws_connected(self):
         """确保 WebSocket 已连接"""
@@ -133,26 +140,72 @@ class AgentToolExecutor:
         if not tool:
             error_msg = f"工具 {tool_name} 不存在"
             logger.error(f"[{self.environment}] {error_msg}")
-            return {"success": False, "error": error_msg}
+
+            # 记录错误到数据库
+            if self.plan_id:
+                AgentErrorHandler.record_tool_error(
+                    plan_id=self.plan_id,
+                    tool_name=tool_name,
+                    error_message=error_msg,
+                    tool_params=params,
+                    conversation_id=self.conversation_id
+                )
+
+            return AgentErrorHandler.create_fallback_response(
+                tool_name=tool_name,
+                error_message=error_msg,
+                plan_context={"plan_id": self.plan_id}
+            )
 
         # 验证参数
         is_valid, error_msg = validate_tool_params(tool_name, params)
         if not is_valid:
             logger.error(f"[{self.environment}] 参数验证失败: {error_msg}")
-            return {"success": False, "error": error_msg}
+
+            # 记录错误到数据库
+            if self.plan_id:
+                AgentErrorHandler.record_tool_error(
+                    plan_id=self.plan_id,
+                    tool_name=tool_name,
+                    error_message=error_msg,
+                    tool_params=params,
+                    conversation_id=self.conversation_id
+                )
+
+            return AgentErrorHandler.create_fallback_response(
+                tool_name=tool_name,
+                error_message=error_msg,
+                plan_context={"plan_id": self.plan_id}
+            )
 
         # 检查交易限制
         is_allowed, limit_msg = self._check_trading_limits(tool_name, params)
         if not is_allowed:
             logger.warning(f"[{self.environment}] 交易限制: {limit_msg}")
-            return {"success": False, "error": limit_msg}
+
+            # 记录交易限制错误
+            if self.plan_id:
+                AgentErrorHandler.record_tool_error(
+                    plan_id=self.plan_id,
+                    tool_name=tool_name,
+                    error_message=limit_msg,
+                    tool_params=params,
+                    conversation_id=self.conversation_id
+                )
+
+            return AgentErrorHandler.create_fallback_response(
+                tool_name=tool_name,
+                error_message=limit_msg,
+                plan_context={"plan_id": self.plan_id}
+            )
 
         # 执行工具
         try:
+            result = None
             if tool_name == "get_account_balance":
-                return await self._get_account_balance(params)
+                result = await self._get_account_balance(params)
             elif tool_name == "get_account_positions":
-                return await self._get_account_positions(params)
+                result = await self._get_account_positions(params)
             elif tool_name == "get_order_info":
                 return await self._get_order_info(params)
             elif tool_name == "get_pending_orders":
@@ -185,7 +238,26 @@ class AgentToolExecutor:
         except Exception as e:
             error_msg = f"工具执行异常: {str(e)}"
             logger.error(f"[{self.environment}] {error_msg}", exc_info=True)
-            return {"success": False, "error": error_msg}
+
+            # 记录异常到数据库
+            if self.plan_id:
+                AgentErrorHandler.record_tool_error(
+                    plan_id=self.plan_id,
+                    tool_name=tool_name,
+                    error_message=error_msg,
+                    tool_params=params,
+                    conversation_id=self.conversation_id
+                )
+
+            # 异常情况下的响应，默认继续对话
+            fallback_response = AgentErrorHandler.create_fallback_response(
+                tool_name=tool_name,
+                error_message=error_msg,
+                plan_context={"plan_id": self.plan_id}
+            )
+            fallback_response["continue_conversation"] = True  # 异常情况默认继续对话
+
+            return fallback_response
 
     # ============================================
     # 查询类工具实现

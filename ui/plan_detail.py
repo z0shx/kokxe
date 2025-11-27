@@ -459,12 +459,12 @@ class PlanDetailUI:
                 # 创建K线图
                 fig = go.Figure()
 
-                # 时间戳已经是UTC+8，直接使用
-                timestamps_utc8 = [k.timestamp for k in klines]
+                # K线数据时间戳已经是北京时间，直接使用
+                timestamps_beijing = [k.timestamp for k in klines]
 
                 # 添加真实K线
                 fig.add_trace(go.Candlestick(
-                    x=timestamps_utc8,
+                    x=timestamps_beijing,
                     open=[k.open for k in klines],
                     high=[k.high for k in klines],
                     low=[k.low for k in klines],
@@ -609,14 +609,8 @@ class PlanDetailUI:
             color: 线条颜色
             show_in_legend: 是否在图例中显示（用于控制同一训练版本只显示一次）
         """
-        # 预测数据转换为UTC+8
-        pred_timestamps_utc8 = []
-        for p in predictions:
-            ts = p.timestamp
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-            ts_utc8 = ts + timedelta(hours=8)
-            pred_timestamps_utc8.append(ts_utc8)
+        # 预测数据时间戳已经是北京时间，直接使用
+        pred_timestamps_beijing = [p.timestamp for p in predictions]
 
         # 检查是否有不确定性数据
         has_uncertainty = any(p.close_min is not None and p.close_max is not None for p in predictions)
@@ -625,7 +619,7 @@ class PlanDetailUI:
             # 绘制不确定性阴影区域
             # 1. 上边界
             fig.add_trace(go.Scatter(
-                x=pred_timestamps_utc8,
+                x=pred_timestamps_beijing,
                 y=[p.close_max if p.close_max is not None else p.close for p in predictions],
                 mode='lines',
                 line=dict(width=0),
@@ -636,7 +630,7 @@ class PlanDetailUI:
 
             # 2. 下边界（填充阴影）
             fig.add_trace(go.Scatter(
-                x=pred_timestamps_utc8,
+                x=pred_timestamps_beijing,
                 y=[p.close_min if p.close_min is not None else p.close for p in predictions],
                 mode='lines',
                 fill='tonexty',
@@ -654,7 +648,7 @@ class PlanDetailUI:
 
         # 3. 平均值线条
         fig.add_trace(go.Scatter(
-            x=pred_timestamps_utc8,
+            x=pred_timestamps_beijing,
             y=[p.close for p in predictions],
             mode='lines+markers',
             name=version,
@@ -793,9 +787,9 @@ class PlanDetailUI:
                     KlineData.timestamp <= latest_kline.timestamp
                 ).count()
 
-                # 格式化时间范围显示
-                start_time = format_datetime_beijing(start_kline.timestamp, '%Y-%m-%d %H:%M')
-                end_time = format_datetime_beijing(latest_kline.timestamp, '%Y-%m-%d %H:%M')
+                # 格式化时间范围显示（K线数据时间戳已经是北京时间，直接格式化）
+                start_time = start_kline.timestamp.strftime('%Y-%m-%d %H:%M')
+                end_time = latest_kline.timestamp.strftime('%Y-%m-%d %H:%M')
 
                 # 计算时间跨度
                 time_diff = latest_kline.timestamp - start_kline.timestamp
@@ -815,7 +809,7 @@ class PlanDetailUI:
 **⏱️ 时间跨度**: {time_span or '不足1小时'}
 **🔧 回看窗口**: {lookback_window}个数据点
 **📍 数据偏移**: {data_offset}个数据点
-**💡 最新数据**: {format_datetime_full_beijing(latest_kline.timestamp)}"""
+**💡 最新数据**: {latest_kline.timestamp.strftime('%Y-%m-%d %H:%M:%S')}"""
 
                 return range_info
 
@@ -2286,50 +2280,64 @@ class PlanDetailUI:
                 if not plan:
                     return "**数据统计**: 计划不存在"
 
-                # 从 finetune_params 中获取配置的范围
-                finetune_params = plan.finetune_params or {}
-                data_config = finetune_params.get('data', {})
-                train_start_date_str = data_config.get('train_start_date')
-                train_end_date_str = data_config.get('train_end_date')
-
                 # 获取数据库中的实际范围
                 min_date, max_date, total_count = self.get_data_date_range(plan.inst_id, plan.interval)
 
                 if min_date is None or max_date is None:
                     return "**数据统计**: 暂无数据"
 
-                # 如果有配置的训练范围，统计该范围内的数据量
+                # 从 finetune_params 中获取配置的范围
+                finetune_params = plan.finetune_params or {}
+                data_config = finetune_params.get('data', {})
+                train_start_date_str = data_config.get('train_start_date')
+                train_end_date_str = data_config.get('train_end_date')
+
+                # 自动更新训练数据范围到最新数据
+                from datetime import datetime, timedelta
                 if train_start_date_str and train_end_date_str:
-                    from datetime import datetime
-                    train_start = datetime.strptime(train_start_date_str, '%Y-%m-%d')
-                    train_end = datetime.strptime(train_end_date_str, '%Y-%m-%d')
+                    try:
+                        configured_start = datetime.strptime(train_start_date_str, '%Y-%m-%d')
+                        configured_end = datetime.strptime(train_end_date_str, '%Y-%m-%d')
 
-                    train_data_count = db.query(func.count(KlineData.id)).filter(
-                        and_(
-                            KlineData.inst_id == plan.inst_id,
-                            KlineData.interval == plan.interval,
-                            KlineData.timestamp >= train_start,
-                            KlineData.timestamp <= train_end
-                        )
-                    ).scalar()
+                        # 如果配置的结束日期早于最新数据日期，自动更新
+                        if configured_end.date() < max_date.date():
+                            train_end_date_str = max_date.strftime('%Y-%m-%d')
+                            # 确保开始日期不会过晚
+                            if configured_start.date() >= max_date.date():
+                                train_start_date_str = (max_date - timedelta(days=30)).strftime('%Y-%m-%d')
+                    except ValueError:
+                        # 如果日期解析失败，使用默认的最近30天
+                        train_start_date_str = (max_date - timedelta(days=30)).strftime('%Y-%m-%d')
+                        train_end_date_str = max_date.strftime('%Y-%m-%d')
+                else:
+                    # 如果没有配置，使用最近30天
+                    train_start_date_str = (max_date - timedelta(days=30)).strftime('%Y-%m-%d')
+                    train_end_date_str = max_date.strftime('%Y-%m-%d')
 
-                    return f"""**训练数据统计**
+                # 统计更新后的训练数据量
+                train_start = datetime.strptime(train_start_date_str, '%Y-%m-%d')
+                train_end = datetime.strptime(train_end_date_str, '%Y-%m-%d')
 
-📅 **配置范围**: {train_start_date_str} ~ {train_end_date_str}
+                train_data_count = db.query(func.count(KlineData.id)).filter(
+                    and_(
+                        KlineData.inst_id == plan.inst_id,
+                        KlineData.interval == plan.interval,
+                        KlineData.timestamp >= train_start,
+                        KlineData.timestamp <= train_end
+                    )
+                ).scalar()
+
+                return f"""**训练数据统计**
+
+📅 **当前训练范围**: {train_start_date_str} ~ {train_end_date_str}
 📊 **训练数据点**: {train_data_count} 条
 
 ---
 
-📅 **全部数据**: {format_datetime_beijing(min_date, '%Y-%m-%d')} ~ {format_datetime_beijing(max_date, '%Y-%m-%d')}
-📊 **总数据点**: {total_count} 条
-"""
-                else:
-                    return f"""**数据统计**
-
-📅 **全部数据**: {format_datetime_beijing(min_date, '%Y-%m-%d')} ~ {format_datetime_beijing(max_date, '%Y-%m-%d')}
+📅 **全部可用数据**: {format_datetime_beijing(min_date, '%Y-%m-%d')} ~ {format_datetime_beijing(max_date, '%Y-%m-%d')}
 📊 **总数据点**: {total_count} 条
 
-⚠️ **未配置训练范围**
+✅ **自动更新至最新数据范围**
 """
 
         except Exception as e:

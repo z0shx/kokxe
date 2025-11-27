@@ -724,11 +724,20 @@ class KronosInferencer:
             self.logger.info(f"最后时间戳: {last_timestamp}, 预测频率: {freq}")
 
             # pd.date_range 返回 DatetimeIndex，需要转换为 Series
-            y_timestamp = pd.Series(pd.date_range(
+            # 生成北京时间戳（UTC+8），直接存储和显示
+            from utils.timezone_helper import convert_to_beijing_time
+
+            # 生成UTC时间戳
+            y_timestamp_utc = pd.date_range(
                 start=last_timestamp,
                 periods=pred_len + 1,
-                freq=freq
-            )[1:])  # 排除起始时间，转为 Series
+                freq=freq,
+                tz='UTC'  # 明确指定为UTC时区
+            )[1:]  # 排除起始时间
+
+            # 转换为北京时间戳（UTC+8）
+            beijing_timestamps = [convert_to_beijing_time(ts) for ts in y_timestamp_utc]
+            y_timestamp = pd.Series(beijing_timestamps)
 
             # 执行推理
             self.logger.info(f"开始推理: 历史数据{len(x_df)}条, 预测{pred_len}条")
