@@ -411,7 +411,7 @@ def create_app():
 
                             train_data_config_result = gr.Markdown("")
 
-                        training_df = gr.Dataframe(
+                        training_df = gr.DataFrame(
                             interactive=False,
                             wrap=True,
                             label="训练记录列表"
@@ -507,7 +507,7 @@ def create_app():
                                 save_inference_params_btn = gr.Button("💾 保存推理参数", size="sm", variant="primary")
                                 inference_params_status = gr.Markdown("")
 
-                        inference_df = gr.Dataframe(
+                        inference_df = gr.DataFrame(
                             interactive=False,
                             wrap=True,
                             label="推理记录列表"
@@ -669,7 +669,7 @@ def create_app():
                             refresh_agent_btn = gr.Button("🔄 刷新决策记录", size="sm", variant="secondary")
                             clear_agent_records_btn = gr.Button("🗑️ 清除记录", size="sm", variant="secondary")
 
-                        agent_df = gr.Dataframe(
+                        agent_df = gr.DataFrame(
                             interactive=True,  # 改为可交互以支持点击事件
                             wrap=True,
                             label="Agent决策列表"
@@ -719,7 +719,7 @@ def create_app():
                     with gr.Accordion("📋 订单记录", open=True):
                         with gr.Row():
                             with gr.Column(scale=9):
-                                order_table = gr.Dataframe(
+                                order_table = gr.DataFrame(
                                     label="订单记录",
                                     interactive=False
                                 )
@@ -730,7 +730,7 @@ def create_app():
                     with gr.Accordion("📋 任务执行记录", open=False):
                         with gr.Row():
                             with gr.Column(scale=9):
-                                task_executions_df = gr.Dataframe(
+                                task_executions_df = gr.DataFrame(
                                     label="任务执行历史",
                                     interactive=False
                                 )
@@ -1611,15 +1611,14 @@ def create_app():
                 )
 
                 # 手动推理（流式）
-                async def manual_inference_wrapper_stream(pid):
+                def manual_inference_wrapper_stream(pid):
                     """流式推理包装函数"""
                     if not pid:
                         yield [{"role": "assistant", "content": "❌ 请先选择计划"}]
                         return
 
                     # 调用流式推理
-                    async for history in detail_ui.manual_inference_stream(int(pid)):
-                        yield history
+                    return detail_ui.manual_inference_stream(int(pid))
 
                 manual_agent_inference_btn.click(
                     fn=manual_inference_wrapper_stream,
@@ -1631,10 +1630,6 @@ def create_app():
                     fn=lambda pid: detail_ui.load_agent_decisions(int(pid)) if pid else gr.DataFrame(),
                     inputs=[plan_id_input],
                     outputs=[agent_df]
-                ).then(
-                    fn=lambda pid: detail_ui.get_latest_conversation_messages(int(pid)) if pid else [{"role": "assistant", "content": "请先选择计划"}],
-                    inputs=[plan_id_input],
-                    outputs=[agent_chatbot]
                 )
 
   
@@ -1650,46 +1645,36 @@ def create_app():
                 )
 
               
-                # 发送消息 - 与Agent进行真实对话
+                # 发送消息 - 与Agent进行真实对话，按照标准chatbot模式
                 async def send_message_wrapper(message, history, pid):
-                    """与Agent进行对话"""
+                    """与Agent进行对话，按照标准chatbot模式"""
                     if not pid:
-                        history = history or []
-                        history.append({"role": "user", "content": message})
-                        history.append({"role": "assistant", "content": "❌ 请先选择计划"})
-                        return history, ""
+                        return [{"role": "assistant", "content": "❌ 请先选择计划"}], ""
 
                     if not message or not message.strip():
                         return history, ""
 
                     try:
-                        from services.agent_decision_service import AgentDecisionService
-                        from database.models import TradingPlan, TrainingRecord, LLMConfig
+                        from services.agent_stream_service import AgentStreamService
+                        from services.conversation_service import ConversationService
+                        from database.models import TradingPlan, TrainingRecord, LLMConfig, AgentMessage
                         from database.db import get_db
                         from sqlalchemy import and_, desc
+                        import json
 
                         # 获取计划配置
                         with get_db() as db:
                             plan = db.query(TradingPlan).filter(TradingPlan.id == int(pid)).first()
                             if not plan:
-                                history = history or []
-                                history.append({"role": "user", "content": message})
-                                history.append({"role": "assistant", "content": "❌ 计划不存在"})
-                                return history, ""
+                                return [{"role": "assistant", "content": "❌ 计划不存在"}], ""
 
                             # 检查LLM配置
                             if not plan.llm_config_id:
-                                history = history or []
-                                history.append({"role": "user", "content": message})
-                                history.append({"role": "assistant", "content": "❌ 未配置LLM，请先在Agent配置中选择LLM"})
-                                return history, ""
+                                return [{"role": "assistant", "content": "❌ 未配置LLM，请先在Agent配置中选择LLM"}], ""
 
                             llm_config = db.query(LLMConfig).filter(LLMConfig.id == plan.llm_config_id).first()
                             if not llm_config:
-                                history = history or []
-                                history.append({"role": "user", "content": message})
-                                history.append({"role": "assistant", "content": "❌ LLM配置不存在"})
-                                return history, ""
+                                return [{"role": "assistant", "content": "❌ LLM配置不存在"}], ""
 
                             # 获取最新的训练记录
                             latest_training = db.query(TrainingRecord).filter(
@@ -1701,107 +1686,126 @@ def create_app():
                             ).order_by(desc(TrainingRecord.created_at)).first()
 
                             if not latest_training:
-                                history = history or []
-                                history.append({"role": "user", "content": message})
-                                history.append({"role": "assistant", "content": "❌ 没有可用的训练记录，请先完成模型训练"})
-                                return history, ""
+                                return [{"role": "assistant", "content": "❌ 没有可用的训练记录，请先完成模型训练"}], ""
 
-                        # 构建对话上下文
-                        history = history or []
+                        # 获取或创建对话会话
+                        conversation = ConversationService.get_latest_conversation(int(pid), "manual_chat")
+                        if not conversation:
+                            conversation = ConversationService.create_conversation(
+                                plan_id=int(pid),
+                                training_record_id=latest_training.id,
+                                session_name="手动对话",
+                                conversation_type="manual_chat"
+                            )
 
-                        # 添加用户消息到历史
-                        user_msg = {"role": "user", "content": message}
-                        history.append(user_msg)
+                        # 构建对话历史（格式化为LLM需要的格式）
+                        messages = ConversationService.get_conversation_messages(conversation.id)
+                        chat_history = []
+                        for msg in messages:
+                            if msg.message_type == "text":
+                                chat_history.append({
+                                    "role": msg.role,
+                                    "content": msg.content
+                                })
 
-                        # 创建临时助手消息用于流式显示
-                        temp_assistant_msg = {"role": "assistant", "content": ""}
-                        history.append(temp_assistant_msg)
+                        # 添加用户消息到历史（但不立即保存到数据库，等流式处理完成后保存）
+                        current_messages = ConversationService.format_messages_for_chatbot(messages)
+                        current_messages.append({"role": "user", "content": message})
 
-                        # 调用流式Agent进行对话
+                        # 显示用户消息（右侧消息）和添加到数据库
+                        ConversationService.add_message(
+                            conversation_id=conversation.id,
+                            role="user",
+                            content=message,
+                            message_type="text"
+                        )
+
+                        # 添加当前用户消息到显示列表
+                        current_messages = ConversationService.format_messages_for_chatbot(
+                            ConversationService.get_conversation_messages(conversation.id)
+                        )
+
+                        # 调用流式Agent进行对话，并收集所有更新
                         try:
-                            from services.agent_stream_service import AgentStreamService
-                            import json
+                            current_assistant_msg = ""
 
-                            # 获取聊天历史（排除当前添加的用户消息和临时助手消息）
-                            chat_history = history[:-2] if len(history) >= 2 else []
+                            async for chunk in AgentStreamService.chat_with_tools_stream(
+                                message=message,
+                                history=chat_history,
+                                plan_id=int(pid),
+                                training_record_id=latest_training.id
+                            ):
+                                try:
+                                    data = json.loads(chunk)
+                                    chunk_type = data.get("type", "")
+                                    content = data.get("content", "")
 
-                            # 使用AgentStreamService进行流式对话
-                            response_content = ""
-                            thinking_content = ""
-                            error_occurred = False
+                                    if chunk_type == "thinking_start":
+                                        current_assistant_msg = "🧠 **开始思考...**\n\n"
 
-                            try:
-                                async for chunk in AgentStreamService.chat_with_tools_stream(
-                                    message=message,
-                                    history=chat_history,
-                                    plan_id=int(pid),
-                                    training_record_id=latest_training.id
-                                ):
-                                    try:
-                                        data = json.loads(chunk)
-                                        chunk_type = data.get("type", "")
-                                        content = data.get("content", "")
+                                    elif chunk_type == "thinking":
+                                        current_assistant_msg = f"🧠 **思考中...**\n\n{content}"
 
-                                        if chunk_type == "thinking_start":
-                                            thinking_content = "🧠 开始思考...\n\n"
-                                        elif chunk_type == "thinking":
-                                            thinking_content += content
-                                        elif chunk_type == "content":
-                                            response_content = content
-                                        elif chunk_type == "tool_call_start":
-                                            tool_name = data.get("tool_name", "")
-                                            thinking_content += f"\n\n🔧 **调用工具**: `{tool_name}`"
-                                        elif chunk_type == "tool_call_arguments":
-                                            tool_name = data.get("tool_name", "")
-                                            arguments = data.get("arguments", {})
-                                            thinking_content += f"\n📋 **参数**: ```json\n{json.dumps(arguments, indent=2, ensure_ascii=False)}\n```"
-                                        elif chunk_type == "tool_result":
-                                            tool_name = data.get("tool_name", "")
-                                            result = data.get("result", {})
-                                            success = result.get("success", False)
-                                            status_emoji = "✅" if success else "❌"
+                                    elif chunk_type == "content":
+                                        current_assistant_msg = content
 
-                                            # 格式化结果，确保可读性
-                                            result_str = json.dumps(result, indent=2, ensure_ascii=False)
-                                            thinking_content += f"\n{status_emoji} **工具结果**: `{tool_name}`\n```json\n{result_str}\n```"
-                                        elif chunk_type == "tool_error":
-                                            tool_name = data.get("tool_name", "")
-                                            error = data.get("error", "")
-                                            thinking_content += f"\n❌ **工具错误**: `{tool_name}`\n```\n{error}\n```"
-                                        elif chunk_type == "error":
-                                            thinking_content += f"\n❌ **错误**: {content}"
-                                            error_occurred = True
+                                    elif chunk_type == "tool_call_start":
+                                        tool_name = data.get("tool_name", "")
+                                        current_assistant_msg = f"🛠️ **调用工具**: `{tool_name}`\n\n⏳ 正在执行..."
 
-                                    except json.JSONDecodeError:
-                                        continue
-                                    except Exception as chunk_error:
-                                        logger.error(f"处理流式数据块失败: {chunk_error}")
-                                        thinking_content += f"\n⚠️ **数据处理错误**: {str(chunk_error)}"
-                                        continue
+                                    elif chunk_type == "tool_call_arguments":
+                                        tool_name = data.get("tool_name", "")
+                                        arguments = data.get("arguments", {})
+                                        args_str = json.dumps(arguments, indent=2, ensure_ascii=False)
+                                        current_assistant_msg = f"🛠️ **工具调用**: `{tool_name}`\n\n📋 **参数**:\n```json\n{args_str}\n```\n\n⏳ 正在执行..."
 
-                            except Exception as stream_error:
-                                logger.error(f"流式生成器异常: {stream_error}")
-                                thinking_content += f"\n\n❌ **流式生成器异常**: {str(stream_error)}"
-                                error_occurred = True
+                                    elif chunk_type == "tool_result":
+                                        tool_name = data.get("tool_name", "")
+                                        result = data.get("result", {})
+                                        success = result.get("success", False)
+                                        status_emoji = "✅" if success else "❌"
 
-                            # 构建最终回复，包含思考过程（如果有）
-                            if thinking_content:
-                                final_content = f"{thinking_content}\n\n---\n\n{response_content}"
-                            else:
-                                final_content = response_content
+                                        result_str = json.dumps(result, indent=2, ensure_ascii=False)
+                                        current_assistant_msg = f"🛠️ **工具结果**: `{tool_name}` {status_emoji}\n\n```json\n{result_str}\n```\n\n🔄 继续分析..."
 
-                            # 如果发生了错误但没有回复内容，添加默认错误信息
-                            if error_occurred and not final_content:
-                                final_content = thinking_content or "抱歉，处理过程中出现了错误，但我已经尽力完成了您的请求。"
+                                    elif chunk_type == "tool_error":
+                                        tool_name = data.get("tool_name", "")
+                                        error = data.get("error", "")
+                                        current_assistant_msg = f"❌ **工具执行失败**: {tool_name}\n\n错误: {error}"
 
-                            history[-1]["content"] = final_content or "抱歉，我无法生成回复。"
+                                    elif chunk_type == "error":
+                                        current_assistant_msg = f"❌ **推理错误**: {content}"
+
+                                except json.JSONDecodeError:
+                                    continue
+                                except Exception as chunk_error:
+                                    logger.error(f"处理流式数据块失败: {chunk_error}")
+                                    current_assistant_msg = f"⚠️ **数据处理错误**: {str(chunk_error)}"
+                                    continue
+
+                            # 保存最终的助手回复到数据库
+                            final_assistant_content = current_assistant_msg or "抱歉，我无法生成回复。"
+                            ConversationService.add_message(
+                                conversation_id=conversation.id,
+                                role="assistant",
+                                content=final_assistant_content,
+                                message_type="text"
+                            )
+
+                            # 返回包含所有消息的最终对话历史
+                            final_messages = ConversationService.format_messages_for_chatbot(
+                                ConversationService.get_conversation_messages(conversation.id)
+                            )
+
+                            return final_messages, ""
 
                         except Exception as agent_error:
                             logger.error(f"调用Agent流式服务失败: {agent_error}")
                             import traceback
                             traceback.print_exc()
-                            # 如果Agent流式服务调用失败，提供基础响应
-                            history[-1]["content"] = f"""抱歉，我暂时无法连接到AI Agent流式服务。请检查以下配置：
+
+                            # 记录错误消息
+                            error_content = f"""抱歉，我暂时无法连接到AI Agent流式服务。请检查以下配置：
 
 1. **LLM配置**: 确保已正确配置LLM服务
 2. **网络连接**: 确保能够访问LLM API
@@ -1813,17 +1817,41 @@ def create_app():
 您可以尝试重新执行推理或联系管理员。
 """
 
-                        return history, ""
+                            ConversationService.add_message(
+                                conversation_id=conversation.id,
+                                role="assistant",
+                                content=error_content,
+                                message_type="text"
+                            )
+
+                            return ConversationService.format_messages_for_chatbot(
+                                ConversationService.get_conversation_messages(conversation.id)
+                            ), ""
 
                     except Exception as e:
                         logger.error(f"发送消息失败: {e}")
                         import traceback
                         traceback.print_exc()
 
-                        history = history or []
-                        history.append({"role": "user", "content": message})
-                        history.append({"role": "assistant", "content": f"❌ 对话失败: {str(e)}"})
-                        return history, ""
+                        # 记录错误到数据库
+                        try:
+                            from services.conversation_service import ConversationService
+                            conversation = ConversationService.get_latest_conversation(int(pid), "manual_chat")
+                            if conversation:
+                                ConversationService.add_message(
+                                    conversation_id=conversation.id,
+                                    role="assistant",
+                                    content=f"❌ 发送失败: {str(e)}",
+                                    message_type="text"
+                                )
+
+                                return ConversationService.format_messages_for_chatbot(
+                                    ConversationService.get_conversation_messages(conversation.id)
+                                ), ""
+                        except:
+                            pass
+
+                        return [{"role": "assistant", "content": f"❌ 发送失败: {str(e)}"}], ""
 
                 agent_send_btn.click(
                     fn=send_message_wrapper,
@@ -1923,7 +1951,7 @@ def create_app():
                 def show_agent_decision_detail(evt: gr.SelectData, plan_id):
                     """显示Agent决策详情到chatbot"""
                     try:
-                        if evt is None:
+                        if evt is None or not hasattr(evt, 'index') or not evt.index:
                             return [{"role": "assistant", "content": "请点击决策记录查看详情"}]
 
                         if not plan_id:

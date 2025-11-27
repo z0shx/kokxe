@@ -222,7 +222,7 @@ class ConfigCenterUI:
                     with gr.Row():
                         # 左侧：配置列表
                         with gr.Column(scale=2):
-                            llm_configs_table = gr.Dataframe(
+                            llm_configs_table = gr.DataFrame(
                                 value=self.load_llm_configs(),
                                 label="LLM 配置列表",
                                 interactive=False
@@ -339,7 +339,7 @@ class ConfigCenterUI:
                     with gr.Row():
                         # 左侧：模版列表
                         with gr.Column(scale=2):
-                            prompt_templates_table = gr.Dataframe(
+                            prompt_templates_table = gr.DataFrame(
                                 value=self.load_prompt_templates(),
                                 label="提示词模版列表",
                                 interactive=False

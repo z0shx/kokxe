@@ -92,9 +92,9 @@ class UIHelper:
 
     @staticmethod
     def create_data_table(headers: List[str], data: List[List] = None,
-                         datatype: List[str] = None) -> gr.Dataframe:
+                         datatype: List[str] = None) -> gr.DataFrame:
         """创建数据表格"""
-        return gr.Dataframe(
+        return gr.DataFrame(
             value=data or [],
             headers=headers,
             datatype=datatype or ["str"] * len(headers),

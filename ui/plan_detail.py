@@ -1183,23 +1183,28 @@ class PlanDetailUI:
 
     def get_latest_conversation_messages(self, plan_id: int) -> List[Dict]:
         """
-        获取最新的对话会话消息（支持新的对话系统）
+        获取最新的对话会话消息（仅限手动对话）
+        注意：这里只返回manual_chat类型的对话，不显示推理结果
 
         Returns:
             List[Dict]: Chatbot messages 格式 [{"role": "assistant", "content": ...}]
         """
         try:
-            # 首先尝试从新的对话系统获取
+            # 只获取手动对话，不显示推理结果
             latest_conversation = ConversationService.get_latest_conversation(
                 plan_id=plan_id,
-                conversation_type="auto_inference"
+                conversation_type="manual_chat"
             )
 
             if latest_conversation:
                 messages = ConversationService.get_conversation_messages(latest_conversation.id)
-                return ConversationService.format_messages_for_chatbot(messages)
+                formatted_messages = ConversationService.format_messages_for_chatbot(messages)
 
-            # 如果没有新对话，回退到旧的决策记录系统
+                # 只有当消息不为空时才返回
+                if formatted_messages:
+                    return formatted_messages
+
+            # 如果没有任何对话，回退到旧的决策记录系统
             return self.get_latest_agent_decision_output(plan_id)
 
         except Exception as e:
@@ -2668,16 +2673,24 @@ class PlanDetailUI:
             return f"❌ 推理失败: {str(e)}"
 
     async def manual_inference_stream(self, plan_id: int):
-        """手动执行AI Agent推理（流式输出）"""
+        """手动执行AI Agent推理（流式输出），按照标准chatbot模式"""
         try:
             # 使用新的 AgentStreamService 进行流式推理
             from services.agent_stream_service import AgentStreamService
-            from database.models import TrainingRecord
+            from services.conversation_service import ConversationService
+            from database.models import TrainingRecord, LLMConfig
             from database.db import get_db
             from sqlalchemy import and_, desc
+            import json
 
-            # 获取最新的训练记录
+            # 获取计划和配置信息
             with get_db() as db:
+                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                if not plan:
+                    yield [{"role": "assistant", "content": "❌ 计划不存在"}]
+                    return
+
+                # 获取最新的训练记录
                 latest_training = db.query(TrainingRecord).filter(
                     and_(
                         TrainingRecord.plan_id == plan_id,
@@ -2686,11 +2699,44 @@ class PlanDetailUI:
                     )
                 ).order_by(desc(TrainingRecord.created_at)).first()
 
-            # 发送推理初始化消息
-            yield [{"role": "assistant", "content": "🤖 正在启动 AI Agent 推理..."}]
+                if not latest_training:
+                    yield [{"role": "assistant", "content": "❌ 没有可用的训练记录，请先完成模型训练"}]
+                    return
 
-            # 构建初始提示词
-            initial_prompt = """请基于当前的预测数据进行全面的分析和推理。请：
+                # 获取LLM配置
+                llm_config = None
+                if plan.llm_config_id:
+                    llm_config = db.query(LLMConfig).filter(LLMConfig.id == plan.llm_config_id).first()
+
+                if not llm_config:
+                    yield [{"role": "assistant", "content": "❌ 未配置LLM"}]
+                    return
+
+            # 1. 首先显示系统提示词（左侧消息）
+            system_prompt = self._build_inference_system_prompt(plan, latest_training)
+            yield [{"role": "assistant", "content": system_prompt}]
+
+            # 2. 获取最新预测数据作为用户输入（右侧消息）
+            prediction_data_text = self._get_latest_prediction_data_text(latest_training.id)
+            if not prediction_data_text:
+                yield [
+                    {"role": "assistant", "content": system_prompt},
+                    {"role": "user", "content": "❌ 暂无预测数据"}
+                ]
+                return
+
+            # 显示用户输入（预测数据）
+            yield [
+                {"role": "assistant", "content": system_prompt},
+                {"role": "user", "content": f"**最新预测数据**:\n\n{prediction_data_text}"}
+            ]
+
+            # 3. 构建推理提示词
+            inference_prompt = f"""请基于以下最新预测数据进行全面的分析和推理：
+
+{prediction_data_text}
+
+请：
 1. 分析预测数据的趋势和概率
 2. 查询当前的账户状态和持仓信息
 3. 基于分析结果给出交易建议
@@ -2698,60 +2744,63 @@ class PlanDetailUI:
 
 请使用ReAct模式进行思考，并调用相关工具获取信息。"""
 
+            # 4. 流式输出AI回复（左侧消息）
+            current_assistant_msg = ""
+
             # 使用 AgentStreamService 进行流式推理
             async for chunk_str in AgentStreamService.chat_with_tools_stream(
-                initial_prompt,
-                [],
+                inference_prompt,
+                [],  # 没有历史上下文，这是新的推理会话
                 plan_id,
-                latest_training.id if latest_training else None
+                latest_training.id
             ):
                 try:
-                    import json
                     chunk = json.loads(chunk_str)
 
                     if chunk.get("type") == "thinking_start":
-                        yield [{"role": "assistant", "content": "🧠 **开始思考分析...**"}]
+                        current_assistant_msg = "🧠 **开始思考分析...**\n\n"
 
                     elif chunk.get("type") == "thinking":
-                        # 思考过程实时更新
-                        yield [{"role": "assistant", "content": f"🧠 **思考中...**\n\n{chunk.get('content', '')}"}]
+                        current_assistant_msg = f"🧠 **思考中...**\n\n{chunk.get('content', '')}"
 
                     elif chunk.get("type") == "content":
-                        # 正常内容实时更新
-                        yield [{"role": "assistant", "content": chunk.get('content', '')}]
+                        current_assistant_msg = chunk.get('content', '')
 
                     elif chunk.get("type") == "tool_call_start":
-                        # 工具调用开始
                         tool_name = chunk.get("tool_name", "unknown")
-                        yield [{"role": "assistant", "content": f"🛠️ **调用工具**: `{tool_name}`\n\n⏳ 正在执行..."}]
+                        current_assistant_msg = f"🛠️ **调用工具**: `{tool_name}`\n\n⏳ 正在执行..."
 
                     elif chunk.get("type") == "tool_call_arguments":
-                        # 工具调用参数
                         tool_name = chunk.get("tool_name", "unknown")
                         arguments = chunk.get("arguments", {})
                         args_str = json.dumps(arguments, ensure_ascii=False, indent=2)
-                        yield [{"role": "assistant", "content": f"🛠️ **工具调用**: `{tool_name}`\n\n📋 **参数**:\n```json\n{args_str}\n```\n\n⏳ 正在执行..."}]
+                        current_assistant_msg = f"🛠️ **工具调用**: `{tool_name}`\n\n📋 **参数**:\n```json\n{args_str}\n```\n\n⏳ 正在执行..."
 
                     elif chunk.get("type") == "tool_result":
-                        # 工具执行结果
                         tool_name = chunk.get("tool_name", "unknown")
                         result = chunk.get("result", {})
                         success = result.get("success", False)
                         status_emoji = "✅" if success else "❌"
 
                         result_str = json.dumps(result, ensure_ascii=False, indent=2)
-                        yield [{"role": "assistant", "content": f"🛠️ **工具结果**: `{tool_name}` {status_emoji}\n\n```json\n{result_str}\n```\n\n🔄 继续分析..."}]
+                        current_assistant_msg = f"🛠️ **工具结果**: `{tool_name}` {status_emoji}\n\n```json\n{result_str}\n```\n\n🔄 继续分析..."
 
                     elif chunk.get("type") == "tool_error":
-                        # 工具执行错误
                         tool_name = chunk.get("tool_name", "unknown")
                         error = chunk.get("error", "未知错误")
-                        yield [{"role": "assistant", "content": f"❌ **工具执行失败**: {tool_name}\n\n错误: {error}"}]
+                        current_assistant_msg = f"❌ **工具执行失败**: {tool_name}\n\n错误: {error}"
 
                     elif chunk.get("type") == "error":
-                        # 推理错误
                         error_msg = chunk.get("content", "未知错误")
-                        yield [{"role": "assistant", "content": f"❌ **推理错误**: {error_msg}"}]
+                        current_assistant_msg = f"❌ **推理错误**: {error_msg}"
+
+                    # 实时更新AI回复（左侧消息）- 累积式输出
+                    current_conversation = [
+                        {"role": "assistant", "content": system_prompt},
+                        {"role": "user", "content": f"**最新预测数据**:\n\n{prediction_data_text}"},
+                        {"role": "assistant", "content": current_assistant_msg}
+                    ]
+                    yield current_conversation
 
                 except json.JSONDecodeError:
                     continue
@@ -2759,14 +2808,130 @@ class PlanDetailUI:
                     logger.error(f"处理chunk失败: {e}")
                     continue
 
-            # 推理完成
-            yield [{"role": "assistant", "content": "\n\n✅ **推理完成**\n\n推理过程已结束，所有分析结果和工具调用信息已显示。"}]
+            # 推理完成，添加完成标记
+            final_assistant_msg = current_assistant_msg + "\n\n✅ **推理完成**"
+            yield [
+                {"role": "assistant", "content": system_prompt},
+                {"role": "user", "content": f"**最新预测数据**:\n\n{prediction_data_text}"},
+                {"role": "assistant", "content": final_assistant_msg}
+            ]
 
         except Exception as e:
             logger.error(f"ReAct推理失败: {e}")
             import traceback
             traceback.print_exc()
-            yield [{"role": "assistant", "content": f"❌ 推理过程出错: {str(e)}"}]
+
+            error_msg = f"❌ 推理过程出错: {str(e)}"
+            yield [
+                {"role": "assistant", "content": system_prompt if 'system_prompt' in locals() else "系统初始化失败"},
+                {"role": "user", "content": f"**最新预测数据**:\n\n{prediction_data_text if 'prediction_data_text' in locals() else '获取预测数据失败'}"},
+                {"role": "assistant", "content": error_msg}
+            ]
+
+    def _build_inference_system_prompt(self, plan, latest_training) -> str:
+        """构建推理系统提示词"""
+        try:
+            # 获取预测数据
+            prediction_data = []
+            with get_db() as db:
+                if latest_training:
+                    prediction_data = db.query(PredictionData).filter(
+                        PredictionData.training_record_id == latest_training.id
+                    ).order_by(PredictionData.timestamp.desc()).limit(10).all()
+
+            # 基础系统提示
+            system_prompt = f"""你是一个专业的加密货币交易AI助手，负责分析市场数据并做出交易决策。
+
+**交易计划信息**:
+- 交易对: {plan.inst_id}
+- 时间周期: {plan.interval}
+- 环境: {'🧪 模拟盘' if plan.is_demo else '💰 实盘'}
+- 计划状态: {plan.status}
+
+**推理任务**:
+基于Kronos模型的预测数据，使用ReAct模式进行思考和决策：
+1. **思考** (Thought): 分析市场状况和预测数据
+2. **行动** (Action): 调用工具获取更多信息或执行交易
+3. **观察** (Observation): 分析工具返回的结果
+4. **重复** 直到得出最终结论
+
+**可用工具**:
+你可以调用以下工具来获取信息和执行操作："""
+
+            # 添加工具说明
+            tools_config = plan.agent_tools_config or {}
+            for tool_name, tool_obj in get_all_tools().items():
+                if tools_config.get(tool_name, False):
+                    description = tool_obj.description
+                    system_prompt += f"- {tool_name}: {description}\n"
+
+            # 添加预测数据信息
+            if prediction_data:
+                latest_prediction = prediction_data[0]
+                system_prompt += f"""
+
+**最新预测数据概览**:
+- 当前价格: ${latest_prediction.close or 0:.4f}
+- 预测区间: ${latest_prediction.close_min or 0:.4f} ~ ${latest_prediction.close_max or 0:.4f}
+- 上涨概率: {latest_prediction.upward_probability or 0:.2%}
+- 波动放大概率: {latest_prediction.volatility_amplification_probability or 0:.2%}
+- 模型版本: {latest_training.version if latest_training else 'N/A'}"""
+
+            # 添加自定义提示词
+            if plan.agent_prompt:
+                system_prompt += f"""
+
+**额外指示**:
+{plan.agent_prompt}"""
+
+            system_prompt += """
+
+现在请基于用户提供的最新预测数据进行详细分析。"""
+
+            return system_prompt
+
+        except Exception as e:
+            logger.error(f"构建系统提示词失败: {e}")
+            return "系统提示词构建失败，请检查配置。"
+
+    def _get_latest_prediction_data_text(self, training_record_id: int) -> str:
+        """获取最新预测数据的文本格式"""
+        try:
+            with get_db() as db:
+                # 获取最新的预测数据
+                latest_prediction = db.query(PredictionData).filter(
+                    PredictionData.training_record_id == training_record_id
+                ).order_by(PredictionData.timestamp.desc()).first()
+
+                if not latest_prediction:
+                    return None
+
+                # 安全处理数据
+                current_price = latest_prediction.close or 0
+                upward_prob = latest_prediction.upward_probability or 0
+                volatility_prob = latest_prediction.volatility_amplification_probability or 0
+                close_min = latest_prediction.close_min or 0
+                close_max = latest_prediction.close_max or 0
+
+                # 预测趋势判断
+                trend = '未知'
+                if close_max > current_price:
+                    trend = '📈 上涨'
+                elif close_max < current_price:
+                    trend = '📉 下跌'
+                else:
+                    trend = '➡️ 横盘'
+
+                return f"""**当前价格**: ${current_price:.4f}
+**预测趋势**: {trend}
+**价格区间**: ${close_min:.4f} ~ ${close_max:.4f}
+**上涨概率**: {upward_prob:.2%}
+**波动放大概率**: {volatility_prob:.2%}
+**预测时间**: {latest_prediction.timestamp.strftime('%Y-%m-%d %H:%M:%S')}"""
+
+        except Exception as e:
+            logger.error(f"获取预测数据文本失败: {e}")
+            return None
 
     # continue_inference_stream方法已移除 - 工具确认功能已废弃，AI Agent现在直接使用启用的工具
 

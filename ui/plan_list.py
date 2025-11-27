@@ -130,7 +130,7 @@ class PlanListUI(BaseUIComponent, DatabaseMixin):
         initial_data = self.get_plans_data()
 
         # 计划列表表格
-        plans_table = gr.Dataframe(
+        plans_table = gr.DataFrame(
             value=initial_data,
             headers=[
                 "ID", "计划名称", "交易对", "时间颗粒度",
