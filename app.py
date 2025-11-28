@@ -1745,7 +1745,7 @@ def create_app():
                                 if response_batch:
                                     # 追加新消息到历史记录
                                     conversation_history.extend(response_batch)
-                                    # 返回累积的历史记录
+                                    # 返回累积的历史记录，清空输入框
                                     yield conversation_history.copy(), ""
 
                         except Exception as e:

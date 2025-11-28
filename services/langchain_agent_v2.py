@@ -82,7 +82,9 @@ class LangChainAgentV2Service:
                     temperature=llm_config.temperature or 0.7,
                     max_tokens=llm_config.max_tokens or 2000,
                     openai_api_key=llm_config.api_key,
-                    openai_api_base=base_url
+                    openai_api_base=base_url,
+                    # 启用Qwen的思考过程（如果API支持）
+                    extra_body={"enable_thinking": True}
                 )
             else:
                 raise ValueError(f"Unsupported LLM provider: {llm_config.provider}")
