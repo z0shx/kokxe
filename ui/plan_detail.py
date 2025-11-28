@@ -1219,7 +1219,7 @@ class PlanDetailUI:
             List[Dict]: Chatbot messages 格式 [{"role": "assistant", "content": ...}]
         """
         try:
-            from services.agent_service import ConversationType
+            from services.langchain_agent_v2 import ConversationType
             from database.models import AgentConversation, AgentMessage, TradingPlan
             from database.db import get_db
 
@@ -1239,38 +1239,44 @@ class PlanDetailUI:
                     ).order_by(AgentMessage.created_at.asc()).all()
 
                     for msg in messages:
+                        content = msg.content
+
+                        # 根据角色格式化消息
                         if msg.role == "system":
                             # 系统消息显示为助手消息
                             chat_messages.append({
                                 "role": "assistant",
-                                "content": f"🔧 **系统提示**: {msg.content}"
+                                "content": f"📋 **系统提示**: {content}"
                             })
                         elif msg.role == "assistant":
-                            content = msg.content
-                            # 检查是否是工具调用
-                            try:
-                                import json
-                                tool_data = json.loads(content)
-                                if isinstance(tool_data, dict):
-                                    if "name" in tool_data and "arguments" in tool_data:
-                                        # 工具调用
-                                        content = f"🛠️ **工具调用**: `{tool_data['name']}`\n```json\n{content}\n```"
-                                    elif "success" in tool_data or "error" in tool_data:
-                                        # 工具结果
-                                        status = "✅ 成功" if tool_data.get("success") else "❌ 失败"
-                                        content = f"🔧 **工具结果** ({status}):\n```json\n{content}\n```"
-                            except (json.JSONDecodeError, TypeError):
-                                # 普通消息
-                                pass
-
+                            # 普通助手消息
                             chat_messages.append({
                                 "role": "assistant",
                                 "content": content
                             })
-                        else:
+                        elif msg.role == "user":
+                            # 用户消息
                             chat_messages.append({
-                                "role": msg.role,
-                                "content": msg.content
+                                "role": "user",
+                                "content": content
+                            })
+                        else:
+                            # 其他角色（如 tool_call, tool_result, qwen_analysis, qwen_output）
+                            # 这些是流式输出中使用的角色，直接显示
+                            if msg.role == "tool_call":
+                                formatted_content = f"🛠️ **工具调用**: {content}"
+                            elif msg.role == "tool_result":
+                                formatted_content = f"✅ **工具执行结果**: {content}"
+                            elif msg.role == "qwen_analysis":
+                                formatted_content = f"🤖 **Qwen分析**: {content}"
+                            elif msg.role == "qwen_output":
+                                formatted_content = content  # Qwen的正文输出直接显示
+                            else:
+                                formatted_content = content
+
+                            chat_messages.append({
+                                "role": "assistant",
+                                "content": formatted_content
                             })
 
                 # 如果没有推理对话，获取手动对话

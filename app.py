@@ -1680,17 +1680,22 @@ def create_app():
 
                 # 手动推理（流式）
                 async def manual_inference_wrapper_stream(pid):
-                    """流式推理包装函数"""
+                    """流式推理包装函数 - 支持追加模式"""
                     if not pid:
                         yield [{"role": "assistant", "content": "❌ 请先选择计划"}]
                         return
 
                     try:
                         plan_id = int(pid)
+                        conversation_history = []  # 用于累积消息
 
-                        # 使用Agent服务
-                        async for response_chunk in agent_service.stream_manual_inference(plan_id):
-                            yield response_chunk
+                        # 使用Agent服务 - 追加模式
+                        async for response_batch in agent_service.stream_manual_inference(plan_id):
+                            if response_batch:
+                                # 追加新消息到历史记录
+                                conversation_history.extend(response_batch)
+                                # 返回完整的历史记录（确保Gradio能看到累积效果）
+                                yield conversation_history.copy()
 
                     except Exception as e:
                         logger.error(f"推理失败: {e}")
@@ -1721,26 +1726,34 @@ def create_app():
                 )
 
               
-                # 发送消息 - 使用增强对话服务
-                async def send_message_wrapper(message, history, pid):
-                    """与Agent进行对话，使用增强对话服务"""
+                # 发送消息 - 使用LangChain Agent v2服务，支持追加模式
+                def send_message_wrapper(message, history, pid):
+                    """与Agent进行对话，使用LangChain Agent v2服务"""
                     if not pid:
                         return [{"role": "assistant", "content": "❌ 请先选择计划"}], ""
 
                     if not message or not message.strip():
                         return history, ""
 
-                    try:
-                        plan_id = int(pid)
+                    async def generate_response():
+                        try:
+                            plan_id = int(pid)
+                            conversation_history = history.copy() if history else []  # 从现有历史开始
 
-                        # 使用Agent服务
-                        async for response_chunk in agent_service.stream_conversation(plan_id, message):
-                            if isinstance(response_chunk, list) and len(response_chunk) > 0:
-                                return response_chunk, ""
+                            # 使用Agent v2服务 - 追加模式
+                            async for response_batch in agent_service.stream_conversation(plan_id, message):
+                                if response_batch:
+                                    # 追加新消息到历史记录
+                                    conversation_history.extend(response_batch)
+                                    # 返回累积的历史记录
+                                    yield conversation_history.copy(), ""
 
-                    except Exception as e:
-                        logger.error(f"对话失败: {e}")
-                        return [{"role": "assistant", "content": f"❌ 对话失败: {str(e)}"}], ""
+                        except Exception as e:
+                            logger.error(f"对话失败: {e}")
+                            error_msg = [{"role": "assistant", "content": f"❌ 对话失败: {str(e)}"}]
+                            yield (history or []) + error_msg, ""
+
+                    return generate_response()
 
                 agent_send_btn.click(
                     fn=send_message_wrapper,
