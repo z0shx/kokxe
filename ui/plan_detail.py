@@ -2766,160 +2766,42 @@ class PlanDetailUI:
             return f"❌ 推理失败: {str(e)}"
 
     async def manual_inference_stream(self, plan_id: int):
-        """手动执行AI Agent推理（流式输出），按照标准chatbot模式"""
+        """手动执行AI Agent推理（流式输出），使用统一LangChain Agent服务"""
         try:
-            # 使用新的 AgentStreamService 进行流式推理
-            from services.agent_stream_service import AgentStreamService
-            from services.conversation_service import ConversationService
-            from database.models import TrainingRecord, LLMConfig
-            from database.db import get_db
-            from sqlalchemy import and_, desc
-            import json
+            from services.langchain_agent_v2 import langchain_agent_v2_service, ConversationType
 
-            # 获取计划和配置信息
-            with get_db() as db:
-                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
-                if not plan:
-                    yield [{"role": "assistant", "content": "❌ 计划不存在"}]
-                    return
-
-                # 获取最新的训练记录
-                latest_training = db.query(TrainingRecord).filter(
-                    and_(
-                        TrainingRecord.plan_id == plan_id,
-                        TrainingRecord.status == 'completed',
-                        TrainingRecord.is_active == True
-                    )
-                ).order_by(desc(TrainingRecord.created_at)).first()
-
-                if not latest_training:
-                    yield [{"role": "assistant", "content": "❌ 没有可用的训练记录，请先完成模型训练"}]
-                    return
-
-                # 获取LLM配置
-                llm_config = None
-                if plan.llm_config_id:
-                    llm_config = db.query(LLMConfig).filter(LLMConfig.id == plan.llm_config_id).first()
-
-                if not llm_config:
-                    yield [{"role": "assistant", "content": "❌ 未配置LLM"}]
-                    return
-
-            # 1. 首先显示系统提示词（左侧消息）
-            system_prompt = self._build_inference_system_prompt(plan, latest_training)
-            yield [{"role": "assistant", "content": system_prompt}]
-
-            # 2. 获取最新预测数据作为用户输入（右侧消息）
-            prediction_data_text = self._get_latest_prediction_data_text(latest_training.id)
-            if not prediction_data_text:
-                yield [
-                    {"role": "assistant", "content": system_prompt},
-                    {"role": "user", "content": "❌ 暂无预测数据"}
-                ]
-                return
-
-            # 显示用户输入（预测数据）
-            yield [
-                {"role": "assistant", "content": system_prompt},
-                {"role": "user", "content": f"**最新预测数据**:\n\n{prediction_data_text}"}
-            ]
-
-            # 3. 构建推理提示词
-            inference_prompt = f"""请基于以下最新预测数据进行全面的分析和推理：
-
-{prediction_data_text}
-
-请：
-1. 分析预测数据的趋势和概率
-2. 查询当前的账户状态和持仓信息
-3. 基于分析结果给出交易建议
-4. 如果需要，执行相应的交易操作
-
-请使用ReAct模式进行思考，并调用相关工具获取信息。"""
-
-            # 4. 流式输出AI回复（左侧消息）
-            current_assistant_msg = ""
-
-            # 使用 AgentStreamService 进行流式推理
-            async for chunk_str in AgentStreamService.chat_with_tools_stream(
-                inference_prompt,
-                [],  # 没有历史上下文，这是新的推理会话
-                plan_id,
-                latest_training.id
+            # 使用统一的LangChain Agent服务v2进行流式推理
+            async for message_batch in langchain_agent_v2_service.stream_agent_response(
+                plan_id=plan_id,
+                user_message=None,  # 自动推理不需要用户消息
+                conversation_type=ConversationType.AUTO_INFERENCE
             ):
-                try:
-                    chunk = json.loads(chunk_str)
-
-                    if chunk.get("type") == "thinking_start":
-                        current_assistant_msg = "🧠 **开始思考分析...**\n\n"
-
-                    elif chunk.get("type") == "thinking":
-                        current_assistant_msg = f"🧠 **思考中...**\n\n{chunk.get('content', '')}"
-
-                    elif chunk.get("type") == "content":
-                        current_assistant_msg = chunk.get('content', '')
-
-                    elif chunk.get("type") == "tool_call_start":
-                        tool_name = chunk.get("tool_name", "unknown")
-                        current_assistant_msg = f"🛠️ **调用工具**: `{tool_name}`\n\n⏳ 正在执行..."
-
-                    elif chunk.get("type") == "tool_call_arguments":
-                        tool_name = chunk.get("tool_name", "unknown")
-                        arguments = chunk.get("arguments", {})
-                        args_str = json.dumps(arguments, ensure_ascii=False, indent=2)
-                        current_assistant_msg = f"🛠️ **工具调用**: `{tool_name}`\n\n📋 **参数**:\n```json\n{args_str}\n```\n\n⏳ 正在执行..."
-
-                    elif chunk.get("type") == "tool_result":
-                        tool_name = chunk.get("tool_name", "unknown")
-                        result = chunk.get("result", {})
-                        success = result.get("success", False)
-                        status_emoji = "✅" if success else "❌"
-
-                        result_str = json.dumps(result, ensure_ascii=False, indent=2)
-                        current_assistant_msg = f"🛠️ **工具结果**: `{tool_name}` {status_emoji}\n\n```json\n{result_str}\n```\n\n🔄 继续分析..."
-
-                    elif chunk.get("type") == "tool_error":
-                        tool_name = chunk.get("tool_name", "unknown")
-                        error = chunk.get("error", "未知错误")
-                        current_assistant_msg = f"❌ **工具执行失败**: {tool_name}\n\n错误: {error}"
-
-                    elif chunk.get("type") == "error":
-                        error_msg = chunk.get("content", "未知错误")
-                        current_assistant_msg = f"❌ **推理错误**: {error_msg}"
-
-                    # 实时更新AI回复（左侧消息）- 累积式输出
-                    current_conversation = [
-                        {"role": "assistant", "content": system_prompt},
-                        {"role": "user", "content": f"**最新预测数据**:\n\n{prediction_data_text}"},
-                        {"role": "assistant", "content": current_assistant_msg}
-                    ]
-                    yield current_conversation
-
-                except json.JSONDecodeError:
-                    continue
-                except Exception as e:
-                    logger.error(f"处理chunk失败: {e}")
-                    continue
-
-            # 推理完成，添加完成标记
-            final_assistant_msg = current_assistant_msg + "\n\n✅ **推理完成**"
-            yield [
-                {"role": "assistant", "content": system_prompt},
-                {"role": "user", "content": f"**最新预测数据**:\n\n{prediction_data_text}"},
-                {"role": "assistant", "content": final_assistant_msg}
-            ]
+                yield message_batch
 
         except Exception as e:
-            logger.error(f"ReAct推理失败: {e}")
+            logger.error(f"手动推理失败: {e}")
             import traceback
             traceback.print_exc()
+            yield [{"role": "assistant", "content": f"❌ 推理失败: {str(e)}"}]
 
-            error_msg = f"❌ 推理过程出错: {str(e)}"
-            yield [
-                {"role": "assistant", "content": system_prompt if 'system_prompt' in locals() else "系统初始化失败"},
-                {"role": "user", "content": f"**最新预测数据**:\n\n{prediction_data_text if 'prediction_data_text' in locals() else '获取预测数据失败'}"},
-                {"role": "assistant", "content": error_msg}
-            ]
+    async def chat_with_agent_stream(self, plan_id: int, user_message: str):
+        """与AI Agent进行流式对话"""
+        try:
+            from services.langchain_agent_v2 import langchain_agent_v2_service, ConversationType
+
+            # 使用统一的LangChain Agent服务v2进行流式对话
+            async for message_batch in langchain_agent_v2_service.stream_agent_response(
+                plan_id=plan_id,
+                user_message=user_message,
+                conversation_type=ConversationType.MANUAL_CHAT
+            ):
+                yield message_batch
+
+        except Exception as e:
+            logger.error(f"Agent对话失败: {e}")
+            import traceback
+            traceback.print_exc()
+            yield [{"role": "assistant", "content": f"❌ 对话失败: {str(e)}"}]
 
     def _build_inference_system_prompt(self, plan, latest_training) -> str:
         """构建推理系统提示词"""

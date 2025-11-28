@@ -49,10 +49,11 @@ anthropic  # Claude API
 openai  # OpenAI & Qwen (兼容) API
 
 # LangChain (AI Agent 框架)
-langchain>=0.3.0,<1.0.0
-langchain-core>=0.3.78,<1.0.0
-langchain-openai>=0.2.0,<1.0.0
-langchain-anthropic>=0.2.0,<1.0.0
+langchain>=0.3.0
+langchain-core>=1.1.0
+langchain-openai>=0.2.0
+langchain-anthropic>=0.2.0
+langchain-community>=0.3.0
 
 # ============================================
 # 可选依赖 (根据需要安装)

@@ -17,7 +17,7 @@ from ui.plan_create import create_plan_ui
 from ui.plan_list import create_plan_list_ui
 from ui.config_center import create_config_center_ui
 from utils.logger import setup_logger
-from services.agent_service import agent_service
+from services.langchain_agent_v2 import langchain_agent_v2_service as agent_service
 
 logger = setup_logger(__name__, "app.log")
 
