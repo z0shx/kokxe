@@ -258,6 +258,34 @@ class AccountWebSocketManager:
             if self.loop_thread:
                 self.loop_thread.join(timeout=5)
 
+    async def stop_all_connections_async(self):
+        """异步停止所有连接（优雅关闭用）"""
+        logger.info("🛑 异步停止所有账户WebSocket连接...")
+
+        for conn_key, connection in list(self.connections.items()):
+            service = connection['service']
+            future = connection['future']
+
+            if self.loop and self.loop.is_running():
+                # 停止服务
+                try:
+                    await asyncio.run_coroutine_threadsafe(service.stop(), self.loop)
+                except Exception as e:
+                    logger.error(f"停止账户WebSocket服务失败: {e}")
+
+            # 取消future
+            if not future.done():
+                future.cancel()
+
+        self.connections.clear()
+        logger.info("✅ 所有账户WebSocket连接已停止")
+
+        # 停止事件循环
+        if self.loop and self.loop.is_running():
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            if self.loop_thread:
+                self.loop_thread.join(timeout=5)
+
 
 # 全局单例
 account_ws_manager = AccountWebSocketManager()

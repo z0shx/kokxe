@@ -224,13 +224,87 @@ def initialize_app():
                     logger.error(f"调度器健康检查失败: {e}")
                     time.sleep(60)  # 出错后等待1分钟再继续
 
-        # 启动健康检查线程
-        health_check_thread = threading.Thread(
-            target=scheduler_health_check,
-            daemon=True,
+        # 创建可停止的健康检查线程类
+        class StoppableHealthCheckThread(threading.Thread):
+            def __init__(self, target, name):
+                super().__init__(target=target, name=name)
+                self._stop_event = threading.Event()
+                self.daemon = True
+
+            def stop(self):
+                self._stop_event.set()
+
+            def stopped(self):
+                return self._stop_event.is_set()
+
+        # 修改健康检查函数以支持停止
+        def stoppable_scheduler_health_check():
+            """可停止的调度器健康检查线程"""
+            while not health_check_thread.stopped():
+                try:
+                    # 使用可中断的sleep
+                    if health_check_thread._stop_event.wait(timeout=300):  # 5分钟
+                        break
+
+                    # 检查调度器是否有任务
+                    scheduler = ScheduleService.get_scheduler()
+                    jobs = scheduler.get_jobs()
+
+                    # 检查是否有运行中的计划但没有对应调度任务
+                    from database.db import get_db
+                    from database.models import TradingPlan
+
+                    with get_db() as db:
+                        running_plans = db.query(TradingPlan).filter(
+                            TradingPlan.status == 'running',
+                            TradingPlan.auto_inference_enabled == True
+                        ).all()
+
+                        for plan in running_plans:
+                            plan_jobs = ScheduleService.get_plan_jobs(plan.id)
+                            inference_job = None
+
+                            for job in plan_jobs:
+                                if 'inference' in job.id:
+                                    inference_job = job
+                                    break
+
+                            # 如果没有找到预测任务，重新加载
+                            if not inference_job:
+                                logger.warning(f"计划 {plan.id} 缺少预测调度任务，重新加载...")
+                                try:
+                                    loop = __import__('asyncio').new_event_loop()
+                                    __import__('asyncio').set_event_loop(loop)
+                                    success = loop.run_until_complete(ScheduleService.start_schedule(plan.id))
+                                    if success:
+                                        logger.info(f"✅ 计划 {plan.id} 预测任务重新加载成功")
+                                    else:
+                                        logger.error(f"❌ 计划 {plan.id} 预测任务重新加载失败")
+                                except Exception as reload_error:
+                                    logger.error(f"重新加载计划 {plan.id} 预测任务失败: {reload_error}")
+                                finally:
+                                    loop.close()
+
+                except Exception as e:
+                    logger.error(f"调度器健康检查失败: {e}")
+                    # 出错后等待一段时间，但要检查停止信号
+                    if not health_check_thread._stop_event.wait(timeout=60):
+                        break
+
+        # 启动可停止的健康检查线程
+        health_check_thread = StoppableHealthCheckThread(
+            target=stoppable_scheduler_health_check,
             name="SchedulerHealthCheck"
         )
         health_check_thread.start()
+
+        # 注册到优雅关闭服务
+        from services.graceful_shutdown_service import graceful_shutdown_service
+        graceful_shutdown_service.register_background_thread(
+            health_check_thread,
+            "调度器健康检查线程"
+        )
+
         logger.info("✅ 调度器健康检查已启动")
 
     except Exception as e:
@@ -2004,6 +2078,11 @@ def create_app():
 def main():
     """主函数"""
     try:
+        # 初始化优雅关闭服务
+        logger.info("初始化优雅关闭服务...")
+        from services.graceful_shutdown_service import initialize_graceful_shutdown
+        initialize_graceful_shutdown()
+
         # 创建应用
         app = create_app()
 
@@ -2019,6 +2098,7 @@ def main():
 
         # 启动应用
         logger.info(f"启动 Gradio 服务: {config.GRADIO_SERVER_NAME}:{config.GRADIO_SERVER_PORT}")
+        logger.info("使用 Ctrl+C 或发送 SIGTERM 信号可以优雅关闭程序")
 
         # Gradio 启动时需要访问 localhost 进行自检，临时禁用代理
         import os

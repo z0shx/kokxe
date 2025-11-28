@@ -442,6 +442,21 @@ class WebSocketConnectionManager:
 
         logger.info("所有连接已关闭")
 
+    async def stop_all_connections(self):
+        """异步停止所有连接（优雅关闭用）"""
+        logger.info("🛑 异步关闭所有WebSocket连接...")
+
+        # 停止健康检查
+        self.stop_health_check()
+
+        # 停止所有连接
+        keys = list(self.connections.keys())
+        for key in keys:
+            inst_id, interval, is_demo = key
+            self.stop_connection(inst_id, interval, is_demo)
+
+        logger.info("✅ 所有WebSocket连接已停止")
+
 
 # 全局单例实例
 ws_connection_manager = WebSocketConnectionManager()
