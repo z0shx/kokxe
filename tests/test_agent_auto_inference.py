@@ -4,10 +4,11 @@
 """
 import asyncio
 import sys
+import os
 from pathlib import Path
 
 # 添加项目根目录到 Python 路径
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from services.langchain_agent_v2 import langchain_agent_v2_service, ConversationType
 
@@ -22,7 +23,7 @@ async def test_agent_auto_inference():
 
     try:
         message_count = 0
-        async for message_batch in langchain_agent_v2_service.stream_agent_response(
+        async for message_batch in langchain_agent_v2_service.stream_agent_response_real(
             plan_id=plan_id,
             user_message=None,  # 自动推理不需要用户消息
             conversation_type=ConversationType.AUTO_INFERENCE

@@ -19,13 +19,20 @@ from utils.logger import setup_logger
 from services.trading_tools import OKXTradingTools
 
 # Modern LangChain imports
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers.openai_functions import JsonOutputFunctionsParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
+# 使用更现代的Agent API，避免依赖冲突
+try:
+    from langchain.agents import AgentExecutor, create_openai_tools_agent
+    AGENT_AVAILABLE = True
+except ImportError:
+    AGENT_AVAILABLE = False
+    print("警告: LangChain Agents API不可用，将使用手动工具调用")
 
 logger = setup_logger(__name__, "langchain_agent_v2.log")
 
@@ -413,6 +420,10 @@ class LangChainAgentV2Service:
 
         return system_prompt
 
+    def _get_prediction_data(self, plan_id: int) -> str:
+        """获取预测数据用于Agent分析"""
+        return self._get_prediction_data_for_context(plan_id)
+
     def _get_prediction_data_for_context(self, plan_id: int) -> str:
         """获取预测数据用于上下文"""
         try:
@@ -768,17 +779,298 @@ Tool_Name: 参数1=value1, 参数2=value2
 
     # 兼容性方法 - 为了保持向后兼容
     async def stream_manual_inference(self, plan_id: int):
-        """手动推理流式响应（兼容性方法）"""
-        async for message_batch in self.stream_agent_response(
+        """手动推理流式响应（使用真正的LangChain Agent）"""
+        async for message_batch in self.stream_agent_response_real(
             plan_id=plan_id,
             user_message=None,
             conversation_type=ConversationType.AUTO_INFERENCE
         ):
             yield message_batch
 
+    async def _create_real_langchain_agent(self, llm_client, tools):
+        """创建真正的LangChain Agent"""
+        if not AGENT_AVAILABLE:
+            logger.warning("LangChain Agent API不可用，使用改进的手动工具绑定")
+            return None
+
+        try:
+            # 创建Agent提示词模板
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", """智能K线交易决策系统 - LangChain Agent
+
+你是一个专业的加密货币交易AI助手，使用LangChain Agent框架进行智能决策。
+
+## 核心能力
+- 分析预测数据和历史K线数据
+- 执行交易操作和风险管理
+- 使用工具调用获取实时信息
+- 提供清晰的分析和决策过程
+
+## 决策流程
+1. 数据分析：查询最新的预测数据和历史K线数据
+2. 市场分析：识别价格趋势和交易机会
+3. 风险评估：检查当前持仓和账户状态
+4. 交易决策：基于分析结果执行合适的交易操作
+5. 风险控制：设置合理的止损和止盈
+
+## 资金与风控规则
+- 已占用本金 + 新订单 ≤ 可用余额
+- 最大订单数：N个，本金均分
+- 止损：单笔亏损 ≥ 20% 立即平仓
+- 每次仅新建1个限价订单
+- 保守原则：不确定时不操作，保持现状
+
+请分析当前情况并调用必要的工具来获取信息，然后基于数据做出明智的交易决策。"""),
+                ("human", "{input}"),
+                MessagesPlaceholder(variable_name="agent_scratchpad"),
+            ])
+
+            # 创建Agent
+            agent = create_openai_tools_agent(llm_client, tools, prompt)
+
+            # 创建AgentExecutor
+            agent_executor = AgentExecutor(
+                agent=agent,
+                tools=tools,
+                verbose=True,
+                return_intermediate_steps=True,
+                max_iterations=10,
+                handle_parsing_errors=True
+            )
+
+            return agent_executor
+
+        except Exception as e:
+            logger.error(f"创建LangChain Agent失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    async def _create_improved_tool_binding(self, llm_client, tools):
+        """创建改进的工具绑定LLM（当Agent API不可用时）"""
+        try:
+            # 使用bind_tools绑定工具
+            if hasattr(llm_client, 'bind_tools'):
+                llm_with_tools = llm_client.bind_tools(tools)
+                return llm_with_tools
+            else:
+                # 降级到手动工具绑定
+                logger.warning("LLM不支持bind_tools，使用手动工具调用")
+                return llm_client
+        except Exception as e:
+            logger.error(f"工具绑定失败: {e}")
+            return llm_client
+
+    async def stream_agent_response_real(
+        self,
+        plan_id: int,
+        user_message: str = None,
+        conversation_type: ConversationType = ConversationType.MANUAL_CHAT,
+        append_mode: bool = True
+    ) -> AsyncGenerator[List[Dict[str, str]], None]:
+        """
+        使用真正的LangChain Agent进行流式响应
+        """
+        try:
+            # 获取计划配置
+            plan = None
+            llm_config = None
+            with get_db() as db:
+                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                if not plan:
+                    yield [{"role": "assistant", "content": "❌ 计划不存在"}]
+                    return
+
+                llm_config = db.query(LLMConfig).filter(LLMConfig.id == plan.llm_config_id).first()
+                if not llm_config:
+                    yield [{"role": "assistant", "content": "❌ LLM配置不存在"}]
+                    return
+
+            # 创建对话
+            conversation = await self._create_conversation(plan_id, conversation_type)
+
+            # 获取LLM客户端
+            llm_client = self._get_llm_client(llm_config)
+
+            # 创建工具
+            tools_config = json.loads(plan.agent_tools_config) if isinstance(plan.agent_tools_config, str) else plan.agent_tools_config
+            tools = self._create_langchain_tools(tools_config or {})
+
+            if not tools:
+                yield [{"role": "assistant", "content": "❌ 没有可用的工具"}]
+                return
+
+            # 尝试创建真正的LangChain Agent，或者使用改进的工具绑定
+            if AGENT_AVAILABLE:
+                agent_executor = await self._create_real_langchain_agent(llm_client, tools)
+                use_agent_executor = agent_executor is not None
+            else:
+                agent_executor = None
+                use_agent_executor = False
+
+            # 构建输入消息
+            if conversation_type == ConversationType.AUTO_INFERENCE:
+                prediction_data = self._get_prediction_data(plan_id)  # 移除await，这是同步方法
+                system_input = f"自动推理模式\\n\\n{plan.agent_prompt or ''}\\n\\n{prediction_data}\\n\\n请分析预测数据并做出交易决策。"
+                input_message = system_input
+            else:
+                input_message = user_message or "请开始分析并提供交易建议。"
+
+            # 保存用户消息
+            await self._save_message(conversation.id, "user", input_message)
+
+            if use_agent_executor:
+                # 使用真正的LangChain AgentExecutor
+                start_msg = f"🤖 **启动真正的LangChain Agent**\\n📋 已加载 {len(tools)} 个工具\\n🧠 开始智能分析..."
+                yield [{"role": "assistant", "content": start_msg}]
+                await self._save_message(conversation.id, "assistant", start_msg)
+
+                try:
+                    # 使用asyncio在单独的线程中运行同步AgentExecutor
+                    result = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: agent_executor.invoke({"input": input_message})
+                    )
+
+                    # 处理结果
+                    if result:
+                        # 显示最终答案
+                        final_answer = result.get("output", "Agent执行完成")
+                        yield [{"role": "assistant", "content": f"🎯 **Agent决策结果**:\\n{final_answer}"}]
+                        await self._save_message(conversation.id, "assistant", f"🎯 **Agent决策结果**: {final_answer}")
+
+                        # 显示中间步骤
+                        intermediate_steps = result.get("intermediate_steps", [])
+                        if intermediate_steps:
+                            for i, (tool_call, tool_result) in enumerate(intermediate_steps, 1):
+                                tool_name = tool_call.tool
+                                tool_input = tool_call.args
+
+                                step_msg = f"🛠️ **工具调用 {i}**: `{tool_name}`\\n📝 **参数**: `{tool_input}`\\n✅ **结果**: `{str(tool_result)[:200]}...`"
+                                yield [{"role": "assistant", "content": step_msg}]
+                                await self._save_message(conversation.id, "assistant", step_msg)
+
+                        # 显示完成消息
+                        completion_msg = f"✅ **LangChain Agent执行完成**\\n📊 工具调用次数: {len(intermediate_steps)}\\n🎯 决策已生成"
+                        yield [{"role": "assistant", "content": completion_msg}]
+                        await self._save_message(conversation.id, "assistant", completion_msg)
+                    else:
+                        error_msg = "❌ Agent执行未返回结果"
+                        yield [{"role": "assistant", "content": error_msg}]
+                        await self._save_message(conversation.id, "assistant", error_msg)
+
+                except Exception as agent_error:
+                    logger.error(f"LangChain Agent执行失败: {agent_error}")
+                    import traceback
+                    traceback.print_exc()
+                    error_msg = f"❌ Agent执行失败: {str(agent_error)}"
+                    yield [{"role": "assistant", "content": error_msg}]
+                    await self._save_message(conversation.id, "assistant", error_msg)
+            else:
+                # 使用改进的工具绑定方法
+                start_msg = f"🤖 **启动改进的工具绑定Agent**\\n📋 已加载 {len(tools)} 个工具\\n🧠 使用bind_tools进行结构化工具调用..."
+                yield [{"role": "assistant", "content": start_msg}]
+                await self._save_message(conversation.id, "assistant", start_msg)
+
+                # 使用工具绑定的LLM
+                llm_with_tools = await self._create_improved_tool_binding(llm_client, tools)
+
+                # 构建消息
+                # 创建工具提示信息
+                tool_descriptions = []
+                for tool in tools:
+                    tool_descriptions.append(f"- {tool.name}: {tool.description}")
+
+                messages = [
+                    SystemMessage(content=f"""智能K线交易决策系统 - 改进工具绑定版本
+
+你是一个专业的加密货币交易AI助手。
+
+## 计划信息
+- 当前计划ID: {plan_id}
+- 交易对: {plan.inst_id if plan else 'Unknown'}
+
+## 可用工具
+{chr(10).join(tool_descriptions)}
+
+## 重要提示
+- 使用需要plan_id参数的工具时，请使用: {plan_id}
+- 例如: run_latest_model_inference(plan_id={plan_id})
+
+## 决策流程
+1. 分析当前市场和账户状况
+2. 获取最新数据（价格、持仓、余额等）
+3. 如需要新预测，运行推理
+4. 基于数据提供交易建议
+
+请分析当前情况并调用必要的工具。"""),
+                    HumanMessage(content=input_message)
+                ]
+
+                try:
+                    # 流式调用LLM
+                    current_content = ""
+                    tool_calls_count = 0
+
+                    async for chunk in llm_with_tools.astream(messages):
+                        if hasattr(chunk, 'tool_calls') and chunk.tool_calls:
+                            # 处理结构化工具调用
+                            for tool_call in chunk.tool_calls:
+                                tool_calls_count += 1
+                                tool_name = tool_call.get("name", "unknown")
+                                tool_args = tool_call.get("args", {})
+
+                                tool_call_msg = f"🛠️ **结构化工具调用** ({tool_calls_count}): `{tool_name}`\\n📝 **参数**: `{tool_args}`"
+                                yield [{"role": "assistant", "content": tool_call_msg}]
+                                await self._save_message(conversation.id, "assistant", tool_call_msg)
+
+                                # 执行工具
+                                try:
+                                    tool_func = next((t for t in tools if t.name == tool_name), None)
+                                    if tool_func:
+                                        result = tool_func.invoke(tool_args)
+
+                                        result_str = str(result)
+                                        if isinstance(result, dict) and "error" in result:
+                                            result_str = f"工具执行失败: {result['error']}"
+
+                                        tool_result_msg = f"✅ **{tool_name} 执行完成**:\\n```json\\n{result_str}\\n```"
+                                        yield [{"role": "assistant", "content": tool_result_msg}]
+                                        await self._save_message(conversation.id, "assistant", tool_result_msg)
+
+                                        # 将工具结果添加到消息中
+                                        messages.append(ToolMessage(content=str(result), tool_call_id=tool_call.get("id", "")))
+
+                                except Exception as tool_error:
+                                    error_msg = f"❌ {tool_name} 执行失败: {str(tool_error)}"
+                                    yield [{"role": "assistant", "content": error_msg}]
+                                    await self._save_message(conversation.id, "assistant", error_msg)
+
+                        if hasattr(chunk, 'content') and chunk.content:
+                            current_content += chunk.content
+                            if chunk.content.strip():
+                                yield [{"role": "assistant", "content": chunk.content}]
+
+                    # 显示完成消息
+                    completion_msg = f"✅ **改进工具绑定Agent执行完成**\\n📊 结构化工具调用次数: {tool_calls_count}\\n🎯 分析已完成"
+                    yield [{"role": "assistant", "content": completion_msg}]
+                    await self._save_message(conversation.id, "assistant", completion_msg)
+
+                except Exception as binding_error:
+                    logger.error(f"工具绑定执行失败: {binding_error}")
+                    error_msg = f"❌ 工具绑定执行失败: {str(binding_error)}"
+                    yield [{"role": "assistant", "content": error_msg}]
+                    await self._save_message(conversation.id, "assistant", error_msg)
+
+        except Exception as e:
+            logger.error(f"创建Agent失败: {e}")
+            import traceback
+            traceback.print_exc()
+            yield [{"role": "assistant", "content": f"❌ 创建Agent失败: {str(e)}"}]
+
     async def stream_conversation(self, plan_id: int, user_message: str):
-        """流式对话（兼容性方法）"""
-        async for message_batch in self.stream_agent_response(
+        """流式对话（使用真正的LangChain Agent）"""
+        async for message_batch in self.stream_agent_response_real(
             plan_id=plan_id,
             user_message=user_message,
             conversation_type=ConversationType.MANUAL_CHAT
