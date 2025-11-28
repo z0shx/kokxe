@@ -449,8 +449,11 @@ class OKXTradingTools:
     def amend_order(
         self,
         inst_id: str,
+        cl_ord_id: str = None,
+        new_sz: str = None,
+        new_px: str = None,
+        req_id: str = None,
         order_id: str = None,
-        client_order_id: str = None,
         new_size: Optional[float] = None,
         new_price: Optional[float] = None
     ) -> Dict:
@@ -458,23 +461,33 @@ class OKXTradingTools:
         修改订单
 
         Args:
-            inst_id: 交易对
-            order_id: 订单ID (可选)
-            client_order_id: 客户端订单ID (可选)
-            new_size: 新数量
-            new_price: 新价格
+            inst_id: 交易对，如 'ETH-USDT'
+            cl_ord_id: 客户端订单ID（新参数名，兼容OKX API）
+            new_sz: 修改的新数量（新参数名）
+            new_px: 修改后的新价格（新参数名）
+            req_id: 用户自定义修改事件ID
+            order_id: 订单ID（兼容旧参数）
+            new_size: 新数量（兼容旧参数）
+            new_price: 新价格（兼容旧参数）
 
         Returns:
             修改结果
         """
+        # 参数兼容处理
+        if cl_ord_id is None and client_order_id is not None:
+            cl_ord_id = client_order_id
+        if new_sz is None and new_size is not None:
+            new_sz = str(new_size)
+        if new_px is None and new_price is not None:
+            new_px = str(new_price)
         try:
-            if not order_id and not client_order_id:
+            if not cl_ord_id and not order_id and not client_order_id:
                 return {
                     'success': False,
-                    'error': '必须提供order_id或client_order_id之一'
+                    'error': '必须提供cl_ord_id或order_id之一'
                 }
 
-            if not new_size and not new_price:
+            if not new_sz and not new_px and not new_size and not new_price:
                 return {
                     'success': False,
                     'error': '必须提供new_size或new_price之一'
@@ -484,16 +497,29 @@ class OKXTradingTools:
             amend_data = {
                 "instId": inst_id,
             }
-            if order_id:
-                amend_data["ordId"] = order_id
-            if client_order_id:
+
+            # 使用新的参数名，兼容旧的参数名
+            if cl_ord_id:
+                validated_cl_ord_id = validate_and_generate_client_order_id(cl_ord_id)
+                amend_data["clOrdId"] = validated_cl_ord_id
+            elif client_order_id:
                 validated_client_order_id = validate_and_generate_client_order_id(client_order_id)
                 amend_data["clOrdId"] = validated_client_order_id
+            elif order_id:
+                amend_data["ordId"] = order_id
 
-            if new_size is not None:
+            if new_sz is not None:
+                amend_data["newSz"] = new_sz
+            elif new_size is not None:
                 amend_data["newSz"] = str(new_size)
-            if new_price is not None:
+
+            if new_px is not None:
+                amend_data["newPx"] = new_px
+            elif new_price is not None:
                 amend_data["newPx"] = str(new_price)
+
+            if req_id is not None:
+                amend_data["reqId"] = req_id
 
             # 请求路径和方法
             request_path = "/api/v5/trade/amend-order"
@@ -1005,12 +1031,14 @@ class OKXTradingTools:
                 'error': str(e)
             }
 
-    def get_pending_orders(self, inst_id: str = None) -> Dict:
+    def get_pending_orders(self, inst_id: str = None, state: str = "live", limit: int = 300) -> Dict:
         """
         查询当前未成交订单
 
         Args:
             inst_id: 交易对，如 BTC-USDT。不填则返回所有交易对的挂单
+            state: 订单状态，'live': 等待成交, 'partially_filled': 部分成交，默认'live'
+            limit: 返回数量限制，默认300
 
         Returns:
             未成交订单信息
@@ -1019,8 +1047,19 @@ class OKXTradingTools:
             # 请求路径和方法
             request_path = "/api/v5/trade/orders-pending"
             params = []
+
+            # 固定参数
+            params.append("instType=SPOT")
+            params.append("ordType=limit")
+
             if inst_id:
                 params.append(f"instId={inst_id}")
+
+            if state:
+                params.append(f"state={state}")
+
+            if limit:
+                params.append(f"limit={limit}")
 
             if params:
                 request_path += "?" + "&".join(params)

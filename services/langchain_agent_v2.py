@@ -98,20 +98,133 @@ class LangChainAgentV2Service:
 
         return self._llm_clients[client_key]
 
-    def _create_langchain_tools(self, tools_config: Dict[str, bool]):
-        """创建LangChain工具"""
+    def _create_langchain_tools(self, tools_config: Dict[str, bool], plan_id: int = None):
+        """创建LangChain工具 - 重构版本，专注于10个核心工具"""
+        from database.db import get_db
+        from database.models import TradingPlan, PredictionData
+
         available_tools = {}
 
         # 只启用配置中启用的工具
         enabled_tools = [name for name, enabled in tools_config.items() if enabled]
 
-        if "get_current_price" in enabled_tools:
-            @tool
-            def get_current_price(inst_id: str) -> Dict[str, Any]:
-                """获取当前市场价格"""
-                return self.trading_tools.get_current_price(inst_id=inst_id)
-            available_tools["get_current_price"] = get_current_price
+        # 获取计划信息用于工具调用
+        plan_info = None
+        if plan_id:
+            with get_db() as db:
+                plan_info = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
 
+        # 1. 查询预测数据工具
+        if "query_prediction_data" in enabled_tools:
+            @tool
+            def query_prediction_data(
+                plan_id: int,
+                start_time: str = None,
+                end_time: str = None,
+                inference_batch_id: str = None,
+                limit: int = 50
+            ) -> Dict[str, Any]:
+                """查询数据库中的预测数据,按时间范围、批次ID等条件查询
+
+                Args:
+                    plan_id: 计划ID
+                    start_time: 开始时间(UTC+8), 格式: '2025-01-01 00:00:00'
+                    end_time: 结束时间(UTC+8), 格式: '2025-01-01 23:59:59'
+                    inference_batch_id: 批次ID
+                    limit: 返回数量限制，默认50
+                """
+                try:
+                    with get_db() as db:
+                        query = db.query(PredictionData).filter(PredictionData.plan_id == plan_id)
+
+                        # 时间范围查询
+                        if start_time:
+                            from datetime import datetime
+                            start_dt = datetime.strptime(start_time, '%Y-%m-%d %H:%M:%S')
+                            query = query.filter(PredictionData.timestamp >= start_dt)
+                        if end_time:
+                            from datetime import datetime
+                            end_dt = datetime.strptime(end_time, '%Y-%m-%d %H:%M:%S')
+                            query = query.filter(PredictionData.timestamp <= end_dt)
+
+                        # 批次ID查询
+                        if inference_batch_id:
+                            query = query.filter(PredictionData.inference_batch_id == inference_batch_id)
+
+                        # 限制数量并按时间倒序
+                        predictions = query.order_by(PredictionData.timestamp.desc()).limit(limit).all()
+
+                        return {
+                            "success": True,
+                            "count": len(predictions),
+                            "data": [
+                                {
+                                    "timestamp": pred.timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                                    "inference_batch_id": pred.inference_batch_id,
+                                    "open": pred.open,
+                                    "high": pred.high,
+                                    "low": pred.low,
+                                    "close": pred.close,
+                                    "close_min": pred.close_min,
+                                    "close_max": pred.close_max,
+                                    "upward_probability": pred.upward_probability,
+                                    "volatility_amplification_probability": pred.volatility_amplification_probability
+                                } for pred in predictions
+                            ]
+                        }
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            available_tools["query_prediction_data"] = query_prediction_data
+
+        # 2. 查询历史预测批次工具
+        if "get_prediction_history" in enabled_tools:
+            @tool
+            def get_prediction_history(plan_id: int, limit: int = 30) -> Dict[str, Any]:
+                """查询历史预测数据,返回推理批次列表
+
+                Args:
+                    plan_id: 计划ID
+                    limit: 返回批次数量，最多30个
+                """
+                try:
+                    with get_db() as db:
+                        # 获取不同的inference_batch_id
+                        batches = db.query(PredictionData.inference_batch_id).filter(
+                            PredictionData.plan_id == plan_id
+                        ).distinct().order_by(PredictionData.inference_batch_id.desc()).limit(limit).all()
+
+                        batch_ids = [batch[0] for batch in batches if batch[0]]
+
+                        # 获取每个批次的详细信息
+                        batch_info = []
+                        for batch_id in batch_ids:
+                            first_pred = db.query(PredictionData).filter(
+                                PredictionData.plan_id == plan_id,
+                                PredictionData.inference_batch_id == batch_id
+                            ).first()
+
+                            if first_pred:
+                                batch_info.append({
+                                    "inference_batch_id": batch_id,
+                                    "created_at": first_pred.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                                    "prediction_count": db.query(PredictionData).filter(
+                                        PredictionData.plan_id == plan_id,
+                                        PredictionData.inference_batch_id == batch_id
+                                    ).count()
+                                })
+
+                        return {
+                            "success": True,
+                            "total_batches": len(batch_info),
+                            "data": batch_info
+                        }
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            available_tools["get_prediction_history"] = get_prediction_history
+
+        # 3. 查询历史K线数据工具
         if "query_historical_kline_data" in enabled_tools:
             @tool
             def query_historical_kline_data(
@@ -121,961 +234,550 @@ class LangChainAgentV2Service:
                 end_time: str = None,
                 limit: int = 100
             ) -> Dict[str, Any]:
-                """查询历史K线数据"""
-                params = {"inst_id": inst_id, "interval": interval, "limit": limit}
-                if start_time:
-                    params["start_time"] = start_time
-                if end_time:
-                    params["end_time"] = end_time
-                return self.trading_tools.query_historical_kline_data(**params)
+                """查询历史K线实际交易数据,使用UTC+8时间戳作为查询条件
+
+                Args:
+                    inst_id: 交易对，如 'ETH-USDT'
+                    interval: 时间间隔，默认 '1H'
+                    start_time: 开始时间(UTC+8), 格式: '2025-01-01 00:00:00'
+                    end_time: 结束时间(UTC+8), 格式: '2025-01-01 23:59:59'
+                    limit: 返回数量，默认100
+                """
+                try:
+                    with get_db() as db:
+                        from database.models import KlineData
+
+                        query = db.query(KlineData).filter(
+                            KlineData.inst_id == inst_id,
+                            KlineData.interval == interval
+                        )
+
+                        # 时间范围查询
+                        if start_time:
+                            from datetime import datetime
+                            start_dt = datetime.strptime(start_time, '%Y-%m-%d %H:%M:%S')
+                            query = query.filter(KlineData.timestamp >= start_dt)
+                        if end_time:
+                            from datetime import datetime
+                            end_dt = datetime.strptime(end_time, '%Y-%m-%d %H:%M:%S')
+                            query = query.filter(KlineData.timestamp <= end_dt)
+
+                        # 限制数量并按时间倒序
+                        klines = query.order_by(KlineData.timestamp.desc()).limit(limit).all()
+
+                        return {
+                            "success": True,
+                            "count": len(klines),
+                            "data": [
+                                {
+                                    "timestamp": kline.timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                                    "open": kline.open,
+                                    "high": kline.high,
+                                    "low": kline.low,
+                                    "close": kline.close,
+                                    "volume": kline.volume,
+                                    "amount": kline.amount
+                                } for kline in klines
+                            ]
+                        }
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
             available_tools["query_historical_kline_data"] = query_historical_kline_data
 
-        if "get_positions" in enabled_tools:
+        # 4. 获取当前UTC+8时间工具
+        if "get_current_utc_time" in enabled_tools:
             @tool
-            def get_positions(inst_id: str = None) -> Dict[str, Any]:
-                """获取当前持仓"""
-                return self.trading_tools.get_positions(inst_id=inst_id)
-            available_tools["get_positions"] = get_positions
+            def get_current_utc_time() -> Dict[str, Any]:
+                """读取当前日期与时间(UTC+8),用于时间相关操作"""
+                from datetime import datetime
+                import pytz
 
-        if "get_trading_limits" in enabled_tools:
+                # 获取北京时区当前时间
+                beijing_tz = pytz.timezone('Asia/Shanghai')
+                current_time = datetime.now(beijing_tz)
+
+                return {
+                    "success": True,
+                    "data": {
+                        "current_time": current_time.strftime('%Y-%m-%d %H:%M:%S'),
+                        "timestamp": current_time.timestamp(),
+                        "timezone": "UTC+8"
+                    }
+                }
+
+            available_tools["get_current_utc_time"] = get_current_utc_time
+
+        # 5. 执行模型推理工具
+        if "run_latest_model_inference" in enabled_tools:
             @tool
-            def get_trading_limits(inst_id: str) -> Dict[str, Any]:
-                """获取交易限制"""
-                return self.trading_tools.get_trading_limits(inst_id=inst_id)
-            available_tools["get_trading_limits"] = get_trading_limits
+            def run_latest_model_inference(plan_id: int) -> Dict[str, Any]:
+                """执行最新微调版本模型的预测推理"""
+                try:
+                    # 导入推理服务
+                    from services.inference_service import inference_service
 
+                    # 检查自动推理配置
+                    if plan_info:
+                        auto_inference_enabled = plan_info.auto_inference_enabled
+                        auto_inference_interval = plan_info.auto_inference_interval_hours or 4
+
+                        if not auto_inference_enabled:
+                            return {
+                                "success": False,
+                                "error": "此计划未启用自动推理，请在计划配置中启用"
+                            }
+
+                        # 检查距离上次推理的时间间隔
+                        if plan_info.last_finetune_time:
+                            from datetime import datetime, timedelta
+                            time_diff = datetime.now() - plan_info.last_finetune_time
+                            hours_diff = time_diff.total_seconds() / 3600
+
+                            if hours_diff < auto_inference_interval:
+                                return {
+                                    "success": False,
+                                    "error": f"距离上次推理不足{auto_inference_interval}小时，请稍后再试"
+                                }
+
+                    # 执行推理
+                    result = inference_service.run_inference(plan_id)
+
+                    return {
+                        "success": True,
+                        "message": "预测推理已启动（正在后台执行）",
+                        "inference_params": result.get("inference_params", {})
+                    }
+
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            available_tools["run_latest_model_inference"] = run_latest_model_inference
+
+        # 6. 查询账户余额工具
+        if "get_account_balance" in enabled_tools:
+            @tool
+            def get_account_balance(ccy: str = "USDT") -> Dict[str, Any]:
+                """查询账户余额,返回可用余额、冻结余额等信息
+
+                Args:
+                    ccy: 币种，默认查询USDT
+                """
+                try:
+                    if not plan_info or not all([plan_info.okx_api_key, plan_info.okx_secret_key, plan_info.okx_passphrase]):
+                        return {"success": False, "error": "计划未配置OKX API密钥"}
+
+                    # 创建OKX交易工具实例
+                    trading_tools = OKXTradingTools(
+                        api_key=plan_info.okx_api_key,
+                        secret_key=plan_info.okx_secret_key,
+                        passphrase=plan_info.okx_passphrase,
+                        is_demo=plan_info.is_demo
+                    )
+
+                    # 调用OKX API
+                    result = trading_tools.get_account_balance(ccy=ccy)
+
+                    return result
+
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            available_tools["get_account_balance"] = get_account_balance
+
+        # 7. 查询未成交订单工具
+        if "get_pending_orders" in enabled_tools:
+            @tool
+            def get_pending_orders(
+                inst_id: str,
+                state: str = "live",
+                limit: int = 300
+            ) -> Dict[str, Any]:
+                """查询当前所有OKX未成交订单(挂单)信息
+
+                Args:
+                    inst_id: 交易对ID，如 'ETH-USDT'
+                    state: 订单状态，'live': 等待成交, 'partially_filled': 部分成交
+                    limit: 返回数量限制，默认300
+                """
+                try:
+                    if not plan_info or not all([plan_info.okx_api_key, plan_info.okx_secret_key, plan_info.okx_passphrase]):
+                        return {"success": False, "error": "计划未配置OKX API密钥"}
+
+                    # 创建OKX交易工具实例
+                    trading_tools = OKXTradingTools(
+                        api_key=plan_info.okx_api_key,
+                        secret_key=plan_info.okx_secret_key,
+                        passphrase=plan_info.okx_passphrase,
+                        is_demo=plan_info.is_demo
+                    )
+
+                    # 调用OKX API
+                    result = trading_tools.get_pending_orders(
+                        inst_id=inst_id,
+                        state=state,
+                        limit=limit
+                    )
+
+                    return result
+
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
+
+            available_tools["get_pending_orders"] = get_pending_orders
+
+        # 8. 下限价单工具
         if "place_order" in enabled_tools:
             @tool
             def place_order(
                 inst_id: str,
                 side: str,
-                order_type: str,
-                size: float,
-                price: Optional[float] = None
+                sz: str,
+                px: str,
+                cl_ord_id: str = None
             ) -> Dict[str, Any]:
-                """下单交易"""
-                return self.trading_tools.place_order(
-                    inst_id=inst_id,
-                    side=side,
-                    order_type=order_type,
-                    size=size,
-                    price=price
-                )
-            available_tools["place_order"] = place_order
+                """下限价单,以指定价格买入或卖出
 
-        if "cancel_order" in enabled_tools:
-            @tool
-            def cancel_order(inst_id: str, order_id: str) -> Dict[str, Any]:
-                """取消订单"""
-                return self.trading_tools.cancel_order(inst_id=inst_id, order_id=order_id)
-            available_tools["cancel_order"] = cancel_order
-
-        if "get_account_balance" in enabled_tools:
-            @tool
-            def get_account_balance() -> Dict[str, Any]:
-                """获取账户余额"""
-                return self.trading_tools.get_account_balance()
-            available_tools["get_account_balance"] = get_account_balance
-
-        if "get_latest_predictions" in enabled_tools:
-            @tool
-            def get_latest_predictions(plan_id: int, limit: int = 10) -> Dict[str, Any]:
-                """获取最新预测数据"""
+                Args:
+                    inst_id: 交易对ID，如 'ETH-USDT'
+                    side: 订单方向，'buy': 买, 'sell': 卖
+                    sz: 委托数量
+                    px: 委托价格
+                    cl_ord_id: 客户端订单ID，如不提供将自动生成
+                """
                 try:
-                    with get_db() as db:
-                        predictions = db.query(PredictionData).filter(
-                            PredictionData.plan_id == plan_id
-                        ).order_by(PredictionData.timestamp.desc()).limit(limit).all()
+                    if not plan_info or not all([plan_info.okx_api_key, plan_info.okx_secret_key, plan_info.okx_passphrase]):
+                        return {"success": False, "error": "计划未配置OKX API密钥"}
 
-                        return {
-                            "success": True,
-                            "data": [
-                                {
-                                    "timestamp": pred.timestamp.isoformat(),
-                                    "open": pred.open,
-                                    "high": pred.high,
-                                    "low": pred.low,
-                                    "close": pred.close,
-                                    "close_min": pred.close_min,
-                                    "close_max": pred.close_max
-                                }
-                                for pred in predictions
-                            ]
-                        }
-                except Exception as e:
-                    return {"success": False, "error": str(e)}
-            available_tools["get_latest_predictions"] = get_latest_predictions
-
-        if "modify_order" in enabled_tools:
-            @tool
-            def modify_order(
-                inst_id: str,
-                order_id: str,
-                new_size: Optional[float] = None,
-                new_price: Optional[float] = None
-            ) -> Dict[str, Any]:
-                """修改订单"""
-                return self.trading_tools.modify_order(
-                    inst_id=inst_id,
-                    order_id=order_id,
-                    new_size=new_size,
-                    new_price=new_price
-                )
-            available_tools["modify_order"] = modify_order
-
-        if "get_pending_orders" in enabled_tools:
-            @tool
-            def get_pending_orders(inst_id: str = None) -> Dict[str, Any]:
-                """获取挂单"""
-                return self.trading_tools.get_pending_orders(inst_id=inst_id)
-            available_tools["get_pending_orders"] = get_pending_orders
-
-        if "get_current_utc_time" in enabled_tools:
-            @tool
-            def get_current_utc_time() -> Dict[str, Any]:
-                """获取当前UTC时间"""
-                from datetime import datetime, timezone
-                return {
-                    "success": True,
-                    "data": {
-                        "utc_time": datetime.now(timezone.utc).isoformat(),
-                        "timestamp": int(datetime.now(timezone.utc).timestamp())
-                    }
-                }
-            available_tools["get_current_utc_time"] = get_current_utc_time
-
-        if "place_stop_loss_order" in enabled_tools:
-            @tool
-            def place_stop_loss_order(
-                inst_id: str,
-                side: str,
-                size: float,
-                stop_price: float
-            ) -> Dict[str, Any]:
-                """设置止损订单"""
-                return self.trading_tools.place_stop_loss_order(
-                    inst_id=inst_id,
-                    side=side,
-                    size=size,
-                    stop_price=stop_price
-                )
-            available_tools["place_stop_loss_order"] = place_stop_loss_order
-
-        if "query_prediction_data" in enabled_tools:
-            @tool
-            def query_prediction_data(
-                plan_id: int,
-                batch_id: str = None,
-                start_time: str = None,
-                end_time: str = None,
-                limit: int = 100
-            ) -> Dict[str, Any]:
-                """查询预测数据"""
-                try:
-                    with get_db() as db:
-                        query = db.query(PredictionData).filter(
-                            PredictionData.plan_id == plan_id
-                        )
-
-                        if batch_id:
-                            query = query.filter(PredictionData.batch_id == batch_id)
-                        if start_time:
-                            query = query.filter(PredictionData.timestamp >= start_time)
-                        if end_time:
-                            query = query.filter(PredictionData.timestamp <= end_time)
-
-                        predictions = query.order_by(PredictionData.timestamp.desc()).limit(limit).all()
-
-                        return {
-                            "success": True,
-                            "data": [
-                                {
-                                    "batch_id": pred.batch_id,
-                                    "timestamp": pred.timestamp.isoformat(),
-                                    "open": pred.open,
-                                    "high": pred.high,
-                                    "low": pred.low,
-                                    "close": pred.close,
-                                    "close_min": pred.close_min,
-                                    "close_max": pred.close_max,
-                                    "upward_probability": pred.upward_probability,
-                                    "volatility_amplification_probability": pred.volatility_amplification_probability
-                                }
-                                for pred in predictions
-                            ]
-                        }
-                except Exception as e:
-                    return {"success": False, "error": str(e)}
-            available_tools["query_prediction_data"] = query_prediction_data
-
-        if "get_prediction_history" in enabled_tools:
-            @tool
-            def get_prediction_history(plan_id: int, days: int = 7) -> Dict[str, Any]:
-                """获取预测历史"""
-                try:
-                    from datetime import datetime, timedelta
-                    start_date = datetime.now() - timedelta(days=days)
-
-                    with get_db() as db:
-                        # 按批次分组
-                        batches = db.query(
-                            PredictionData.batch_id,
-                            func.min(PredictionData.timestamp).label('start_time'),
-                            func.max(PredictionData.timestamp).label('end_time'),
-                            func.count(PredictionData.id).label('count')
-                        ).filter(
-                            PredictionData.plan_id == plan_id,
-                            PredictionData.timestamp >= start_date
-                        ).group_by(PredictionData.batch_id).order_by(
-                            PredictionData.batch_id.desc()
-                        ).all()
-
-                        return {
-                            "success": True,
-                            "data": [
-                                {
-                                    "batch_id": batch.batch_id,
-                                    "start_time": batch.start_time.isoformat(),
-                                    "end_time": batch.end_time.isoformat(),
-                                    "data_points": batch.count
-                                }
-                                for batch in batches
-                            ]
-                        }
-                except Exception as e:
-                    return {"success": False, "error": str(e)}
-            available_tools["get_prediction_history"] = get_prediction_history
-
-        if "run_latest_model_inference" in enabled_tools:
-            @tool
-            def run_latest_model_inference(plan_id: int) -> Dict[str, Any]:
-                """运行最新模型推理"""
-                try:
-                    from services.schedule_service import ScheduleService
-                    result = ScheduleService.trigger_inference(plan_id)
-                    return result
-                except Exception as e:
-                    return {"success": False, "error": str(e)}
-            available_tools["run_latest_model_inference"] = run_latest_model_inference
-
-        if "delete_prediction_data_by_batch" in enabled_tools:
-            @tool
-            def delete_prediction_data_by_batch(batch_id: str) -> Dict[str, Any]:
-                """按批次删除预测数据"""
-                try:
-                    with get_db() as db:
-                        deleted_count = db.query(PredictionData).filter(
-                            PredictionData.batch_id == batch_id
-                        ).delete()
-                        db.commit()
-
-                        return {
-                            "success": True,
-                            "data": {
-                                "batch_id": batch_id,
-                                "deleted_count": deleted_count
-                            }
-                        }
-                except Exception as e:
-                    db.rollback()
-                    return {"success": False, "error": str(e)}
-            available_tools["delete_prediction_data_by_batch"] = delete_prediction_data_by_batch
-
-        return list(available_tools.values())
-
-    def _build_system_prompt(self, plan: TradingPlan, training_record: TrainingRecord) -> str:
-        """构建系统提示词"""
-        # 优先使用配置中的系统提示词
-        if plan.agent_prompt and plan.agent_prompt.strip():
-            system_prompt = plan.agent_prompt.strip()
-        else:
-            # 如果没有配置提示词，使用默认提示词
-            system_prompt = """你是一个专业的加密货币交易分析师，基于AI预测模型提供交易建议。
-
-你的任务是基于提供的预测数据进行市场分析，并在必要时执行交易操作。
-
-**分析原则：**
-1. 仔细分析预测数据的趋势和置信度
-2. 考虑市场风险和资金管理
-3. 提供清晰的交易建议和理由
-4. 使用工具获取实时市场数据辅助决策
-
-**风险管理：**
-- 严格遵守交易限额
-- 优先考虑资金安全
-- 避免过度交易
-
-现在开始分析..."""
-
-        # 添加交易对信息
-        if plan.inst_id:
-            system_prompt += f"\n\n**交易对**: {plan.inst_id}"
-            system_prompt += f"\n**时间周期**: {plan.interval}"
-
-        # 添加训练模型信息
-        if training_record:
-            system_prompt += f"\n\n**使用模型**: v{training_record.version} (ID: {training_record.id})"
-            if training_record.train_end_time:
-                system_prompt += f"\n**训练完成时间**: {training_record.train_end_time}"
-
-        return system_prompt
-
-    def _get_prediction_data(self, plan_id: int) -> str:
-        """获取预测数据用于Agent分析"""
-        return self._get_prediction_data_for_context(plan_id)
-
-    def _get_prediction_data_for_context(self, plan_id: int) -> str:
-        """获取预测数据用于上下文"""
-        try:
-            with get_db() as db:
-                # 获取最新的预测数据批次
-                latest_batch = db.query(PredictionData.inference_batch_id).filter(
-                    PredictionData.plan_id == plan_id
-                ).group_by(PredictionData.inference_batch_id).order_by(
-                    func.max(PredictionData.created_at).desc()
-                ).limit(1).first()
-
-                if not latest_batch:
-                    return ""
-
-                batch_id = latest_batch[0]
-                predictions = db.query(PredictionData).filter(
-                    PredictionData.plan_id == plan_id,
-                    PredictionData.inference_batch_id == batch_id
-                ).order_by(PredictionData.timestamp).limit(24).all()
-
-                if not predictions:
-                    return ""
-
-                # 格式化为CSV格式
-                csv_lines = ["timestamp,open,high,low,close,close_min,close_max"]
-                for pred in predictions:
-                    csv_lines.append(
-                        f"{pred.timestamp.isoformat()},"
-                        f"{pred.open},{pred.high},{pred.low},"
-                        f"{pred.close},{pred.close_min or ''},{pred.close_max or ''}"
+                    # 创建OKX交易工具实例
+                    trading_tools = OKXTradingTools(
+                        api_key=plan_info.okx_api_key,
+                        secret_key=plan_info.okx_secret_key,
+                        passphrase=plan_info.okx_passphrase,
+                        is_demo=plan_info.is_demo
                     )
 
-                return "\n".join(csv_lines)
+                    # 调用OKX API
+                    result = trading_tools.place_order(
+                        inst_id=inst_id,
+                        side=side,
+                        td_mode="isolated",
+                        ord_type="limit",
+                        sz=sz,
+                        px=px,
+                        cl_ord_id=cl_ord_id,
+                        tag="kokexAgent"
+                    )
 
-        except Exception as e:
-            logger.error(f"获取预测数据失败: {e}")
-            return ""
+                    return result
 
-    async def stream_agent_response(
-        self,
-        plan_id: int,
-        user_message: str = None,
-        conversation_type: ConversationType = ConversationType.MANUAL_CHAT,
-        append_mode: bool = True
-    ) -> AsyncGenerator[List[Dict[str, str]], None]:
-        """
-        流式Agent响应，适配Gradio Chatbot接口
-        使用现代LangChain API实现
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
 
-        Args:
-            plan_id: 计划ID
-            user_message: 用户消息（可选）
-            conversation_type: 对话类型
-            append_mode: 是否追加模式（True=追加消息，False=替换最后一条）
-        """
-        try:
-            # 获取计划配置
-            with get_db() as db:
-                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
-                if not plan:
-                    yield [{"role": "assistant", "content": "❌ 计划不存在"}]
-                    return
+            available_tools["place_order"] = place_order
 
-                # 检查LLM配置
-                if not plan.llm_config_id:
-                    yield [{"role": "assistant", "content": "❌ 未配置LLM"}]
-                    return
+        # 9. 撤销订单工具
+        if "cancel_order" in enabled_tools:
+            @tool
+            def cancel_order(inst_id: str, cl_ord_id: str) -> Dict[str, Any]:
+                """撤销未成交的订单,冻结资金将立即释放
 
-                # 获取最新训练记录
-                training_record = db.query(TrainingRecord).filter(
-                    TrainingRecord.plan_id == plan_id,
-                    TrainingRecord.status == 'completed',
-                    TrainingRecord.is_active == True
-                ).order_by(TrainingRecord.created_at.desc()).first()
+                Args:
+                    inst_id: 交易对ID，如 'ETH-USDT'
+                    cl_ord_id: 客户端订单ID
+                """
+                try:
+                    if not plan_info or not all([plan_info.okx_api_key, plan_info.okx_secret_key, plan_info.okx_passphrase]):
+                        return {"success": False, "error": "计划未配置OKX API密钥"}
 
-                if not training_record:
-                    yield [{"role": "assistant", "content": "❌ 没有可用的训练记录"}]
-                    return
+                    # 创建OKX交易工具实例
+                    trading_tools = OKXTradingTools(
+                        api_key=plan_info.okx_api_key,
+                        secret_key=plan_info.okx_secret_key,
+                        passphrase=plan_info.okx_passphrase,
+                        is_demo=plan_info.is_demo
+                    )
 
-                llm_config = db.query(LLMConfig).filter(LLMConfig.id == plan.llm_config_id).first()
-                if not llm_config:
-                    yield [{"role": "assistant", "content": "❌ LLM配置不存在"}]
-                    return
+                    # 调用OKX API
+                    result = trading_tools.cancel_order(
+                        inst_id=inst_id,
+                        cl_ord_id=cl_ord_id
+                    )
 
-            # 创建对话会话
-            conversation = await self._create_conversation(
-                plan_id=plan_id,
-                conversation_type=conversation_type
-            )
+                    return result
 
-            # 发送系统提示（使用assistant角色以便在Gradio中显示）
-            system_prompt = self._build_system_prompt(plan, training_record)
-            yield [{"role": "assistant", "content": f"📋 **系统提示**:\n{system_prompt}"}]
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
 
-            # 构建输入消息
-            if conversation_type == ConversationType.AUTO_INFERENCE:
-                # 自动推理：使用预测数据作为输入
-                prediction_data = self._get_prediction_data_for_context(plan_id)
-                if not prediction_data:
-                    yield [{"role": "assistant", "content": "❌ 没有找到预测数据"}]
-                    return
+            available_tools["cancel_order"] = cancel_order
 
-                input_message = f"最新一批预测数据（CSV格式）：\n{prediction_data}"
+        # 10. 修改订单工具
+        if "amend_order" in enabled_tools:
+            @tool
+            def amend_order(
+                inst_id: str,
+                cl_ord_id: str,
+                new_sz: str = None,
+                new_px: str = None,
+                req_id: str = None
+            ) -> Dict[str, Any]:
+                """修改未成交订单的价格或数量
 
-                # 保存系统消息
-                await self._save_message(conversation.id, "system",
-                    f"开始自动推理分析，预测数据批次包含时间序列分析")
+                Args:
+                    inst_id: 交易对ID，如 'ETH-USDT'
+                    cl_ord_id: 客户端订单ID
+                    new_sz: 修改的新数量，必须大于0
+                    new_px: 修改后的新价格
+                    req_id: 用户自定义修改事件ID
+                """
+                try:
+                    if not plan_info or not all([plan_info.okx_api_key, plan_info.okx_secret_key, plan_info.okx_passphrase]):
+                        return {"success": False, "error": "计划未配置OKX API密钥"}
 
-                # 发送预测数据作为用户输入
-                yield [{"role": "user", "content": f"📈 **预测数据输入**:\n```csv\n{prediction_data}\n```"}]
+                    # 创建OKX交易工具实例
+                    trading_tools = OKXTradingTools(
+                        api_key=plan_info.okx_api_key,
+                        secret_key=plan_info.okx_secret_key,
+                        passphrase=plan_info.okx_passphrase,
+                        is_demo=plan_info.is_demo
+                    )
 
-            else:
-                # 手动对话：使用用户消息
-                if not user_message:
-                    yield [{"role": "assistant", "content": "❌ 请输入消息"}]
-                    return
+                    # 调用OKX API
+                    result = trading_tools.amend_order(
+                        inst_id=inst_id,
+                        cl_ord_id=cl_ord_id,
+                        new_sz=new_sz,
+                        new_px=new_px,
+                        req_id=req_id
+                    )
 
-                input_message = user_message
+                    return result
 
-                # 发送用户消息到chatbot
-                yield [{"role": "user", "content": input_message}]
+                except Exception as e:
+                    return {"success": False, "error": str(e)}
 
-            # 保存用户消息（使用原始的input_message，不包含格式化）
-            await self._save_message(conversation.id, "user", input_message)
+            available_tools["amend_order"] = amend_order
 
-            # 获取LLM客户端和工具
-            with get_db() as db:
-                tools = self._create_langchain_tools(plan.agent_tools_config or {})
-
-            # 发送思考开始消息
-            yield [{"role": "assistant", "content": "🤔 **开始思考**: 正在分析您的请求..."}]
-
-            # 使用LLM生成响应
-            llm = self._get_llm_client(llm_config)
-
-            # 构建消息列表
-            messages = [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=input_message)
-            ]
-
-            # 检查是否为Qwen供应商
-            is_qwen = llm_config.provider == "qwen"
-
-            # 发送分析开始消息
-            analysis_start_msg = "🧠 **AI分析**: 基于以上信息开始生成交易建议..."
-            yield [{"role": "assistant", "content": analysis_start_msg}]
-            await self._save_message(conversation.id, "assistant", analysis_start_msg)
-
-            # 如果是Qwen供应商，发送分析开始标识
-            if is_qwen:
-                qwen_start_msg = "🤖 **Qwen分析结果**:"
-                yield [{"role": "assistant", "content": qwen_start_msg}]
-                await self._save_message(conversation.id, "assistant", qwen_start_msg)
-
-            # 使用自定义Agent执行（避免版本兼容性问题）
-            try:
-                # 先发送开始思考的消息
-                thinking_msg = "🤔 **Agent思考**: 正在分析预测数据并准备工具调用..."
-                yield [{"role": "assistant", "content": thinking_msg}]
-                await self._save_message(conversation.id, "assistant", thinking_msg)
-                await asyncio.sleep(0.5)
-
-                logger.info(f"创建自定义Agent，供应商: {llm_config.provider}, 工具数量: {len(tools)}")
-
-                # 构建包含工具信息的增强提示词
-                tools_info = "\n".join([f"- {tool.name}: {tool.description}" for tool in tools])
-                enhanced_prompt = f"""{system_prompt}
-
-可用工具:
-{tools_info}
-
-请根据需要调用这些工具来获取实时数据并执行交易操作。使用以下格式调用工具:
-
-Tool_Name: 参数1=value1, 参数2=value2
-
-分析步骤:
-1. 分析预测数据的趋势和模式
-2. 调用相关工具获取实时市场数据
-3. 基于数据做出交易决策
-4. 执行相应的交易操作
-
-当前输入: {input_message}
-
-请开始分析并调用必要的工具:"""
-
-                # 保存增强提示词
-                prompt_msg = f"📋 **增强系统提示**: 已加载 {len(tools)} 个可用工具"
-                yield [{"role": "assistant", "content": prompt_msg}]
-                await self._save_message(conversation.id, "assistant", prompt_msg)
-
-                # 使用LLM进行Agent式推理
-                messages = [SystemMessage(content=enhanced_prompt)]
-                current_content = ""
-                tool_call_count = 0
-                chunk_count = 0
-
-                logger.info("开始Agent式LLM推理...")
-
-                async for chunk in llm.astream(messages):
-                    if chunk.content:
-                        chunk_content = chunk.content
-                        current_content += chunk_content
-                        chunk_count += 1
-
-                        logger.debug(f"Agent chunk {chunk_count}: {chunk_content[:100]}...")
-
-                        # 检查是否包含工具调用
-                        lines = chunk_content.split('\n')
-                        for line in lines:
-                            line = line.strip()
-                            if ':' in line and any(tool.name in line for tool in tools):
-                                # 检测到工具调用
-                                tool_call_count += 1
-
-                                # 解析工具调用
-                                tool_name = None
-                                tool_params = {}
-
-                                for tool in tools:
-                                    if tool.name in line:
-                                        tool_name = tool.name
-                                        if ':' in line:
-                                            params_str = line.split(':', 1)[1].strip()
-                                            # 简单参数解析
-                                            if '=' in params_str:
-                                                for param in params_str.split(','):
-                                                    if '=' in param:
-                                                        key, value = param.split('=', 1)
-                                                        tool_params[key.strip()] = value.strip()
-                                        break
-
-                                if tool_name:
-                                    tool_call_msg = f"🛠️ **调用工具** ({tool_call_count}): `{tool_name}`\n📝 **参数**: `{tool_params}`"
-                                    yield [{"role": "assistant", "content": tool_call_msg}]
-                                    await self._save_message(conversation.id, "assistant", tool_call_msg)
-
-                                    # 执行工具
-                                    try:
-                                        tool_func = next((t for t in tools if t.name == tool_name), None)
-                                        if tool_func:
-                                            # 等待工具执行
-                                            await asyncio.sleep(0.5)
-
-                                            # 执行工具（同步调用）
-                                            result = tool_func.invoke(tool_params)
-
-                                            # 格式化结果
-                                            if isinstance(result, dict):
-                                                result_str = f"```json\n{result}\n```"
-                                            else:
-                                                result_str = str(result)
-                                                if len(result_str) > 300:
-                                                    result_str = result_str[:300] + "..."
-
-                                            tool_result_msg = f"✅ **{tool_name} 执行完成**:\n{result_str}"
-                                            yield [{"role": "assistant", "content": tool_result_msg}]
-                                            await self._save_message(conversation.id, "assistant", tool_result_msg)
-
-                                            # 将工具结果添加到当前内容中
-                                            current_content += f"\n\n工具调用结果: {result_str}"
-                                        else:
-                                            error_msg = f"❌ 工具 {tool_name} 未找到"
-                                            yield [{"role": "assistant", "content": error_msg}]
-                                            await self._save_message(conversation.id, "assistant", error_msg)
-                                    except Exception as tool_error:
-                                        error_msg = f"❌ {tool_name} 执行失败: {str(tool_error)}"
-                                        yield [{"role": "assistant", "content": error_msg}]
-                                        await self._save_message(conversation.id, "assistant", error_msg)
-
-                        # 流式输出当前内容
-                        if len(chunk_content.strip()) > 0:
-                            yield [{"role": "assistant", "content": chunk_content}]
-
-                        # 控制输出速度
-                        await asyncio.sleep(0.02)
-
-                logger.info(f"Agent推理完成，工具调用次数: {tool_call_count}, 总输出长度: {len(current_content)}")
-
-                # 保存完成消息
-                completion_msg = f"✅ **Agent执行完成**: 共调用 {tool_call_count} 次工具，生成完整交易决策。"
-                yield [{"role": "assistant", "content": completion_msg}]
-                await self._save_message(conversation.id, "assistant", completion_msg)
-
-            except Exception as agent_error:
-                logger.error(f"Agent执行错误: {agent_error}")
-                import traceback
-                traceback.print_exc()
-                error_msg = f"❌ Agent执行失败: {str(agent_error)}"
-                yield [{"role": "assistant", "content": error_msg}]
-                await self._save_message(conversation.id, "assistant", error_msg)
-
-            # 保存完整的最终响应
-            if current_content:
-                final_content = current_content if not is_qwen else f"Qwen分析: {current_content}"
-                await self._save_message(conversation.id, "assistant", final_content)
-
-        except Exception as e:
-            logger.error(f"Agent流式响应失败: {e}")
-            yield [{"role": "assistant", "content": f"❌ 处理失败: {str(e)}"}]
-
-    async def _create_conversation(self, plan_id: int, conversation_type: ConversationType):
-        """创建对话会话"""
-        with get_db() as db:
-            conversation = AgentConversation(
-                plan_id=plan_id,
-                conversation_type=conversation_type.value,
-                status="active"
-            )
-            db.add(conversation)
-            db.commit()
-            db.refresh(conversation)
-            return conversation
+        return available_tools
 
     async def _save_message(self, conversation_id: int, role: str, content: str):
-        """保存消息"""
+        """保存消息到数据库"""
         try:
             with get_db() as db:
                 message = AgentMessage(
                     conversation_id=conversation_id,
                     role=role,
-                    content=content
+                    content=content,
+                    timestamp=datetime.now()
                 )
                 db.add(message)
                 db.commit()
         except Exception as e:
             logger.error(f"保存消息失败: {e}")
 
-    async def get_conversation_history(self, plan_id: int) -> List[Dict[str, str]]:
-        """获取对话历史，返回Chatbot格式"""
-        try:
-            with get_db() as db:
-                # 获取最新的对话
-                latest_conversation = db.query(AgentConversation).filter(
-                    AgentConversation.plan_id == plan_id
-                ).order_by(AgentConversation.created_at.desc()).first()
-
-                if not latest_conversation:
-                    return []
-
-                messages = db.query(AgentMessage).filter(
-                    AgentMessage.conversation_id == latest_conversation.id
-                ).order_by(AgentMessage.created_at).all()
-
-                return [
-                    {"role": msg.role, "content": msg.content}
-                    for msg in messages
-                ]
-
-        except Exception as e:
-            logger.error(f"获取对话历史失败: {e}")
-            return []
-
-    # 兼容性方法 - 为了保持向后兼容
-    async def stream_manual_inference(self, plan_id: int):
-        """手动推理流式响应（使用真正的LangChain Agent）"""
-        async for message_batch in self.stream_agent_response_real(
-            plan_id=plan_id,
-            user_message=None,
-            conversation_type=ConversationType.AUTO_INFERENCE
-        ):
-            yield message_batch
-
-    async def _create_real_langchain_agent(self, llm_client, tools):
-        """创建真正的LangChain Agent"""
-        if not AGENT_AVAILABLE:
-            logger.warning("LangChain Agent API不可用，使用改进的手动工具绑定")
-            return None
-
-        try:
-            # 创建Agent提示词模板
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", """智能K线交易决策系统 - LangChain Agent
-
-你是一个专业的加密货币交易AI助手，使用LangChain Agent框架进行智能决策。
-
-## 核心能力
-- 分析预测数据和历史K线数据
-- 执行交易操作和风险管理
-- 使用工具调用获取实时信息
-- 提供清晰的分析和决策过程
-
-## 决策流程
-1. 数据分析：查询最新的预测数据和历史K线数据
-2. 市场分析：识别价格趋势和交易机会
-3. 风险评估：检查当前持仓和账户状态
-4. 交易决策：基于分析结果执行合适的交易操作
-5. 风险控制：设置合理的止损和止盈
-
-## 资金与风控规则
-- 已占用本金 + 新订单 ≤ 可用余额
-- 最大订单数：N个，本金均分
-- 止损：单笔亏损 ≥ 20% 立即平仓
-- 每次仅新建1个限价订单
-- 保守原则：不确定时不操作，保持现状
-
-请分析当前情况并调用必要的工具来获取信息，然后基于数据做出明智的交易决策。"""),
-                ("human", "{input}"),
-                MessagesPlaceholder(variable_name="agent_scratchpad"),
-            ])
-
-            # 创建Agent
-            agent = create_openai_tools_agent(llm_client, tools, prompt)
-
-            # 创建AgentExecutor
-            agent_executor = AgentExecutor(
-                agent=agent,
-                tools=tools,
-                verbose=True,
-                return_intermediate_steps=True,
-                max_iterations=10,
-                handle_parsing_errors=True
-            )
-
-            return agent_executor
-
-        except Exception as e:
-            logger.error(f"创建LangChain Agent失败: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-    async def _create_improved_tool_binding(self, llm_client, tools):
-        """创建改进的工具绑定LLM（当Agent API不可用时）"""
-        try:
-            # 使用bind_tools绑定工具
-            if hasattr(llm_client, 'bind_tools'):
-                llm_with_tools = llm_client.bind_tools(tools)
-                return llm_with_tools
-            else:
-                # 降级到手动工具绑定
-                logger.warning("LLM不支持bind_tools，使用手动工具调用")
-                return llm_client
-        except Exception as e:
-            logger.error(f"工具绑定失败: {e}")
-            return llm_client
-
     async def stream_agent_response_real(
         self,
         plan_id: int,
         user_message: str = None,
-        conversation_type: ConversationType = ConversationType.MANUAL_CHAT,
-        append_mode: bool = True
-    ) -> AsyncGenerator[List[Dict[str, str]], None]:
-        """
-        使用真正的LangChain Agent进行流式响应
-        """
+        conversation_type: str = "manual_chat"
+    ):
+        """真正的Agent响应流，支持Chatbot消息流格式"""
         try:
             # 获取计划配置
-            plan = None
-            llm_config = None
             with get_db() as db:
                 plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
                 if not plan:
-                    yield [{"role": "assistant", "content": "❌ 计划不存在"}]
+                    yield [{"role": "assistant", "content": "❌ 未找到指定计划"}]
                     return
 
                 llm_config = db.query(LLMConfig).filter(LLMConfig.id == plan.llm_config_id).first()
                 if not llm_config:
-                    yield [{"role": "assistant", "content": "❌ LLM配置不存在"}]
+                    yield [{"role": "assistant", "content": "❌ 未找到LLM配置"}]
                     return
 
-            # 创建对话
-            conversation = await self._create_conversation(plan_id, conversation_type)
+            # 创建或获取对话
+            with get_db() as db:
+                # 查找现有的未完成对话或创建新对话
+                conversation = db.query(AgentConversation).filter(
+                    AgentConversation.plan_id == plan_id,
+                    AgentConversation.status == 'active'
+                ).first()
 
-            # 获取LLM客户端
-            llm_client = self._get_llm_client(llm_config)
-
-            # 创建工具
-            tools_config = json.loads(plan.agent_tools_config) if isinstance(plan.agent_tools_config, str) else plan.agent_tools_config
-            tools = self._create_langchain_tools(tools_config or {})
-
-            if not tools:
-                yield [{"role": "assistant", "content": "❌ 没有可用的工具"}]
-                return
-
-            # 尝试创建真正的LangChain Agent，或者使用改进的工具绑定
-            if AGENT_AVAILABLE:
-                agent_executor = await self._create_real_langchain_agent(llm_client, tools)
-                use_agent_executor = agent_executor is not None
-            else:
-                agent_executor = None
-                use_agent_executor = False
-
-            # 构建输入消息
-            if conversation_type == ConversationType.AUTO_INFERENCE:
-                prediction_data = self._get_prediction_data(plan_id)  # 移除await，这是同步方法
-                system_input = f"自动推理模式\\n\\n{plan.agent_prompt or ''}\\n\\n{prediction_data}\\n\\n请分析预测数据并做出交易决策。"
-                input_message = system_input
-            else:
-                input_message = user_message or "请开始分析并提供交易建议。"
-
-            # 保存用户消息
-            await self._save_message(conversation.id, "user", input_message)
-
-            if use_agent_executor:
-                # 使用真正的LangChain AgentExecutor
-                start_msg = f"🤖 **启动真正的LangChain Agent**\\n📋 已加载 {len(tools)} 个工具\\n🧠 开始智能分析..."
-                yield [{"role": "assistant", "content": start_msg}]
-                await self._save_message(conversation.id, "assistant", start_msg)
-
-                try:
-                    # 使用asyncio在单独的线程中运行同步AgentExecutor
-                    result = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: agent_executor.invoke({"input": input_message})
+                if not conversation:
+                    conversation = AgentConversation(
+                        plan_id=plan_id,
+                        status='active',
+                        created_at=datetime.now()
                     )
+                    db.add(conversation)
+                    db.commit()
+                    db.refresh(conversation)
 
-                    # 处理结果
-                    if result:
-                        # 显示最终答案
-                        final_answer = result.get("output", "Agent执行完成")
-                        yield [{"role": "assistant", "content": f"🎯 **Agent决策结果**:\\n{final_answer}"}]
-                        await self._save_message(conversation.id, "assistant", f"🎯 **Agent决策结果**: {final_answer}")
+            # 获取LLM客户端和工具
+            llm = self._get_llm_client(llm_config)
+            tools_config = plan.agent_tools_config if isinstance(plan.agent_tools_config, dict) else json.loads(plan.agent_tools_config) if plan.agent_tools_config else {}
+            tools = self._create_langchain_tools(tools_config, plan_id)
 
-                        # 显示中间步骤
-                        intermediate_steps = result.get("intermediate_steps", [])
-                        if intermediate_steps:
-                            for i, (tool_call, tool_result) in enumerate(intermediate_steps, 1):
-                                tool_name = tool_call.tool
-                                tool_input = tool_call.args
-
-                                step_msg = f"🛠️ **工具调用 {i}**: `{tool_name}`\\n📝 **参数**: `{tool_input}`\\n✅ **结果**: `{str(tool_result)[:200]}...`"
-                                yield [{"role": "assistant", "content": step_msg}]
-                                await self._save_message(conversation.id, "assistant", step_msg)
-
-                        # 显示完成消息
-                        completion_msg = f"✅ **LangChain Agent执行完成**\\n📊 工具调用次数: {len(intermediate_steps)}\\n🎯 决策已生成"
-                        yield [{"role": "assistant", "content": completion_msg}]
-                        await self._save_message(conversation.id, "assistant", completion_msg)
-                    else:
-                        error_msg = "❌ Agent执行未返回结果"
-                        yield [{"role": "assistant", "content": error_msg}]
-                        await self._save_message(conversation.id, "assistant", error_msg)
-
-                except Exception as agent_error:
-                    logger.error(f"LangChain Agent执行失败: {agent_error}")
-                    import traceback
-                    traceback.print_exc()
-                    error_msg = f"❌ Agent执行失败: {str(agent_error)}"
-                    yield [{"role": "assistant", "content": error_msg}]
-                    await self._save_message(conversation.id, "assistant", error_msg)
+            # 绑定工具到LLM
+            tools_list = list(tools.values())
+            if tools_list:
+                llm_with_tools = llm.bind_tools(tools_list)
             else:
-                # 使用改进的工具绑定方法
-                start_msg = f"🤖 **启动改进的工具绑定Agent**\\n📋 已加载 {len(tools)} 个工具\\n🧠 使用bind_tools进行结构化工具调用..."
-                yield [{"role": "assistant", "content": start_msg}]
-                await self._save_message(conversation.id, "assistant", start_msg)
+                llm_with_tools = llm
 
-                # 使用工具绑定的LLM
-                llm_with_tools = await self._create_improved_tool_binding(llm_client, tools)
+            # Chatbot消息流格式
+            if conversation_type == "auto_inference":
+                # 自动推理模式：system -> user -> assistant
+                system_prompt_content = plan.agent_prompt or "智能K线交易决策系统"
+                yield [{"role": "system", "content": system_prompt_content}]
+                await self._save_message(conversation.id, "system", system_prompt_content)
 
-                # 构建消息
-                # 创建工具提示信息
-                tool_descriptions = []
-                for tool in tools:
-                    tool_descriptions.append(f"- {tool.name}: {tool.description}")
+                # 获取最新预测数据作为user输入
+                prediction_data = self._get_prediction_data_for_context(plan_id)
+                yield [{"role": "user", "content": prediction_data}]
+                await self._save_message(conversation.id, "user", prediction_data)
 
-                messages = [
-                    SystemMessage(content=f"""智能K线交易决策系统 - 改进工具绑定版本
+                input_message = prediction_data
+            else:
+                # 手动聊天模式：system -> user -> assistant
+                system_prompt_content = plan.agent_prompt or "智能K线交易决策系统"
+                yield [{"role": "system", "content": system_prompt_content}]
+                await self._save_message(conversation.id, "system", system_prompt_content)
+
+                yield [{"role": "user", "content": user_message}]
+                await self._save_message(conversation.id, "user", user_message)
+
+                input_message = user_message
+
+            # 构建工具描述
+            tool_descriptions = []
+            for tool_name, tool_func in tools.items():
+                tool_descriptions.append(f"- {tool_name}: {tool_func.description}")
+
+            # 消息序列
+            messages = [
+                SystemMessage(content=f"""智能K线交易决策系统
 
 你是一个专业的加密货币交易AI助手。
 
 ## 计划信息
 - 当前计划ID: {plan_id}
-- 交易对: {plan.inst_id if plan else 'Unknown'}
+- 交易对: {plan.inst_id}
 
 ## 可用工具
 {chr(10).join(tool_descriptions)}
 
 ## 重要提示
 - 使用需要plan_id参数的工具时，请使用: {plan_id}
-- 例如: run_latest_model_inference(plan_id={plan_id})
+- 注意所有时间都使用UTC+8时区
 
 ## 决策流程
-1. 分析当前市场和账户状况
-2. 获取最新数据（价格、持仓、余额等）
+1. 分析当前市场状况
+2. 获取最新数据（价格、预测、历史等）
 3. 如需要新预测，运行推理
 4. 基于数据提供交易建议
 
 请分析当前情况并调用必要的工具。"""),
-                    HumanMessage(content=input_message)
-                ]
+                HumanMessage(content=input_message)
+            ]
 
-                try:
-                    # 流式调用LLM
-                    current_content = ""
-                    tool_calls_count = 0
+            # 流式调用LLM
+            current_content = ""
+            tool_calls_count = 0
 
-                    async for chunk in llm_with_tools.astream(messages):
-                        if hasattr(chunk, 'tool_calls') and chunk.tool_calls:
-                            # 处理结构化工具调用
-                            for tool_call in chunk.tool_calls:
-                                tool_calls_count += 1
-                                tool_name = tool_call.get("name", "unknown")
-                                tool_args = tool_call.get("args", {})
+            async for chunk in llm_with_tools.astream(messages):
+                # 处理工具调用
+                if hasattr(chunk, 'tool_calls') and chunk.tool_calls:
+                    for tool_call in chunk.tool_calls:
+                        tool_calls_count += 1
+                        tool_name = tool_call.get("name", "unknown")
+                        tool_args = tool_call.get("args", {})
 
-                                tool_call_msg = f"🛠️ **结构化工具调用** ({tool_calls_count}): `{tool_name}`\\n📝 **参数**: `{tool_args}`"
-                                yield [{"role": "assistant", "content": tool_call_msg}]
-                                await self._save_message(conversation.id, "assistant", tool_call_msg)
+                        # 输出工具调用信息
+                        tool_call_msg = f"🛠️ 调用工具: {tool_name}，参数: {tool_args}"
+                        yield [{"role": "tool", "content": tool_call_msg}]
+                        await self._save_message(conversation.id, "tool", tool_call_msg)
 
-                                # 执行工具
-                                try:
-                                    tool_func = next((t for t in tools if t.name == tool_name), None)
-                                    if tool_func:
-                                        result = tool_func.invoke(tool_args)
+                        # 执行工具
+                        try:
+                            tool_func = next((t for t in tools_list if t.name == tool_name), None)
+                            if tool_func:
+                                result = tool_func.invoke(tool_args)
 
-                                        result_str = str(result)
-                                        if isinstance(result, dict) and "error" in result:
-                                            result_str = f"工具执行失败: {result['error']}"
+                                result_str = str(result)
+                                if isinstance(result, dict) and "error" in result:
+                                    result_str = f"工具执行失败: {result['error']}"
 
-                                        tool_result_msg = f"✅ **{tool_name} 执行完成**:\\n```json\\n{result_str}\\n```"
-                                        yield [{"role": "assistant", "content": tool_result_msg}]
-                                        await self._save_message(conversation.id, "assistant", tool_result_msg)
+                                tool_result_msg = f"✅ 工具执行结果: {result_str}"
+                                yield [{"role": "tool", "content": tool_result_msg}]
+                                await self._save_message(conversation.id, "tool", tool_result_msg)
 
-                                        # 将工具结果添加到消息中
-                                        messages.append(ToolMessage(content=str(result), tool_call_id=tool_call.get("id", "")))
+                                # 将工具结果添加到消息中
+                                messages.append(ToolMessage(content=str(result), tool_call_id=tool_call.get("id", "")))
 
-                                except Exception as tool_error:
-                                    error_msg = f"❌ {tool_name} 执行失败: {str(tool_error)}"
-                                    yield [{"role": "assistant", "content": error_msg}]
-                                    await self._save_message(conversation.id, "assistant", error_msg)
+                        except Exception as tool_error:
+                            error_msg = f"❌ 工具执行失败: {str(tool_error)}"
+                            yield [{"role": "tool", "content": error_msg}]
+                            await self._save_message(conversation.id, "tool", error_msg)
 
-                        if hasattr(chunk, 'content') and chunk.content:
-                            current_content += chunk.content
-                            if chunk.content.strip():
-                                yield [{"role": "assistant", "content": chunk.content}]
+                # 处理普通文本内容
+                if hasattr(chunk, 'content') and chunk.content:
+                    current_content += chunk.content
+                    if chunk.content.strip():
+                        yield [{"role": "assistant", "content": chunk.content}]
+                        await self._save_message(conversation.id, "assistant", chunk.content)
 
-                    # 显示完成消息
-                    completion_msg = f"✅ **改进工具绑定Agent执行完成**\\n📊 结构化工具调用次数: {tool_calls_count}\\n🎯 分析已完成"
-                    yield [{"role": "assistant", "content": completion_msg}]
-                    await self._save_message(conversation.id, "assistant", completion_msg)
-
-                except Exception as binding_error:
-                    logger.error(f"工具绑定执行失败: {binding_error}")
-                    error_msg = f"❌ 工具绑定执行失败: {str(binding_error)}"
-                    yield [{"role": "assistant", "content": error_msg}]
-                    await self._save_message(conversation.id, "assistant", error_msg)
+            # 显示完成消息
+            completion_msg = f"✅ 分析完成，共调用 {tool_calls_count} 个工具"
+            yield [{"role": "assistant", "content": completion_msg}]
+            await self._save_message(conversation.id, "assistant", completion_msg)
 
         except Exception as e:
-            logger.error(f"创建Agent失败: {e}")
+            logger.error(f"Agent流式响应失败: {e}")
             import traceback
             traceback.print_exc()
-            yield [{"role": "assistant", "content": f"❌ 创建Agent失败: {str(e)}"}]
+            yield [{"role": "assistant", "content": f"❌ Agent执行失败: {str(e)}"}]
+
+    def _get_prediction_data_for_context(self, plan_id: int, limit: int = 20) -> str:
+        """获取预测数据作为上下文"""
+        try:
+            with get_db() as db:
+                predictions = db.query(PredictionData).filter(
+                    PredictionData.plan_id == plan_id
+                ).order_by(PredictionData.timestamp.desc()).limit(limit).all()
+
+                if not predictions:
+                    return "暂无预测数据"
+
+                # 格式化为CSV字符串
+                csv_lines = ["timestamp,open,high,low,close,upward_probability,volatility_amplification_probability"]
+                for pred in predictions:
+                    csv_lines.append(
+                        f"{pred.timestamp.strftime('%Y-%m-%d %H:%M:%S')},"
+                        f"{pred.open},{pred.high},{pred.low},{pred.close},"
+                        f"{pred.upward_probability or 0},{pred.volatility_amplification_probability or 0}"
+                    )
+
+                return "\\n".join(csv_lines)
+
+        except Exception as e:
+            logger.error(f"获取预测数据失败: {e}")
+            return f"获取预测数据失败: {str(e)}"
 
     async def stream_conversation(self, plan_id: int, user_message: str):
-        """流式对话（使用真正的LangChain Agent）"""
+        """流式对话接口"""
         async for message_batch in self.stream_agent_response_real(
             plan_id=plan_id,
             user_message=user_message,
-            conversation_type=ConversationType.MANUAL_CHAT
+            conversation_type="manual_chat"
         ):
             yield message_batch
+
+
+# 对话类型枚举
+class ConversationType:
+    MANUAL_CHAT = "manual_chat"
+    AUTO_INFERENCE = "auto_inference"
 
 
 # 全局实例
