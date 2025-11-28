@@ -97,15 +97,15 @@ class TrainingService:
                 for record in stuck_records:
                     logger.warning(f"发现卡住的训练记录: id={record.id}, version={record.version}, plan_id={record.plan_id}")
 
-                    # 如果训练开始时间超过24小时，标记为失败
+                    # 如果训练开始时间超过8小时，标记为失败（优化超时时间）
                     if record.train_start_time:
                         hours_elapsed = (datetime.utcnow() - record.train_start_time).total_seconds() / 3600
-                        if hours_elapsed > 24:
-                            logger.error(f"训练记录卡住超过24小时，标记为失败: id={record.id}")
+                        if hours_elapsed > 8:
+                            logger.error(f"训练记录卡住超过8小时，标记为失败: id={record.id}")
                             record.status = 'failed'
                             record.train_end_time = datetime.utcnow()
                             record.train_duration = int(hours_elapsed * 3600)
-                            record.error_message = f"训练卡住超过24小时，自动标记为失败"
+                            record.error_message = f"训练卡住超过8小时，自动标记为失败"
                             db.commit()
                         else:
                             logger.info(f"训练记录仍在合理时间内: id={record.id}, 已耗时{hours_elapsed:.1f}小时")

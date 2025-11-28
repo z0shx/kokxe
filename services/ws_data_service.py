@@ -594,6 +594,7 @@ class WebSocketDataService:
         # 转换UTC时间戳为naive datetime存储
         # parsed_data['timestamp'] 是 timezone-aware (UTC)，转换为naive UTC时间
         timestamp_utc = parsed_data['timestamp'].replace(tzinfo=None)
+        timestamp_naive = timestamp_utc
 
         with get_db() as db:
             # 先检查数据是否存在

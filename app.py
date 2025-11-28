@@ -169,6 +169,73 @@ def initialize_app():
     except Exception as e:
         logger.error(f"⚠️ 启动数据验证服务失败: {e}")
 
+    # 启动调度器健康检查
+    try:
+        from services.schedule_service import ScheduleService
+        import threading
+        import time
+
+        def scheduler_health_check():
+            """调度器健康检查线程"""
+            while True:
+                try:
+                    time.sleep(300)  # 每5分钟检查一次
+
+                    # 检查调度器是否有任务
+                    scheduler = ScheduleService.get_scheduler()
+                    jobs = scheduler.get_jobs()
+
+                    # 检查是否有运行中的计划但没有对应调度任务
+                    from database.db import get_db
+                    from database.models import TradingPlan
+
+                    with get_db() as db:
+                        running_plans = db.query(TradingPlan).filter(
+                            TradingPlan.status == 'running',
+                            TradingPlan.auto_inference_enabled == True
+                        ).all()
+
+                        for plan in running_plans:
+                            plan_jobs = ScheduleService.get_plan_jobs(plan.id)
+                            inference_job = None
+
+                            for job in plan_jobs:
+                                if 'inference' in job.id:
+                                    inference_job = job
+                                    break
+
+                            # 如果没有找到预测任务，重新加载
+                            if not inference_job:
+                                logger.warning(f"计划 {plan.id} 缺少预测调度任务，重新加载...")
+                                try:
+                                    loop = __import__('asyncio').new_event_loop()
+                                    __import__('asyncio').set_event_loop(loop)
+                                    success = loop.run_until_complete(ScheduleService.start_schedule(plan.id))
+                                    if success:
+                                        logger.info(f"✅ 计划 {plan.id} 预测任务重新加载成功")
+                                    else:
+                                        logger.error(f"❌ 计划 {plan.id} 预测任务重新加载失败")
+                                except Exception as reload_error:
+                                    logger.error(f"重新加载计划 {plan.id} 预测任务失败: {reload_error}")
+                                finally:
+                                    loop.close()
+
+                except Exception as e:
+                    logger.error(f"调度器健康检查失败: {e}")
+                    time.sleep(60)  # 出错后等待1分钟再继续
+
+        # 启动健康检查线程
+        health_check_thread = threading.Thread(
+            target=scheduler_health_check,
+            daemon=True,
+            name="SchedulerHealthCheck"
+        )
+        health_check_thread.start()
+        logger.info("✅ 调度器健康检查已启动")
+
+    except Exception as e:
+        logger.error(f"⚠️ 启动调度器健康检查失败: {e}")
+
     logger.info("=" * 60)
     logger.info("✅ KOKEX 应用初始化完成")
     logger.info("=" * 60)

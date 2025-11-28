@@ -133,12 +133,24 @@ class KronosTrainer:
             train_ratio = data_params.get('train_ratio', 0.9)
             val_ratio = data_params.get('val_ratio', 0.1)
 
-            tokenizer_epochs = train_params.get('tokenizer_epochs', 25)
-            predictor_epochs = train_params.get('basemodel_epochs', 50)
-            batch_size = train_params.get('batch_size', 16)
-            tokenizer_lr = train_params.get('tokenizer_learning_rate', 0.0002)
-            predictor_lr = train_params.get('predictor_learning_rate', 0.000001)
-            seed = train_params.get('seed', 42)
+            # 优先从training节点获取epochs，如果没有则从顶层获取
+            tokenizer_epochs = train_params.get('tokenizer_epochs', finetune_params.get('tokenizer_epochs', 25))
+            predictor_epochs = train_params.get('basemodel_epochs', train_params.get('predictor_epochs', finetune_params.get('predictor_epochs', 50)))
+            # 优先从training节点获取参数，如果没有则从顶层获取
+            batch_size = train_params.get('batch_size', finetune_params.get('batch_size', 16))
+            tokenizer_lr = train_params.get('tokenizer_learning_rate', finetune_params.get('learning_rate', 0.0002))
+            predictor_lr = train_params.get('predictor_learning_rate', finetune_params.get('learning_rate', 0.000001))
+            seed = train_params.get('seed', finetune_params.get('seed', 42))
+
+            # 记录解析后的训练参数
+            self.logger.info(f"解析的训练参数:")
+            self.logger.info(f"  tokenizer_epochs: {tokenizer_epochs}")
+            self.logger.info(f"  predictor_epochs: {predictor_epochs}")
+            self.logger.info(f"  batch_size: {batch_size}")
+            self.logger.info(f"  tokenizer_lr: {tokenizer_lr}")
+            self.logger.info(f"  predictor_lr: {predictor_lr}")
+            self.logger.info(f"  lookback_window: {lookback_window}")
+            self.logger.info(f"  predict_window: {predict_window}")
 
             # 验证并修复预训练模型路径
             pretrained_tokenizer, pretrained_predictor = self._validate_and_fix_pretrained_paths(model_paths)

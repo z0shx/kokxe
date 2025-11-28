@@ -55,16 +55,15 @@ def convert_to_beijing_time(dt: Optional[Union[datetime, str]]) -> Optional[date
 
     # 处理时区转换
     if dt.tzinfo is None:
-        # naive datetime，假设它是UTC时间
-        dt_utc = dt.replace(tzinfo=UTC_TZ)
+        # naive datetime，假设它已经是北京时间（因为数据库使用UTC+8存储）
+        # 直接返回naive datetime，不进行时区转换
+        return dt
     else:
         # timezone-aware datetime，先转换为UTC
         dt_utc = dt.astimezone(UTC_TZ)
-
-    # 转换为UTC+8
-    dt_beijing = dt_utc.astimezone(BEIJING_TZ)
-
-    return dt_beijing
+        # 转换为UTC+8
+        dt_beijing = dt_utc.astimezone(BEIJING_TZ)
+        return dt_beijing
 
 
 def format_datetime_beijing(dt: Optional[Union[datetime, str]],
