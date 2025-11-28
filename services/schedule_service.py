@@ -567,22 +567,73 @@ class ScheduleService:
             except Exception as record_error:
                 logger.error(f"创建预测任务执行记录失败: plan_id={plan_id}, error={record_error}")
 
+            # 计算智能数据偏移
+            from services.inference_data_offset_service import inference_data_offset_service
+            logger.info(f"计算智能数据偏移: plan_id={plan_id}")
+
+            try:
+                offset_result = inference_data_offset_service.calculate_optimal_data_offset(
+                    plan_id=plan_id,
+                    target_interval_hours=interval_hours,
+                    manual_trigger=False
+                )
+
+                if offset_result['success']:
+                    data_offset = offset_result['data_offset']
+                    logger.info(f"✅ 数据偏移计算完成: plan_id={plan_id}, offset={data_offset}")
+                    logger.info(f"📊 偏移说明: {offset_result['reasoning']}")
+
+                    # 获取最新训练记录并更新参数
+                    with get_db() as db:
+                        latest_training = db.query(TrainingRecord).filter(
+                            TrainingRecord.plan_id == plan_id,
+                            TrainingRecord.status == 'completed',
+                            TrainingRecord.is_active == True
+                        ).order_by(TrainingRecord.created_at.desc()).first()
+
+                        if latest_training:
+                            # 更新推理参数
+                            update_success = inference_data_offset_service.update_inference_params_with_offset(
+                                plan_id=plan_id,
+                                training_id=latest_training.id,
+                                data_offset=data_offset
+                            )
+
+                            if update_success:
+                                logger.info(f"✅ 推理参数已更新: training_id={latest_training.id}, data_offset={data_offset}")
+                            else:
+                                logger.warning(f"⚠️ 推理参数更新失败，使用默认参数")
+                        else:
+                            logger.warning(f"⚠️ 未找到训练记录，无法更新推理参数")
+
+                else:
+                    logger.warning(f"⚠️ 数据偏移计算失败: {offset_result['reasoning']}")
+                    data_offset = 0
+
+            except Exception as offset_error:
+                logger.error(f"数据偏移计算异常: plan_id={plan_id}, error={offset_error}")
+                data_offset = 0
+
             # 触发预测
             from services.inference_service import InferenceService
-            logger.info(f"开始调用推理服务: plan_id={plan_id}")
+            logger.info(f"开始调用推理服务: plan_id={plan_id}, data_offset={data_offset}")
 
             try:
                 inference_id = await InferenceService.start_inference_by_plan(plan_id, manual=False)
 
                 if inference_id:
-                    logger.info(f"✅ 定时预测已启动: plan_id={plan_id}, inference_id={inference_id}")
+                    logger.info(f"✅ 定时预测已启动: plan_id={plan_id}, inference_id={inference_id}, data_offset={data_offset}")
 
                     # 记录成功结果
                     if task_execution:
                         TaskExecutionService.complete_task_execution(
                             task_id=task_execution.id,
                             success=True,
-                            output_data={'inference_id': inference_id}
+                            output_data={
+                                'inference_id': inference_id,
+                                'data_offset': data_offset,
+                                'offset_reasoning': offset_result.get('reasoning', '') if 'offset_result' in locals() else ''
+                            }
                         )
                 else:
                     logger.error(f"❌ 定时预测启动失败: plan_id={plan_id}")
@@ -765,7 +816,7 @@ class ScheduleService:
     @classmethod
     def trigger_inference(cls, plan_id: int):
         """
-        手动触发预测推理
+        手动触发预测推理（智能Data Offset）
 
         Args:
             plan_id: 计划ID
@@ -809,18 +860,18 @@ class ScheduleService:
             # 在新线程中执行异步触发
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(cls._trigger_inference_wrapper, plan_id)
+                future = executor.submit(cls._trigger_manual_inference_with_offset, plan_id)
                 # 等待一段时间获取初步结果
                 try:
                     future.result(timeout=5)  # 5秒超时
                     return {
                         'success': True,
-                        'message': '预测推理已启动，请查看任务执行记录'
+                        'message': '手动预测推理已启动（智能Data Offset），请查看任务执行记录'
                     }
                 except concurrent.futures.TimeoutError:
                     return {
                         'success': True,
-                        'message': '预测推理已启动（正在后台执行）'
+                        'message': '手动预测推理已启动（正在后台执行）'
                     }
 
         except Exception as e:
@@ -829,6 +880,65 @@ class ScheduleService:
                 'success': False,
                 'error': f'触发失败: {str(e)}'
             }
+
+    @classmethod
+    def _trigger_manual_inference_with_offset(cls, plan_id: int):
+        """
+        手动触发推理（带智能Data Offset计算）
+        """
+        try:
+            # 计算智能数据偏移（手动触发模式）
+            from services.inference_data_offset_service import inference_data_offset_service
+            from database.db import get_db
+            from database.models import TradingPlan
+
+            with get_db() as db:
+                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                target_interval_hours = plan.auto_inference_interval_hours or 4
+
+            offset_result = inference_data_offset_service.calculate_optimal_data_offset(
+                plan_id=plan_id,
+                target_interval_hours=target_interval_hours,
+                manual_trigger=True
+            )
+
+            if offset_result['success']:
+                data_offset = offset_result['data_offset']
+                logger.info(f"✅ 手动推理数据偏移计算完成: plan_id={plan_id}, offset={data_offset}")
+                logger.info(f"📊 手动推理偏移说明: {offset_result['reasoning']}")
+
+                # 更新推理参数
+                with get_db() as db:
+                    latest_training = db.query(TrainingRecord).filter(
+                        TrainingRecord.plan_id == plan_id,
+                        TrainingRecord.status == 'completed',
+                        TrainingRecord.is_active == True
+                    ).order_by(TrainingRecord.created_at.desc()).first()
+
+                    if latest_training:
+                        update_success = inference_data_offset_service.update_inference_params_with_offset(
+                            plan_id=plan_id,
+                            training_id=latest_training.id,
+                            data_offset=data_offset
+                        )
+
+                        if update_success:
+                            logger.info(f"✅ 手动推理参数已更新: training_id={latest_training.id}, data_offset={data_offset}")
+                        else:
+                            logger.warning(f"⚠️ 手动推理参数更新失败，使用默认参数")
+                    else:
+                        logger.warning(f"⚠️ 未找到训练记录，无法更新手动推理参数")
+            else:
+                logger.warning(f"⚠️ 手动推理数据偏移计算失败: {offset_result['reasoning']}")
+                data_offset = 0
+
+            # 执行推理包装器
+            cls._trigger_inference_wrapper(plan_id)
+
+        except Exception as e:
+            logger.error(f"手动推理触发失败: plan_id={plan_id}, error={e}")
+            import traceback
+            traceback.print_exc()
 
     @classmethod
     def test_scheduler(cls):

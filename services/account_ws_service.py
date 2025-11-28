@@ -212,15 +212,8 @@ class OKXAccountWebSocket:
                 try:
                     logger.debug(f"正在连接 OKX 账户 WebSocket: {self.ws_url}")
 
-                    # 模拟盘需要添加特殊 header
-                    extra_headers = {}
-                    if self.is_demo:
-                        extra_headers['x-simulated-trading'] = '1'
-                        logger.debug("使用模拟盘模式，添加 x-simulated-trading header")
-
                     async with websockets.connect(
                         self.ws_url,
-                        extra_headers=extra_headers if extra_headers else None,
                         ping_interval=20,
                         ping_timeout=10
                     ) as websocket:

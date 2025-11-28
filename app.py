@@ -298,13 +298,7 @@ def initialize_app():
         )
         health_check_thread.start()
 
-        # 注册到优雅关闭服务
-        from services.graceful_shutdown_service import graceful_shutdown_service
-        graceful_shutdown_service.register_background_thread(
-            health_check_thread,
-            "调度器健康检查线程"
-        )
-
+  
         logger.info("✅ 调度器健康检查已启动")
 
     except Exception as e:
@@ -2078,11 +2072,6 @@ def create_app():
 def main():
     """主函数"""
     try:
-        # 初始化优雅关闭服务
-        logger.info("初始化优雅关闭服务...")
-        from services.graceful_shutdown_service import initialize_graceful_shutdown
-        initialize_graceful_shutdown()
-
         # 创建应用
         app = create_app()
 
