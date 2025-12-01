@@ -576,7 +576,7 @@ def create_app():
                         with gr.Row():
                             show_pred_toggle = gr.Checkbox(label="显示预测", value=True)
                             days_slider = gr.Slider(
-                                minimum=3, maximum=30, value=7, step=1,
+                                minimum=3, maximum=30, value=10, step=1,
                                 label="显示天数"
                             )
 

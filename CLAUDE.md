@@ -18,7 +18,7 @@ cp .env.example .env
 # Edit .env with your database and API credentials
 
 # Initialize database
-python -c "from database.db import init_database; init_database()"
+python -c "from database.db import init_db; init_db()"
 
 # Start the application
 python app.py
@@ -32,7 +32,7 @@ python app.py
 python app.py
 
 # Access the web interface
-# Default URL: http://localhost:7860
+# Default URL: http://localhost:7881 (port configured via GRADIO_SERVER_PORT)
 ```
 
 ### Testing
@@ -53,7 +53,7 @@ python test_inference_batches.py
 ### Database Operations
 ```bash
 # Run database migrations
-python -c "from database.migrate import main; main()"
+python -c "from database.migrate import migrate_database; migrate_database()"
 
 # Check database connection
 python -c "from database.db import get_db; db = next(get_db()); print('Database connected successfully')"
@@ -70,7 +70,7 @@ KOKEX follows a **microservices architecture** with the following key layers:
 
 1. **Web UI Layer (`ui/`)**: Gradio-based interface for user interaction
 2. **Service Layer (`services/`)**: Business logic and orchestration
-3. **Model Layer (`model/`)**: Kronos ML model implementation
+3. **Model Layer (`model/`, `services/kronos_trainer.py`)**: Kronos ML model implementation and training orchestration
 4. **Database Layer (`database/`)**: Data persistence and management
 5. **API Layer (`api/`)**: External integrations (OKX exchange)
 
@@ -83,12 +83,14 @@ KOKEX follows a **microservices architecture** with the following key layers:
 - **Fine-tuning Support**: Customizable for specific trading pairs and timeframes
 
 #### **Core Services (`services/`)**
-- `TrainingService`: Orchestrates two-stage model training pipeline
-- `InferenceService`: Handles model predictions with Monte Carlo sampling
-- `AgentDecisionService`: AI-powered trading decisions using LLMs
-- `WebSocketConnectionManager`: Real-time market data streaming
-- `OKXRestService`: Exchange integration for trade execution
-- `ScheduleService`: Automated task scheduling and management
+- `training_service.py`: Orchestrates two-stage model training pipeline
+- `inference_service.py`: Handles model predictions with Monte Carlo sampling
+- `langchain_agent_v2.py`: AI-powered trading decisions using LLMs with LangChain
+- `ws_connection_manager.py`: Real-time market data streaming
+- `okx_rest_service.py`: Exchange integration for trade execution
+- `schedule_service.py`: Automated task scheduling and management (APScheduler)
+- `trading_tools.py`: OKX trading API integration (order placement, cancellation)
+- `automation_service.py`: End-to-end automated trading workflow orchestration
 
 #### **Web Interface (`ui/`)**
 - `plan_create.py`: Trading plan creation and configuration
@@ -137,7 +139,7 @@ Key configuration sections:
 Each trading plan includes:
 - **Instrument**: Trading pair (e.g., ETH-USDT)
 - **Timeframe**: K-line interval (1H, 4H, etc.)
-- **Training Schedule**: Automated training times
+- **Training Schedule**: Automated training times (cron-based)
 - **LLM Selection**: AI agent provider
 - **Risk Parameters**: Trading limits and controls
 
@@ -187,8 +189,9 @@ The AI agent has access to:
 ### Database Operations
 - Always use SQLAlchemy sessions from `database.db.get_db()`
 - Commit transactions explicitly; use try/catch for error handling
-- Use Alembic for schema migrations
+- Use custom migration system in `database/migrate.py` (not Alembic)
 - Implement proper indexing for time-series queries
+- All timestamps use Beijing timezone (Asia/Shanghai) via `database.models.now_beijing()`
 
 ### WebSocket Management
 - Use `WebSocketConnectionManager` for connection lifecycle
@@ -224,9 +227,10 @@ The AI agent has access to:
 
 ### Performance Optimization
 - Database queries should use proper indexing
-- WebSocket connections are pooled and reused
+- WebSocket connections are pooled and reused per trading plan
 - Model inference supports batch processing
-- Async operations are used throughout the service layer
+- Async/await patterns used throughout the service layer for concurrency
+- Training operations use global locks to prevent resource conflicts
 
 ### Testing Strategy
 - Unit tests for individual components
