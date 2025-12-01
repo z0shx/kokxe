@@ -387,6 +387,9 @@ class CapitalManagementService:
         """保存订单记录到数据库"""
         try:
             with get_db() as db:
+                plan = db.query(TradingPlan).filter(TradingPlan.id == self.plan_id).first()
+                is_demo = plan.is_demo if plan else True
+
                 order = TradeOrder(
                     plan_id=self.plan_id,
                     order_id=order_result.get('order_id'),
@@ -396,7 +399,7 @@ class CapitalManagementService:
                     size=order_result.get('size'),
                     price=order_result.get('price'),
                     status='pending',  # 初始状态为待成交
-                    is_demo=True,  # 暂时硬编码为模拟盘
+                    is_demo=is_demo,
                     is_from_agent=True,  # 标记为Agent操作的订单
                     # 额外的资金管理信息可以存储在JSONB字段中（如果需要的话）
                 )

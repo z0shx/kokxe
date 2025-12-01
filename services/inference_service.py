@@ -410,9 +410,6 @@ class InferenceService:
                 inference_batch_id = datetime.now().strftime('%Y%m%d%H%M%S') + '_' + str(uuid.uuid4())[:8]
                 logger.info(f"推理批次ID: {inference_batch_id}")
 
-                # 不再删除旧数据，保留所有历史推理记录
-                # 旧代码：db.query(PredictionData).filter(...).delete()
-
                 # 保存预测数据到数据库
                 # pred_df 的 index 是时间戳，包含平均值、不确定性范围和概率指标
                 for timestamp, row in pred_df.iterrows():
@@ -785,130 +782,7 @@ class InferenceService:
             'warnings': warnings
         }
 
-    @classmethod
-    def mock_prediction_data(cls, training_id: int, predict_window: int = 48) -> Dict:
-        """
-        生成 mock 预测数据用于测试
-
-        Args:
-            training_id: 训练记录ID
-            predict_window: 预测窗口大小
-
-        Returns:
-            结果: {
-                'success': bool,
-                'predictions_count': int,
-                'error': str (如有)
-            }
-        """
-        try:
-            import random
-            import pandas as pd
-
-            with get_db() as db:
-                # 获取训练记录
-                training_record = db.query(TrainingRecord).filter(
-                    TrainingRecord.id == training_id
-                ).first()
-
-                if not training_record:
-                    return {'success': False, 'error': '训练记录不存在'}
-
-                # 获取计划信息
-                plan = db.query(TradingPlan).filter(
-                    TradingPlan.id == training_record.plan_id
-                ).first()
-
-                if not plan:
-                    return {'success': False, 'error': '计划不存在'}
-
-                # 获取最新的真实K线作为基准价格
-                latest_kline = db.query(KlineData).filter(
-                    and_(
-                        KlineData.inst_id == plan.inst_id,
-                        KlineData.interval == plan.interval
-                    )
-                ).order_by(KlineData.timestamp.desc()).first()
-
-                if not latest_kline:
-                    base_price = 3200.0  # 默认价格
-                else:
-                    base_price = float(latest_kline.close)
-
-                logger.info(f"Mock预测数据: training_id={training_id}, base_price={base_price}")
-
-                # 生成推理批次ID
-                import uuid
-                inference_batch_id = datetime.now().strftime('%Y%m%d%H%M%S') + '_mock_' + str(uuid.uuid4())[:8]
-                logger.info(f"Mock批次ID: {inference_batch_id}")
-
-                # 不再删除旧数据，保留所有历史推理记录
-                # 旧代码：db.query(PredictionData).filter(...).delete()
-
-                # 生成mock数据
-                current_price = base_price
-                start_time = latest_kline.timestamp if latest_kline else datetime.now()
-
-                # 根据时间颗粒度计算时间增量
-                interval_minutes = {
-                    '30m': 30, '1H': 60, '2H': 120, '4H': 240,
-                    '1D': 1440, '1W': 10080
-                }.get(plan.interval, 60)
-
-                for i in range(predict_window):
-                    # 随机波动 -2% 到 +2%
-                    change = random.uniform(-0.02, 0.02)
-                    current_price = current_price * (1 + change)
-
-                    high = current_price * (1 + random.uniform(0, 0.01))
-                    low = current_price * (1 - random.uniform(0, 0.01))
-                    open_price = current_price * (1 + random.uniform(-0.005, 0.005))
-
-                    # 确保价格关系合理
-                    high = max(high, open_price, current_price)
-                    low = min(low, open_price, current_price)
-
-                    pred_time = start_time + timedelta(minutes=interval_minutes * (i + 1))
-
-                    # 存储原始时间戳，在显示时再转换为北京时间
-                    # 避免双重时区转换导致的时间错误
-                    prediction = PredictionData(
-                        plan_id=plan.id,
-                        training_record_id=training_id,
-                        inference_batch_id=inference_batch_id,
-                        timestamp=pred_time,
-                        open=float(open_price),
-                        high=float(high),
-                        low=float(low),
-                        close=float(current_price),
-                        volume=float(random.uniform(1000, 5000)),
-                        amount=float(current_price * random.uniform(1000, 5000)),
-                        inference_params=_convert_numpy_to_python({
-                            'mock': True,
-                            'base_price': base_price,
-                            'predict_window': predict_window
-                        })
-                    )
-                    db.add(prediction)
-
-                db.commit()
-
-                logger.info(f"Mock预测数据生成完成: batch_id={inference_batch_id}, {predict_window}条")
-
-                return {
-                    'success': True,
-                    'predictions_count': predict_window
-                }
-
-        except Exception as e:
-            logger.error(f"生成mock预测数据失败: {e}")
-            import traceback
-            traceback.print_exc()
-            return {
-                'success': False,
-                'error': str(e)
-            }
-
+    
     @classmethod
     async def start_inference_by_plan(cls, plan_id: int, manual: bool = False) -> Optional[int]:
         """

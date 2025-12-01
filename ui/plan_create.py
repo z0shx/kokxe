@@ -897,7 +897,7 @@ class PlanCreateUI(BaseUIComponent, DatabaseMixin):
                 "available_usdt_percentage": float(available_usdt_percentage),
                 "avg_order_count": int(avg_order_count),
                 "stop_loss_percentage": float(stop_loss_percentage),
-                "max_position_size": 1.0,  # 保留原有字段以兼容旧代码
+                "max_position_size": 1.0,
                 "max_order_amount": float(available_usdt_amount)  # 使用用户配置的USDT数量
             }
 

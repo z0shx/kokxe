@@ -56,9 +56,9 @@ class LangChainAgentV2Service:
         if self._trading_tools is None:
             from config import Config
             self._trading_tools = OKXTradingTools(
-                api_key=Config.OKX_API_KEY or "demo_key",
-                secret_key="demo_secret",
-                passphrase="demo_passphrase"
+                api_key=Config.OKX_API_KEY,
+                secret_key=Config.OKX_SECRET_KEY,
+                passphrase=Config.OKX_PASSPHRASE
             )
         return self._trading_tools
 
