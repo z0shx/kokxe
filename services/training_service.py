@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict
 from pathlib import Path
 from database.db import get_db
-from database.models import TradingPlan, TrainingRecord, KlineData
+from database.models import TradingPlan, TrainingRecord, KlineData, now_beijing
 from utils.logger import setup_logger
 from sqlalchemy import and_, func
 
@@ -99,11 +99,11 @@ class TrainingService:
 
                     # 如果训练开始时间超过8小时，标记为失败（优化超时时间）
                     if record.train_start_time:
-                        hours_elapsed = (datetime.utcnow() - record.train_start_time).total_seconds() / 3600
+                        hours_elapsed = (now_beijing() - record.train_start_time).total_seconds() / 3600
                         if hours_elapsed > 8:
                             logger.error(f"训练记录卡住超过8小时，标记为失败: id={record.id}")
                             record.status = 'failed'
-                            record.train_end_time = datetime.utcnow()
+                            record.train_end_time = now_beijing()
                             record.train_duration = int(hours_elapsed * 3600)
                             record.error_message = f"训练卡住超过8小时，自动标记为失败"
                             db.commit()
@@ -230,7 +230,7 @@ class TrainingService:
                         TrainingRecord.id == training_id
                     ).update({
                         'status': 'training',
-                        'train_start_time': datetime.utcnow()
+                        'train_start_time': now_beijing()
                     })
                     db.commit()
                     logger.info(f"✅ 训练状态已更新为training: training_id={training_id}")
@@ -250,7 +250,7 @@ class TrainingService:
                 try:
                     logger.info(f"开始更新训练结果到数据库: training_id={training_id}")
                     with get_db() as db:
-                        train_end_time = datetime.utcnow()
+                        train_end_time = now_beijing()
                         logger.info(f"准备更新训练结果: training_id={training_id}, success={result['success']}, end_time={train_end_time}")
 
                         record = db.query(TrainingRecord).filter(
@@ -315,7 +315,7 @@ class TrainingService:
                                 ).first()
 
                                 if record:
-                                    train_end_time = datetime.utcnow()
+                                    train_end_time = now_beijing()
                                     duration = 0
                                     if record.train_start_time:
                                         duration = int((train_end_time - record.train_start_time).total_seconds())
@@ -383,15 +383,25 @@ class TrainingService:
                 # 更新状态为失败
             try:
                 with get_db() as db:
-                    db.query(TrainingRecord).filter(
+                    record = db.query(TrainingRecord).filter(
                         TrainingRecord.id == training_id
-                    ).update({
-                        'status': 'failed',
-                        'train_end_time': datetime.utcnow(),
-                        'error_message': str(e)
-                    })
-                    db.commit()
-                    logger.info(f"✅ 失败状态已更新: training_id={training_id}")
+                    ).first()
+
+                    if record:
+                        train_end_time = now_beijing()
+                        train_duration = 0
+                        if record.train_start_time:
+                            train_duration = int((train_end_time - record.train_start_time).total_seconds())
+
+                        record.status = 'failed'
+                        record.train_end_time = train_end_time
+                        record.train_duration = train_duration
+                        record.error_message = str(e)
+
+                        db.commit()
+                        logger.info(f"✅ 失败状态已更新: training_id={training_id}, duration={train_duration}")
+                    else:
+                        logger.error(f"训练记录不存在: training_id={training_id}")
             except Exception as db_error:
                 logger.error(f"更新失败状态时出错: training_id={training_id}, db_error={db_error}")
 

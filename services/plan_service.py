@@ -5,7 +5,7 @@ import asyncio
 from datetime import datetime
 from typing import Optional, Dict, List
 from database.db import get_db
-from database.models import TradingPlan, SystemLog
+from database.models import TradingPlan, SystemLog, now_beijing
 from services.data_sync_service import DataSyncService
 from services.plan_agent_service import PlanAgentService
 from services.ws_connection_manager import ws_connection_manager
@@ -303,7 +303,7 @@ class PlanService:
                 if plan:
                     plan.ws_connected = connected
                     if connected:
-                        plan.last_sync_time = datetime.utcnow()
+                        plan.last_sync_time = now_beijing()
                     db.commit()
                     return True
                 return False

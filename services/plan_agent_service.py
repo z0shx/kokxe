@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 from typing import Optional, Dict, Callable
 from database.db import get_db
-from database.models import TradingPlan, TradeOrder, SystemLog
+from database.models import TradingPlan, TradeOrder, SystemLog, now_beijing
 from api.okx_websocket_client import OKXWebSocketClient
 from services.agent_tool_executor import AgentToolExecutor
 from services.agent_tools import get_tools_config
@@ -113,7 +113,7 @@ class PlanAgentService:
                         db_order.status = order.get("state")
                         db_order.filled_size = float(order.get("accFillSz", 0))
                         db_order.avg_price = float(order.get("avgPx", 0)) if order.get("avgPx") else None
-                        db_order.updated_at = datetime.utcnow()
+                        db_order.updated_at = now_beijing()
                         db.commit()
                     else:
                         # 新订单，创建记录
@@ -256,7 +256,7 @@ class PlanAgentService:
                 plan = db.query(TradingPlan).filter(TradingPlan.id == self.plan_id).first()
                 if plan:
                     plan.ws_connected = True
-                    plan.last_sync_time = datetime.utcnow()
+                    plan.last_sync_time = now_beijing()
                     db.commit()
 
             logger.info(f"[{self.environment}] 计划 {self.plan_id} Agent 服务启动成功")

@@ -19,6 +19,7 @@ from sqlalchemy import and_, desc, func
 from utils.logger import setup_logger
 from ui.constants import DataFrameHeaders, DataTypes, create_empty_dataframe
 from ui.ui_utils import UIHelper
+from database.models import now_beijing
 from utils.timezone_helper import (format_datetime_full_beijing, format_datetime_short_beijing,
                                    format_datetime_beijing, format_time_range_utc8)
 
@@ -237,7 +238,7 @@ class PlanDetailUI:
                     if current_plan and current_plan.ws_connected != ws_connected:
                         db.query(TradingPlan).filter(TradingPlan.id == plan_id).update({
                             'ws_connected': ws_connected,
-                            'last_sync_time': datetime.utcnow()
+                            'last_sync_time': now_beijing()
                         })
                         logger.info(f"计划WebSocket状态已更新: plan_id={plan_id}, ws_connected={ws_connected}")
 

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Callable
 from sqlalchemy.dialects.postgresql import insert
 from api.okx_websocket import OKXWebSocket
-from database.models import KlineData, WebSocketSubscription, TradingPlan
+from database.models import KlineData, WebSocketSubscription, TradingPlan, now_beijing
 from database.db import get_db
 from utils.logger import get_ws_logger
 from utils.data_downloader import DataDownloader
@@ -146,7 +146,7 @@ class WebSocketDataService:
         self._update_subscription_status(
             status='running',
             is_connected=False,
-            started_at=datetime.utcnow()
+            started_at=now_beijing()
         )
 
         # ⚠️ 在 WebSocket 连接之前，先检查并填补缺失的历史数据
@@ -175,7 +175,7 @@ class WebSocketDataService:
                 status='error',
                 is_connected=False,
                 last_error=str(e),
-                last_error_time=datetime.utcnow(),
+                last_error_time=now_beijing(),
                 error_count=self._get_error_count() + 1
             )
 
@@ -309,7 +309,7 @@ class WebSocketDataService:
         self._update_subscription_status(
             status='stopped',
             is_connected=False,
-            stopped_at=datetime.utcnow()
+            stopped_at=now_beijing()
         )
 
         if self.ws_client:
@@ -393,7 +393,7 @@ class WebSocketDataService:
             # 更新错误信息
             self._update_subscription_status(
                 last_error=str(e),
-                last_error_time=datetime.utcnow(),
+                last_error_time=now_beijing(),
                 error_count=self._get_error_count() + 1
             )
 

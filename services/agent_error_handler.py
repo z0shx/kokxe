@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Any
 from database.db import get_db
-from database.models import AgentDecision, TradingPlan
+from database.models import AgentDecision, TradingPlan, now_beijing
 from utils.logger import setup_logger
 from utils.timezone_helper import format_datetime_full_beijing
 
@@ -153,7 +153,7 @@ class AgentErrorHandler:
         """
         try:
             with get_db() as db:
-                time_threshold = datetime.utcnow() - timedelta(minutes=time_window_minutes)
+                time_threshold = now_beijing() - timedelta(minutes=time_window_minutes)
 
                 error_count = db.query(AgentDecision).filter(
                     AgentDecision.plan_id == plan_id,
@@ -228,6 +228,6 @@ class AgentErrorHandler:
             "tool_name": tool_name,
             "fallback_message": f"工具 {tool_name} 调用失败，但我们可以继续分析其他方面",
             "continue_conversation": True,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": now_beijing().isoformat(),
             "context": plan_context or {}
         }

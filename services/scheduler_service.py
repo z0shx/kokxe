@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 from sqlalchemy import and_, desc, asc
 
 from database.db import get_db
-from database.models import TradingPlan, TaskExecution, TrainingRecord
+from database.models import TradingPlan, TaskExecution, TrainingRecord, now_beijing
 from services.training_service import TrainingService
 from services.inference_service import InferenceService
 from utils.timezone_helper import format_datetime_full_beijing
@@ -68,7 +68,7 @@ class SchedulerService:
         """检查并执行计划中的定时任务"""
         try:
             with get_db() as db:
-                now = datetime.utcnow()
+                now = now_beijing()
 
                 # 获取所有启用自动化的计划
                 plans = db.query(TradingPlan).filter(
@@ -313,7 +313,7 @@ class SchedulerService:
         try:
             # 更新任务状态为运行中
             task.status = 'running'
-            task.started_at = datetime.utcnow()
+            task.started_at = now_beijing()
             task.progress_percentage = 0
             db.commit()
 
@@ -330,7 +330,7 @@ class SchedulerService:
             logger.error(f"执行任务 {task.id} 时出错: {e}")
             task.status = 'failed'
             task.error_message = str(e)
-            task.completed_at = datetime.utcnow()
+            task.completed_at = now_beijing()
             if task.started_at:
                 task.duration_seconds = int((task.completed_at - task.started_at).total_seconds())
             db.commit()
@@ -347,7 +347,7 @@ class SchedulerService:
 
             if not train_start_date or not train_end_date:
                 # 使用默认数据范围（最近7天）
-                end_date = datetime.utcnow().date()
+                end_date = now_beijing().date()
                 start_date = end_date - timedelta(days=7)
             else:
                 start_date = datetime.strptime(train_start_date, '%Y-%m-%d').date()
@@ -382,7 +382,7 @@ class SchedulerService:
             logger.error(f"执行微调任务 {task.id} 时出错: {e}")
         finally:
             task.progress_percentage = 100
-            task.completed_at = datetime.utcnow()
+            task.completed_at = now_beijing()
             if task.started_at:
                 task.duration_seconds = int((task.completed_at - task.started_at).total_seconds())
             db.commit()
@@ -424,7 +424,7 @@ class SchedulerService:
             logger.error(f"执行推理任务 {task.id} 时出错: {e}")
         finally:
             task.progress_percentage = 100
-            task.completed_at = datetime.utcnow()
+            task.completed_at = now_beijing()
             if task.started_at:
                 task.duration_seconds = int((task.completed_at - task.started_at).total_seconds())
             db.commit()
@@ -459,7 +459,7 @@ class SchedulerService:
             logger.error(f"执行Agent任务 {task.id} 时出错: {e}")
         finally:
             task.progress_percentage = 100
-            task.completed_at = datetime.utcnow()
+            task.completed_at = now_beijing()
             if task.started_at:
                 task.duration_seconds = int((task.completed_at - task.started_at).total_seconds())
             db.commit()

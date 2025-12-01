@@ -7,7 +7,7 @@ import threading
 from datetime import datetime
 from typing import Dict, Optional, Set
 from services.conversation_service import ConversationService
-from database.models import TradingPlan, AgentConversation, AgentMessage
+from database.models import TradingPlan, AgentConversation, AgentMessage, now_beijing
 from database.db import get_db
 from utils.logger import setup_logger
 from sqlalchemy import and_, desc
@@ -162,7 +162,7 @@ class KlineEventService:
 
                 if conversation:
                     # 更新最后消息时间
-                    conversation.last_message_at = datetime.utcnow()
+                    conversation.last_message_at = now_beijing()
                     db.commit()
                     return conversation
 
@@ -172,8 +172,8 @@ class KlineEventService:
                     conversation_type="kline_event",
                     session_name=f"K线事件监听_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
                     status='active',
-                    started_at=datetime.utcnow(),
-                    last_message_at=datetime.utcnow()
+                    started_at=now_beijing(),
+                    last_message_at=now_beijing()
                 )
 
                 db.add(conversation)
@@ -189,7 +189,7 @@ class KlineEventService:
 
     def _build_event_message(self, plan: TradingPlan, kline_data: dict) -> str:
         """构建事件消息"""
-        timestamp = kline_data.get('timestamp', datetime.utcnow())
+        timestamp = kline_data.get('timestamp', now_beijing())
         close_price = kline_data.get('close', 0)
         volume = kline_data.get('volume', 0)
 
