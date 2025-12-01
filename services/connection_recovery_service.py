@@ -7,7 +7,7 @@ import threading
 from typing import Dict, List
 from services.ws_connection_manager import ws_connection_manager
 from services.account_ws_manager import account_ws_manager
-from services.kline_event_service import kline_event_service
+from services.kline_event_service import get_kline_event_service
 from database.models import TradingPlan
 from database.db import get_db
 from utils.logger import setup_logger
@@ -96,7 +96,7 @@ class ConnectionRecoveryService:
 
             # 订阅K线事件
             for plan in running_plans:
-                kline_event_service.subscribe_plan(plan.id)
+                get_kline_event_service().subscribe_plan(plan.id)
 
             logger.info(f"连接恢复完成: 账户连接={account_recovery_count}, 数据连接={data_recovery_count}, K线事件订阅={len(running_plans)}")
             return True
@@ -209,7 +209,7 @@ class ConnectionRecoveryService:
         try:
             return {
                 'loop_running': self.loop.is_running() if self.loop else False,
-                'kline_event_subscriptions': kline_event_service.get_active_subscriptions(),
+                'kline_event_subscriptions': get_kline_event_service().get_active_subscriptions(),
                 'account_connections': len(account_ws_manager.connections),
                 'data_connections': len(ws_connection_manager.connections)
             }

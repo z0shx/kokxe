@@ -6,6 +6,8 @@ import pandas as pd
 from typing import List, Tuple, Optional
 from services.config_service import ConfigService
 from utils.logger import setup_logger
+from ui.constants import DataFrameHeaders, create_empty_dataframe
+from ui.ui_utils import UIHelper
 
 logger = setup_logger(__name__, "config_center_ui.log")
 
@@ -18,30 +20,26 @@ class ConfigCenterUI:
 
     # ========== LLM 配置管理 ==========
 
+    @UIHelper.create_error_handler("加载LLM配置")
     def load_llm_configs(self) -> pd.DataFrame:
         """加载 LLM 配置列表"""
-        try:
-            configs = self.config_service.get_all_llm_configs(active_only=False)
+        configs = self.config_service.get_all_llm_configs(active_only=False)
 
-            if not configs:
-                return pd.DataFrame(columns=["ID", "名称", "提供商", "模型", "状态", "默认"])
+        if not configs:
+            return create_empty_dataframe(DataFrameHeaders.LLM_CONFIG)
 
-            data = []
-            for config in configs:
-                data.append({
-                    "ID": config.id,
-                    "名称": config.name,
-                    "提供商": config.provider,
-                    "模型": config.model_name or "-",
-                    "状态": "启用" if config.is_active else "禁用",
-                    "默认": "✓" if config.is_default else ""
-                })
+        data = []
+        for config in configs:
+            data.append({
+                "ID": config.id,
+                "名称": config.name,
+                "提供商": config.provider,
+                "模型": config.model_name or "-",
+                "状态": "启用" if config.is_active else "禁用",
+                "默认": "✓" if config.is_default else ""
+            })
 
-            return pd.DataFrame(data)
-
-        except Exception as e:
-            logger.error(f"加载 LLM 配置失败: {e}")
-            return pd.DataFrame(columns=["ID", "名称", "提供商", "模型", "状态", "默认"])
+        return pd.DataFrame(data)
 
     def create_llm_config(
         self,
@@ -109,34 +107,30 @@ class ConfigCenterUI:
 
     # ========== Agent 提示词模版管理 ==========
 
+    @UIHelper.create_error_handler("加载提示词模版")
     def load_prompt_templates(self) -> pd.DataFrame:
         """加载 Agent 提示词模版列表"""
-        try:
-            templates = self.config_service.get_all_prompt_templates(active_only=False)
+        templates = self.config_service.get_all_prompt_templates(active_only=False)
 
-            if not templates:
-                return pd.DataFrame(columns=["ID", "名称", "分类", "描述", "状态", "默认"])
+        if not templates:
+            return create_empty_dataframe(DataFrameHeaders.PROMPT_TEMPLATE)
 
-            data = []
-            for template in templates:
-                desc = template.description or ""
-                if len(desc) > 50:
-                    desc = desc[:50] + "..."
+        data = []
+        for template in templates:
+            desc = template.description or ""
+            if len(desc) > 50:
+                desc = desc[:50] + "..."
 
-                data.append({
-                    "ID": template.id,
-                    "名称": template.name,
-                    "分类": template.category or "-",
-                    "描述": desc,
-                    "状态": "启用" if template.is_active else "禁用",
-                    "默认": "✓" if template.is_default else ""
-                })
+            data.append({
+                "ID": template.id,
+                "名称": template.name,
+                "分类": template.category or "-",
+                "描述": desc,
+                "状态": "启用" if template.is_active else "禁用",
+                "默认": "✓" if template.is_default else ""
+            })
 
-            return pd.DataFrame(data)
-
-        except Exception as e:
-            logger.error(f"加载 Agent 提示词模版失败: {e}")
-            return pd.DataFrame(columns=["ID", "名称", "分类", "描述", "状态", "默认"])
+        return pd.DataFrame(data)
 
     def create_prompt_template(
         self,

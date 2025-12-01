@@ -5,6 +5,8 @@ import gradio as gr
 import asyncio
 from services.plan_service import PlanService
 from ui.base_ui import BaseUIComponent, DatabaseMixin, UIHelper, ValidationHelper
+from ui.constants import DataFrameHeaders, DataTypes
+from ui.ui_utils import UIHelper as NewUIHelper
 from utils.logger import setup_logger
 from utils.timezone_helper import format_datetime_full_beijing
 
@@ -47,12 +49,7 @@ class PlanListUI(BaseUIComponent, DatabaseMixin):
             data = []
             for plan in plans:
                 # 状态emoji
-                status_emoji = {
-                    'created': '⚪',
-                    'running': '🟢',
-                    'paused': '🟡',
-                    'stopped': '🔴'
-                }.get(plan.status, '❓')
+                status_emoji = NewUIHelper.get_status_emoji(plan.status)
 
                 data.append([
                     plan.id,

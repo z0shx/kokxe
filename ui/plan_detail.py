@@ -17,6 +17,8 @@ from database.db import get_db
 from database.models import TradingPlan, TrainingRecord, PredictionData, AgentDecision, KlineData, AgentConversation, AgentMessage
 from sqlalchemy import and_, desc, func
 from utils.logger import setup_logger
+from ui.constants import DataFrameHeaders, DataTypes, create_empty_dataframe
+from ui.ui_utils import UIHelper
 from utils.timezone_helper import (format_datetime_full_beijing, format_datetime_short_beijing,
                                    format_datetime_beijing, format_time_range_utc8)
 
@@ -127,12 +129,7 @@ class PlanDetailUI:
             inference_schedule_str = '未配置'
 
         # 计划状态
-        plan_status_emoji = {
-            'created': '⚪ 已创建',
-            'running': '🟢 运行中',
-            'paused': '🟡 已暂停',
-            'stopped': '🔴 已停止'
-        }.get(plan.status, '❓ 未知')
+        plan_status_emoji = UIHelper.get_status_emoji(plan.status, detailed=True)
 
         overview = f"""
 # 📊 {plan.plan_name}
@@ -254,12 +251,7 @@ class PlanDetailUI:
         ws_status_display = f"**WebSocket状态**: {ws_status_text}"
 
         # 计划状态
-        plan_status_emoji = {
-            'created': '⚪ 已创建',
-            'running': '🟢 运行中',
-            'paused': '🟡 已暂停',
-            'stopped': '🔴 已停止'
-        }.get(plan.status, '❓ 未知')
+        plan_status_emoji = UIHelper.get_status_emoji(plan.status, detailed=True)
         plan_status_display = f"**计划状态**: {plan_status_emoji}"
 
         # WebSocket状态控制
@@ -3410,8 +3402,8 @@ class PlanDetailUI:
 
                 if ws_service:
                     # 订阅K线事件
-                    from services.kline_event_service import kline_event_service
-                    kline_event_service.subscribe_plan(plan_id)
+                    from services.kline_event_service import get_kline_event_service
+                    get_kline_event_service().subscribe_plan(plan_id)
 
                     # 更新计划的ws_connected状态
                     db.query(TradingPlan).filter(TradingPlan.id == plan_id).update({
@@ -3447,8 +3439,8 @@ class PlanDetailUI:
                 )
 
                 # 取消订阅K线事件
-                from services.kline_event_service import kline_event_service
-                kline_event_service.unsubscribe_plan(plan_id)
+                from services.kline_event_service import get_kline_event_service
+                get_kline_event_service().unsubscribe_plan(plan_id)
 
                 # 更新计划的ws_connected状态
                 db.query(TradingPlan).filter(TradingPlan.id == plan_id).update({
@@ -3482,8 +3474,8 @@ class PlanDetailUI:
                 success = await ScheduleService.start_schedule(plan_id)
 
                 # 订阅K线事件
-                from services.kline_event_service import kline_event_service
-                kline_event_service.subscribe_plan(plan_id)
+                from services.kline_event_service import get_kline_event_service
+                get_kline_event_service().subscribe_plan(plan_id)
 
                 # 启动自动化调度器（如果配置了自动化）
                 automation_status = ""
@@ -3553,8 +3545,8 @@ class PlanDetailUI:
                     logger.info(f"账户WebSocket已停止: plan_id={plan_id}")
 
                 # 取消订阅K线事件
-                from services.kline_event_service import kline_event_service
-                kline_event_service.unsubscribe_plan(plan_id)
+                from services.kline_event_service import get_kline_event_service
+                get_kline_event_service().unsubscribe_plan(plan_id)
 
                 # 停止定时任务调度器
                 from services.schedule_service import ScheduleService
