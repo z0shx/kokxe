@@ -774,11 +774,5 @@ class LangChainAgentV2Service:
             yield message_batch
 
 
-# 对话类型枚举
-class ConversationType:
-    MANUAL_CHAT = "manual_chat"
-    AUTO_INFERENCE = "auto_inference"
-
-
 # 全局实例
 langchain_agent_v2_service = LangChainAgentV2Service()

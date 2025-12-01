@@ -252,6 +252,8 @@ class AgentToolExecutor:
                 return await self._get_current_price(normalized_params)
             elif tool_name == "place_limit_order":
                 return await self._place_limit_order(normalized_params)
+            elif tool_name == "place_order":
+                return await self._place_limit_order(normalized_params)  # 复用限价单逻辑
             elif tool_name == "cancel_order":
                 return await self._cancel_order(normalized_params)
             elif tool_name == "amend_order":

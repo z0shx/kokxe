@@ -45,17 +45,13 @@ class AgentErrorHandler:
                 # 创建错误决策记录
                 error_decision = AgentDecision(
                     plan_id=plan_id,
-                    conversation_id=conversation_id,
-                    tool_name=tool_name,
-                    tool_params=tool_params or {},
-                    llm_response="",  # 空响应，因为这是错误记录
-                    decision="ERROR",
-                    reason=f"工具调用失败: {error_message}",
-                    confidence=0.0,
-                    risk_level="low",  # 错误记录设为低风险
+                    llm_input=tool_params or {},  # 使用正确的字段名
+                    llm_output="",  # 空响应，因为这是错误记录
+                    decision_type="ERROR",  # 使用正确的字段名
+                    reasoning=f"工具调用失败: {error_message}",  # 使用正确的字段名
+                    tool_calls=[{"tool_name": tool_name, "params": tool_params or {}}],
                     status="failed",
-                    error_message=error_message,
-                    created_at=datetime.utcnow()
+                    error_message=error_message
                 )
 
                 db.add(error_decision)

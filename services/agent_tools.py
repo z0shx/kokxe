@@ -480,7 +480,7 @@ AGENT_TOOLS = {
 
     "get_current_utc_time": AgentTool(
         name="get_current_utc_time",
-        description="""获取当前的UTC+0日期与时间。返回精确的时间戳和格式化的时间字符串，用于时间相关的操作和查询。
+        description="""获取当前的北京时间（UTC+8）。返回精确的时间戳和格式化的时间字符串，用于时间相关的操作和查询。
 
 使用场景：
 1. 确定当前时间用于数据查询范围
@@ -490,7 +490,7 @@ AGENT_TOOLS = {
 5. 记录精确的操作时间点
 
 返回信息包括：
-- 当前UTC+0时间戳（毫秒）
+- 当前UTC+8时间戳（毫秒）
 - 格式化的时间字符串（YYYY-MM-DD HH:MM:SS）
 - ISO格式的时间字符串
 - 时区信息说明""",

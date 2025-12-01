@@ -1,5 +1,5 @@
 -- KOKEX Database Schema
--- Generated at: 2025-11-28 18:26:10.924106
+-- Generated at: 2025-12-01 09:08:19.260956
 
 
 -- Table: agent_decisions
