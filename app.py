@@ -13,9 +13,9 @@ from functools import wraps
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import config
-from database.db import init_db, export_schema
+from database.db import init_db, export_schema, get_db
 from database.migrate import migrate_database
-from database.models import TradingPlan
+from database.models import TradingPlan, now_beijing
 from ui.plan_create import create_plan_ui
 from ui.plan_list import create_plan_list_ui
 from ui.config_center import create_config_center_ui
@@ -795,22 +795,18 @@ def create_app():
                             # 工具配置
                             gr.Markdown("**可用工具** (勾选启用工具)")
                             with gr.Row():
-                                tool_get_account = gr.Checkbox(label="🔍 get_account_balance", value=True, info="查询账户余额,返回可用余额、冻结余额等信息")
-                                tool_get_positions = gr.Checkbox(label="📊 get_positions", value=True, info="查询持仓信息,包括持仓数量、均价、未实现盈亏等")
-                                tool_get_pending_orders = gr.Checkbox(label="📋 get_pending_orders", value=True, info="查询当前所有未成交订单(挂单)信息")
+                                tool_query_prediction = gr.Checkbox(label="🔮 query_prediction_data", value=True, info="按时间范围和批次ID查询预测数据")
+                                tool_prediction_history = gr.Checkbox(label="📈 get_prediction_history", value=True, info="查询历史预测批次列表（最多30批次）")
+                                tool_query_historical_kline = gr.Checkbox(label="📈 query_historical_kline_data", value=True, info="查询历史K线数据（UTC+8时间戳）")
                             with gr.Row():
-                                tool_query_prediction = gr.Checkbox(label="🔮 query_prediction_data", value=True, info="查询数据库中的预测数据,支持按时间范围、批次ID等条件查询")
-                                tool_prediction_history = gr.Checkbox(label="📈 get_prediction_history", value=True, info="查询历史预测数据,返回推理批次列表和详细预测结果")
-                                tool_place_order = gr.Checkbox(label="💰 place_order", value=True, info="下限价单,以指定价格买入或卖出")
+                                tool_get_utc_time = gr.Checkbox(label="🕒 get_current_utc_time", value=True, info="获取当前UTC+8时间")
+                                tool_run_inference = gr.Checkbox(label="🤖 run_latest_model_inference", value=False, info="触发最新模型推理")
+                                tool_get_account = gr.Checkbox(label="🔍 get_account_balance", value=True, info="查询账户余额")
                             with gr.Row():
-                                tool_cancel_order = gr.Checkbox(label="❌ cancel_order", value=True, info="撤销未成交的订单,冻结资金将立即释放")
-                                tool_modify_order = gr.Checkbox(label="✏️ modify_order", value=True, info="修改未成交订单的价格或数量")
-                                tool_stop_loss = gr.Checkbox(label="🛡️ place_stop_loss_order", value=True, info="设置止损订单,当价格达到指定比例时自动卖出")
-                            with gr.Row():
-                                tool_query_historical_kline = gr.Checkbox(label="📈 query_historical_kline_data", value=True, info="查询历史K线实际交易数据,使用UTC+0时间戳作为查询条件")
-                                tool_get_utc_time = gr.Checkbox(label="🕒 get_current_utc_time", value=True, info="读取当前日期与时间(UTC+0),用于时间相关操作")
-                                tool_run_inference = gr.Checkbox(label="🤖 run_latest_model_inference", value=False, info="执行最新微调版本模型的预测推理")
-                                tool_delete_prediction = gr.Checkbox(label="🗑️ delete_prediction_data_by_batch", value=False, info="删除预测数据(按推理批次),请谨慎使用")
+                                tool_get_pending_orders = gr.Checkbox(label="📋 get_pending_orders", value=True, info="查询挂单")
+                                tool_place_order = gr.Checkbox(label="💰 place_order", value=True, info="下限价单")
+                                tool_cancel_order = gr.Checkbox(label="❌ cancel_order", value=True, info="撤单")
+                                tool_amend_order = gr.Checkbox(label="✏️ amend_order", value=True, info="改单")
 
                               
                          # 保存按钮
@@ -1138,19 +1134,16 @@ def create_app():
                         gr.update(choices=llm_configs if isinstance(llm_configs, list) else [], value=int(agent_config.get('llm_config_id')) if agent_config.get('llm_config_id') is not None else None),  # llm_config_dropdown
                         gr.update(choices=prompt_templates if isinstance(prompt_templates, list) else [], value=None),  # prompt_template_dropdown
                         agent_config.get('agent_prompt', ''),  # agent_prompt_textbox
-                        tools_config.get('get_account_balance', True),  # tool_get_account
-                        tools_config.get('get_positions', True),  # tool_get_positions
-                        tools_config.get('get_pending_orders', True),  # tool_get_pending_orders
                         tools_config.get('query_prediction_data', True),  # tool_query_prediction
                         tools_config.get('get_prediction_history', True),  # tool_prediction_history
-                        tools_config.get('place_order', True),  # tool_place_order
-                        tools_config.get('cancel_order', True),  # tool_cancel_order
-                        tools_config.get('modify_order', True),  # tool_modify_order
-                        tools_config.get('place_stop_loss_order', True),  # tool_stop_loss
                         tools_config.get('query_historical_kline_data', True),  # tool_query_historical_kline
                         tools_config.get('get_current_utc_time', True),  # tool_get_utc_time
                         tools_config.get('run_latest_model_inference', False),  # tool_run_inference
-                        tools_config.get('delete_prediction_data_by_batch', False),  # tool_delete_prediction
+                        tools_config.get('get_account_balance', True),  # tool_get_account
+                        tools_config.get('get_pending_orders', True),  # tool_get_pending_orders
+                        tools_config.get('place_order', True),  # tool_place_order
+                        tools_config.get('cancel_order', True),  # tool_cancel_order
+                        tools_config.get('amend_order', True),  # tool_amend_order
                         safe_float(quick_usdt_amount, 1000.0),  # quick_usdt_amount
                         safe_float(quick_usdt_percentage, 30.0),  # quick_usdt_percentage
                         safe_int(quick_avg_orders, 10),  # quick_avg_orders
@@ -1398,10 +1391,9 @@ def create_app():
                         inference_lookback_window, inference_predict_window,  # 推理数据窗口
                         inference_temperature, inference_top_p, inference_sample_count, inference_data_offset, inference_params_status,  # 推理参数
                         llm_config_dropdown, prompt_template_dropdown, agent_prompt_textbox,  # Agent配置
-                        tool_get_account, tool_get_positions, tool_get_pending_orders,
-                        tool_query_prediction, tool_prediction_history, tool_place_order,  # 工具选择
-                        tool_cancel_order, tool_modify_order, tool_stop_loss,
-                        tool_query_historical_kline, tool_get_utc_time, tool_run_inference, tool_delete_prediction,  # 新增工具
+                        tool_query_prediction, tool_prediction_history, tool_query_historical_kline,  # 数据查询工具
+                        tool_get_utc_time, tool_run_inference, tool_get_account,  # 系统和账户工具
+                        tool_get_pending_orders, tool_place_order, tool_cancel_order, tool_amend_order,  # 交易工具
                         # ReAct配置已移除
                         quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss,  # 交易限制配置
                         training_df, kline_chart, probability_indicators_md,  # K线图和概率指标
@@ -1472,10 +1464,9 @@ def create_app():
                         inference_lookback_window, inference_predict_window,  # 推理数据窗口
                         inference_temperature, inference_top_p, inference_sample_count, inference_data_offset, inference_params_status,
                         llm_config_dropdown, prompt_template_dropdown, agent_prompt_textbox,  # Agent配置
-                        tool_get_account, tool_get_positions, tool_get_pending_orders,
-                        tool_query_prediction, tool_prediction_history, tool_place_order,  # 工具选择
-                        tool_cancel_order, tool_modify_order, tool_stop_loss,
-                        tool_query_historical_kline, tool_get_utc_time, tool_run_inference, tool_delete_prediction,  # 新增工具
+                        tool_query_prediction, tool_prediction_history, tool_query_historical_kline,  # 数据查询工具
+                        tool_get_utc_time, tool_run_inference, tool_get_account,  # 系统和账户工具
+                        tool_get_pending_orders, tool_place_order, tool_cancel_order, tool_amend_order,  # 交易工具
                         # ReAct配置已移除
                         quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss,  # 交易限制配置
                         training_df, kline_chart, probability_indicators_md,  # K线图和概率指标
@@ -1649,23 +1640,20 @@ def create_app():
                 )
 
                 # Agent配置事件
-                def save_agent_config_wrapper(pid, llm_id, prompt, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11, t12, t13, max_iter=None, enable_think=None, think_style=None):
+                def save_agent_config_wrapper(pid, llm_id, prompt, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10):
                     if not pid:
                         return "❌ 请先选择计划"
                     tools_config = {
-                        'get_account_balance': t1,
-                        'get_positions': t2,
-                        'get_pending_orders': t3,
-                        'query_prediction_data': t4,
-                        'get_prediction_history': t5,
-                        'place_order': t6,
-                        'cancel_order': t7,
-                        'modify_order': t8,
-                        'place_stop_loss_order': t9,
-                        'query_historical_kline_data': t10,
-                        'get_current_utc_time': t11,
-                        'run_latest_model_inference': t12,
-                        'delete_prediction_data_by_batch': t13
+                        'query_prediction_data': t1,
+                        'get_prediction_history': t2,
+                        'query_historical_kline_data': t3,
+                        'get_current_utc_time': t4,
+                        'run_latest_model_inference': t5,
+                        'get_account_balance': t6,
+                        'get_pending_orders': t7,
+                        'place_order': t8,
+                        'cancel_order': t9,
+                        'amend_order': t10
                     }
                     # 保存Agent配置
                     agent_result = detail_ui.save_agent_config(int(pid), llm_id, prompt, tools_config)
@@ -1677,10 +1665,9 @@ def create_app():
                     fn=save_agent_config_wrapper,
                     inputs=[
                         plan_id_input, llm_config_dropdown, agent_prompt_textbox,
-                        tool_get_account, tool_get_positions, tool_get_pending_orders,
-                        tool_query_prediction, tool_prediction_history, tool_place_order,
-                        tool_cancel_order, tool_modify_order, tool_stop_loss,
-                        tool_query_historical_kline, tool_get_utc_time, tool_run_inference, tool_delete_prediction
+                        tool_query_prediction, tool_prediction_history, tool_query_historical_kline,
+                        tool_get_utc_time, tool_run_inference, tool_get_account,
+                        tool_get_pending_orders, tool_place_order, tool_cancel_order, tool_amend_order
                     ],
                     outputs=[agent_config_status]
                 )
@@ -1809,7 +1796,7 @@ def create_app():
 
                 # 手动推理（流式）
                 async def manual_inference_wrapper_stream(pid):
-                    """流式推理包装函数 - 支持追加模式"""
+                    """流式推理包装函数 - 每次推理重置上下文"""
                     if not pid:
                         yield [{"role": "assistant", "content": "❌ 请先选择计划"}]
                         return
@@ -1819,10 +1806,59 @@ def create_app():
                         if not is_valid:
                             yield [{"role": "assistant", "content": f"❌ {error_msg}"}]
                             return
+
                         conversation_history = []  # 用于累积消息
 
-                        # 使用Agent服务 - 追加模式
-                        async for response_batch in agent_service.stream_manual_inference(plan_id):
+                        # 完成之前的对话，确保每次推理都是新的上下文
+                        with get_db() as db:
+                            from database.models import AgentConversation
+                            conversations = db.query(AgentConversation).filter(
+                                AgentConversation.plan_id == plan_id,
+                                AgentConversation.conversation_type == 'auto_inference',
+                                AgentConversation.status == 'active'
+                            ).all()
+
+                            for conv in conversations:
+                                conv.status = 'completed'
+                                conv.completed_at = now_beijing()
+
+                            db.commit()
+
+                        # 获取并显示系统提示词
+                        try:
+                            with get_db() as db:
+                                from database.models import TradingPlan, LLMConfig
+                                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                                if plan:
+                                    llm_config = db.query(LLMConfig).filter(LLMConfig.id == plan.llm_config_id).first()
+                                    if llm_config:
+                                        tools_config = plan.agent_tools_config if isinstance(plan.agent_tools_config, dict) else {}
+                                        if isinstance(plan.agent_tools_config, str):
+                                            tools_config = {}
+                                        system_prompt = agent_service._build_system_prompt(plan, tools_config, plan_id)
+
+                                        # 显示系统提示词
+                                        system_msg = f"""🔧 **系统提示词配置**
+
+**计划信息**: {plan.plan_name} ({plan.inst_id} - {plan.interval})
+**LLM配置**: {llm_config.provider} - {llm_config.model_name}
+**对话类型**: 自动推理 (基于预测数据)
+
+---
+**完整系统提示词**:
+```
+{system_prompt}
+```
+---
+🚀 **开始AI推理分析...**
+"""
+                                        yield [{"role": "assistant", "content": system_msg}]
+                        except Exception as prompt_error:
+                            logger.error(f"获取系统提示词失败: {prompt_error}")
+                            yield [{"role": "assistant", "content": "⚠️ 获取系统提示词失败，但继续推理..."}]
+
+                        # 使用Agent服务 - 自动推理模式
+                        async for response_batch in agent_service.stream_auto_inference(plan_id):
                             if response_batch:
                                 # 追加新消息到历史记录
                                 conversation_history.extend(response_batch)
@@ -1848,12 +1884,36 @@ def create_app():
   
   
                 # 清空对话
-                def clear_chat_wrapper():
+                def clear_chat_wrapper(pid):
                     """清空对话历史"""
-                    return [{"role": "assistant", "content": "对话已清空，点击\"执行推理\"开始新的推理"}]
+                    try:
+                        # 验证plan_id
+                        is_valid, plan_id, error_msg = validate_plan_id(pid)
+                        if not is_valid:
+                            return [{"role": "assistant", "content": f"❌ {error_msg}"}]
+
+                        # 完成所有活跃对话
+                        with get_db() as db:
+                            from database.models import AgentConversation
+                            conversations = db.query(AgentConversation).filter(
+                                AgentConversation.plan_id == plan_id,
+                                AgentConversation.status == 'active'
+                            ).all()
+
+                            for conv in conversations:
+                                conv.status = 'completed'
+                                conv.completed_at = now_beijing()
+
+                            db.commit()
+
+                        return [{"role": "assistant", "content": "✅ 对话历史已清空，点击\"执行推理\"开始新的推理"}]
+                    except Exception as e:
+                        logger.error(f"清空对话失败: {e}")
+                        return [{"role": "assistant", "content": f"❌ 清空对话失败: {str(e)}"}]
 
                 clear_chat_btn.click(
                     fn=clear_chat_wrapper,
+                    inputs=[plan_id_input],
                     outputs=[agent_chatbot]
                 )
 
@@ -1870,7 +1930,40 @@ def create_app():
                     async def generate_response():
                         try:
                             plan_id = int(pid)
-                            conversation_history = history.copy() if history else []  # 从现有历史开始
+
+                            # 检查是否是新的对话开始（没有历史记录）
+                            is_new_conversation = not history or len(history) == 0
+                            conversation_history = history.copy() if history else []
+
+                            if is_new_conversation:
+                                # 新对话开始，显示系统提示词
+                                try:
+                                    with get_db() as db:
+                                        from database.models import TradingPlan, LLMConfig
+                                        plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                                        if plan:
+                                            llm_config = db.query(LLMConfig).filter(LLMConfig.id == plan.llm_config_id).first()
+                                            if llm_config:
+                                                tools_config = plan.agent_tools_config if isinstance(plan.agent_tools_config, dict) else {}
+                                                if isinstance(plan.agent_tools_config, str):
+                                                    tools_config = {}
+                                                system_prompt = agent_service._build_system_prompt(plan, tools_config, plan_id)
+
+                                                # 显示简化的系统提示词信息
+                                                system_msg = f"""🔧 **新对话开始**
+
+**计划**: {plan.plan_name} ({plan.inst_id} - {plan.interval})
+**AI模型**: {llm_config.provider} - {llm_config.model_name}
+**对话模式**: 手动聊天
+
+💡 **提示**: Agent已配置{len([k for k, v in tools_config.items() if v])}个工具，将根据您的请求智能选择使用
+
+🚀 **请输入您的问题或交易分析需求...**
+"""
+                                                conversation_history.append({"role": "assistant", "content": system_msg})
+                                except Exception as prompt_error:
+                                    logger.error(f"获取系统信息失败: {prompt_error}")
+                                    conversation_history.append({"role": "assistant", "content": "⚠️ 新对话已开始，但系统信息获取失败"})
 
                             # 使用Agent v2服务 - 追加模式
                             async for response_batch in agent_service.stream_conversation(plan_id, message):
@@ -1883,7 +1976,7 @@ def create_app():
                         except Exception as e:
                             logger.error(f"对话失败: {e}")
                             error_msg = [{"role": "assistant", "content": f"❌ 对话失败: {str(e)}"}]
-                            yield (history or []) + error_msg, ""
+                            yield (conversation_history or []) + error_msg, ""
 
                     return generate_response()
 

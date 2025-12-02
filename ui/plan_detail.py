@@ -3055,6 +3055,78 @@ class PlanDetailUI:
         tools_config = plan.agent_tools_config or {}
         tools = []
 
+        # 1. 🔮 query_prediction_data - 按时间范围和批次ID查询预测数据
+        if tools_config.get('query_prediction_data', True):
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "query_prediction_data",
+                    "description": "按时间范围和批次ID查询预测数据",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "start_time": {"type": "string", "description": "开始时间 (YYYY-MM-DD HH:MM:SS)"},
+                            "end_time": {"type": "string", "description": "结束时间 (YYYY-MM-DD HH:MM:SS)"},
+                            "batch_id": {"type": "string", "description": "推理批次ID"}
+                        },
+                        "required": []
+                    }
+                }
+            })
+
+        # 2. 📈 get_prediction_history - 查询历史预测批次列表（最多30批次）
+        if tools_config.get('get_prediction_history', True):
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "get_prediction_history",
+                    "description": "查询历史预测批次列表（最多30批次）",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            })
+
+        # 3. 📈 query_historical_kline_data - 查询历史K线数据（UTC+8时间戳）
+        if tools_config.get('query_historical_kline_data', True):
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "query_historical_kline_data",
+                    "description": "查询历史K线数据（UTC+8时间戳）",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "start_time": {"type": "string", "description": "开始时间 (YYYY-MM-DD HH:MM:SS)"},
+                            "end_time": {"type": "string", "description": "结束时间 (YYYY-MM-DD HH:MM:SS)"},
+                            "limit": {"type": "integer", "description": "数据条数限制"}
+                        },
+                        "required": []
+                    }
+                }
+            })
+
+        # 4. 🕒 get_current_utc_time - 获取当前UTC+8时间
+        if tools_config.get('get_current_utc_time', True):
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "get_current_utc_time",
+                    "description": "获取当前UTC+8时间",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            })
+
+        # 5. 🤖 run_latest_model_inference - 触发最新模型推理
+        if tools_config.get('run_latest_model_inference', False):
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "run_latest_model_inference",
+                    "description": "触发最新模型推理",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            })
+
+        # 6. 🔍 get_account_balance - 查询账户余额
         if tools_config.get('get_account_balance', True):
             tools.append({
                 "type": "function",
@@ -3065,32 +3137,24 @@ class PlanDetailUI:
                 }
             })
 
-        if tools_config.get('get_positions', True):
-            tools.append({
-                "type": "function",
-                "function": {
-                    "name": "get_positions",
-                    "description": "查询当前持仓",
-                    "parameters": {"type": "object", "properties": {}}
-                }
-            })
-
+        # 7. 📋 get_pending_orders - 查询挂单
         if tools_config.get('get_pending_orders', True):
             tools.append({
                 "type": "function",
                 "function": {
                     "name": "get_pending_orders",
-                    "description": "查询挂单列表",
+                    "description": "查询挂单",
                     "parameters": {"type": "object", "properties": {}}
                 }
             })
 
+        # 8. 💰 place_order - 下限价单
         if tools_config.get('place_order', True):
             tools.append({
                 "type": "function",
                 "function": {
                     "name": "place_order",
-                    "description": "下单",
+                    "description": "下限价单",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -3099,6 +3163,42 @@ class PlanDetailUI:
                             "price": {"type": "number"}
                         },
                         "required": ["side", "size"]
+                    }
+                }
+            })
+
+        # 9. ❌ cancel_order - 撤单
+        if tools_config.get('cancel_order', True):
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "cancel_order",
+                    "description": "撤单",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "order_id": {"type": "string", "description": "订单ID"}
+                        },
+                        "required": ["order_id"]
+                    }
+                }
+            })
+
+        # 10. ✏️ amend_order - 改单
+        if tools_config.get('amend_order', True):
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "amend_order",
+                    "description": "改单",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "order_id": {"type": "string", "description": "订单ID"},
+                            "new_size": {"type": "number", "description": "新数量"},
+                            "new_price": {"type": "number", "description": "新价格"}
+                        },
+                        "required": ["order_id"]
                     }
                 }
             })

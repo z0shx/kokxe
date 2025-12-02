@@ -910,7 +910,7 @@ class LangChainAgentV2Service:
 ## 计划信息
 - 当前计划ID: {plan_id}
 - 交易对: {plan.inst_id}
-- 时间颗粒度: {plan.time_granularity}
+- 时间颗粒度: {plan.interval}
 - 环境: {'模拟盘' if plan.is_demo else '实盘'}
 
 {tools_section}

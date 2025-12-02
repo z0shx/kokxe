@@ -18,6 +18,7 @@ from database.models import KlineData, WebSocketSubscription
 from sqlalchemy import and_, func, desc
 from utils.logger import setup_logger
 from utils.data_checker import DataIntegrityChecker
+from utils.timezone_helper import format_datetime_beijing
 from utils.data_downloader import DataDownloader
 from utils.timezone_helper import format_datetime_full_beijing, format_datetime_short_beijing, format_time_range_utc8
 from ui.base_ui import BaseUIComponent, DatabaseMixin, UIHelper, ValidationHelper, ConfigManager
