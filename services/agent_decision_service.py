@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any, AsyncGenerator
 from database.db import get_db
 from database.models import TradingPlan, TrainingRecord, PredictionData, AgentDecision, LLMConfig
-from services.conversation_service import ConversationService, MessageType, ReactStage
+from services.conversation_service import ConversationService, MessageType
 from utils.logger import setup_logger
 from sqlalchemy import desc
 from config import config

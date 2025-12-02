@@ -1,6 +1,6 @@
 """
 AI Agent 对话管理服务
-负责管理对话会话、消息记录和React循环展示
+负责管理对话会话、消息记录和对话展示
 """
 import json
 from datetime import datetime, timezone
@@ -28,11 +28,6 @@ class MessageType(Enum):
     SYSTEM = "system"
 
 
-class ReactStage(Enum):
-    """ReAct阶段"""
-    THOUGHT = "thought"
-    ACTION = "action"
-    OBSERVATION = "observation"
 
 
 class ConversationService:

@@ -1,5 +1,5 @@
 -- KOKEX Database Schema
--- Generated at: 2025-12-01 17:35:51.189619
+-- Generated at: 2025-12-02 09:52:49.364026
 
 
 -- Table: agent_decisions
@@ -183,7 +183,6 @@ CREATE TABLE trading_plans (
 	agent_prompt TEXT, 
 	agent_tools_config JSONB, 
 	trading_limits JSONB, 
-	react_config JSONB, 
 	initial_capital FLOAT, 
 	avg_orders_per_batch INTEGER, 
 	max_single_order_ratio FLOAT, 

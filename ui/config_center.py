@@ -3,13 +3,46 @@
 """
 import gradio as gr
 import pandas as pd
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 from services.config_service import ConfigService
 from utils.logger import setup_logger
 from ui.constants import DataFrameHeaders, create_empty_dataframe
 from ui.ui_utils import UIHelper
 
 logger = setup_logger(__name__, "config_center_ui.log")
+
+
+def safe_dataframe_from_data(data: List[Dict]) -> pd.DataFrame:
+    """
+    安全创建DataFrame，确保所有数据类型都适合Gradio显示
+
+    Args:
+        data: 字典列表数据
+
+    Returns:
+        pd.DataFrame: 安全的DataFrame
+    """
+    if not data:
+        return pd.DataFrame()
+
+    safe_data = []
+    for row in data:
+        safe_row = {}
+        for key, value in row.items():
+            if value is None or pd.isna(value):
+                safe_row[key] = 'N/A'
+            elif isinstance(value, (int, float)):
+                # 保持数字类型，但确保不是NaN
+                if pd.isna(value):
+                    safe_row[key] = 0
+                else:
+                    safe_row[key] = value
+            else:
+                # 转换为字符串
+                safe_row[key] = str(value)
+        safe_data.append(safe_row)
+
+    return pd.DataFrame(safe_data)
 
 
 class ConfigCenterUI:
@@ -39,7 +72,7 @@ class ConfigCenterUI:
                 "默认": "✓" if config.is_default else ""
             })
 
-        return pd.DataFrame(data)
+        return safe_dataframe_from_data(data)
 
     def create_llm_config(
         self,
@@ -130,7 +163,7 @@ class ConfigCenterUI:
                 "默认": "✓" if template.is_default else ""
             })
 
-        return pd.DataFrame(data)
+        return safe_dataframe_from_data(data)
 
     def create_prompt_template(
         self,

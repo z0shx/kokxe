@@ -19,11 +19,45 @@ from sqlalchemy import and_, desc, func
 from utils.logger import setup_logger
 from ui.constants import DataFrameHeaders, DataTypes, create_empty_dataframe
 from ui.ui_utils import UIHelper
+from ui.custom_chatbot import create_custom_chatbot, process_streaming_messages, format_conversation_history
 from database.models import now_beijing
 from utils.timezone_helper import (format_datetime_full_beijing, format_datetime_short_beijing,
                                    format_datetime_beijing, format_time_range_utc8)
 
 logger = setup_logger(__name__, "plan_detail_ui.log")
+
+
+def safe_dataframe_from_data(data: List[Dict]) -> pd.DataFrame:
+    """
+    安全创建DataFrame，确保所有数据类型都适合Gradio显示
+
+    Args:
+        data: 字典列表数据
+
+    Returns:
+        pd.DataFrame: 安全的DataFrame
+    """
+    if not data:
+        return pd.DataFrame()
+
+    safe_data = []
+    for row in data:
+        safe_row = {}
+        for key, value in row.items():
+            if value is None or pd.isna(value):
+                safe_row[key] = 'N/A'
+            elif isinstance(value, (int, float)):
+                # 保持数字类型，但确保不是NaN
+                if pd.isna(value):
+                    safe_row[key] = 0
+                else:
+                    safe_row[key] = value
+            else:
+                # 转换为字符串
+                safe_row[key] = str(value)
+        safe_data.append(safe_row)
+
+    return pd.DataFrame(safe_data)
 
 
 class PlanDetailUI:
@@ -298,7 +332,7 @@ class PlanDetailUI:
                     '创建时间': format_datetime_short_beijing(record['created_at'])
                 })
 
-            return pd.DataFrame(df_data)
+            return safe_dataframe_from_data(df_data)
 
         except Exception as e:
             logger.error(f"加载训练记录失败: {e}")
@@ -723,7 +757,7 @@ class PlanDetailUI:
                         '预览': content_preview
                     })
 
-                return pd.DataFrame(df_data)
+                return safe_dataframe_from_data(df_data)
 
         except Exception as e:
             logger.error(f"加载Agent对话记录失败: {e}")
@@ -750,7 +784,7 @@ class PlanDetailUI:
                     '训练完成': format_datetime_short_beijing(record['train_end_time']) if record['train_end_time'] else 'N/A'
                 })
 
-            return pd.DataFrame(df_data)
+            return safe_dataframe_from_data(df_data)
 
         except Exception as e:
             logger.error(f"加载推理记录失败: {e}")
@@ -1206,98 +1240,61 @@ class PlanDetailUI:
 
     def get_latest_conversation_messages(self, plan_id: int) -> List[Dict]:
         """
-        获取最新的对话消息 - 包括推理和手动对话，显示完整过程
+        获取最新的对话消息，支持新的消息格式（think模式、tool调用、play结果）
 
         Returns:
             List[Dict]: Chatbot messages 格式 [{"role": "assistant", "content": ...}]
         """
         try:
-            from services.langchain_agent_v2 import ConversationType
             from database.models import AgentConversation, AgentMessage, TradingPlan
             from database.db import get_db
 
             with get_db() as db:
-                # 获取最新的推理对话
-                latest_inference = db.query(AgentConversation).filter(
-                    AgentConversation.plan_id == plan_id,
-                    AgentConversation.conversation_type == ConversationType.AUTO_INFERENCE.value
-                ).order_by(AgentConversation.created_at.desc()).first()
+                # 获取最新的对话（任何类型）
+                latest_conversation = db.query(AgentConversation).filter(
+                    AgentConversation.plan_id == plan_id
+                ).order_by(desc(AgentConversation.started_at)).first()
 
-                chat_messages = []
-
-                if latest_inference:
-                    # 获取推理对话的所有消息
+                if latest_conversation:
+                    # 获取该对话的所有消息
                     messages = db.query(AgentMessage).filter(
-                        AgentMessage.conversation_id == latest_inference.id
-                    ).order_by(AgentMessage.created_at.asc()).all()
+                        AgentMessage.conversation_id == latest_conversation.id
+                    ).order_by(AgentMessage.timestamp.asc()).all()
 
-                    for msg in messages:
-                        content = msg.content
-
-                        # 根据角色格式化消息
-                        if msg.role == "system":
-                            # 系统消息显示为助手消息
-                            chat_messages.append({
-                                "role": "assistant",
-                                "content": f"📋 **系统提示**: {content}"
-                            })
-                        elif msg.role == "assistant":
-                            # 普通助手消息
-                            chat_messages.append({
-                                "role": "assistant",
-                                "content": content
-                            })
-                        elif msg.role == "user":
-                            # 用户消息
-                            chat_messages.append({
-                                "role": "user",
-                                "content": content
-                            })
-                        else:
-                            # 其他角色（如 tool_call, tool_result, qwen_analysis, qwen_output）
-                            # 这些是流式输出中使用的角色，直接显示
-                            if msg.role == "tool_call":
-                                formatted_content = f"🛠️ **工具调用**: {content}"
-                            elif msg.role == "tool_result":
-                                formatted_content = f"✅ **工具执行结果**: {content}"
-                            elif msg.role == "qwen_analysis":
-                                formatted_content = f"🤖 **Qwen分析**: {content}"
-                            elif msg.role == "qwen_output":
-                                formatted_content = content  # Qwen的正文输出直接显示
-                            else:
-                                formatted_content = content
-
-                            chat_messages.append({
-                                "role": "assistant",
-                                "content": formatted_content
-                            })
-
-                # 如果没有推理对话，获取手动对话
-                if not chat_messages:
-                    manual_messages = db.query(AgentMessage).join(AgentConversation).filter(
-                        AgentConversation.plan_id == plan_id,
-                        AgentConversation.conversation_type == ConversationType.MANUAL_CHAT.value
-                    ).order_by(AgentMessage.created_at.desc()).limit(50).all()
-
-                    for msg in reversed(manual_messages):  # 按时间正序显示
-                        role = "assistant" if msg.role == "assistant" else "user"
-                        chat_messages.append({
-                            "role": role,
-                            "content": msg.content
-                        })
+                    if messages:
+                        # 使用新的格式化方法
+                        return format_conversation_history(messages)
 
                 # 如果没有任何对话，返回欢迎消息并检查配置
-                if not chat_messages:
-                    # 检查计划的LLM配置
-                    plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
-                    if plan and plan.llm_config_id:
-                        welcome_msg = "👋 欢迎使用AI Agent对话系统\n\n✅ LLM配置已完成\n\n💡 开始您的第一次对话或点击「执行推理」获取市场分析。"
-                    else:
-                        welcome_msg = "👋 欢迎使用AI Agent对话系统\n\n⚠️ **未配置LLM** - 请先在「⚙️ Agent配置」中设置LLM提供商\n\n💡 配置完成后即可开始对话或执行推理。"
+                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                if plan and plan.llm_config_id:
+                    welcome_msg = """👋 欢迎使用AI Agent对话系统
 
-                    return [{"role": "assistant", "content": welcome_msg}]
+✅ **配置已完成**
+- LLM配置已就绪
+- Agent工具已配置
+- 准备就绪
 
-                return chat_messages
+💡 **使用方式**
+- 点击「执行推理」开始市场分析
+- 在对话框中输入消息进行对话
+- 支持思考模式、工具调用、投资决策展示
+
+🚀 开始您的智能交易之旅吧！"""
+                else:
+                    welcome_msg = """👋 欢迎使用AI Agent对话系统
+
+⚠️ **需要配置**
+- 请先在「⚙️ Agent配置」中设置LLM提供商
+- 配置可用工具
+- 设置交易限制
+
+💡 **配置完成后即可开始**:
+- 智能市场分析
+- 自动交易决策
+- 对话式交互"""
+
+                return [{"role": "assistant", "content": welcome_msg}]
 
         except Exception as e:
             logger.error(f"获取最新对话消息失败: {e}")
@@ -1789,55 +1786,7 @@ class PlanDetailUI:
             logger.error(f"保存Agent配置失败: {e}")
             return f"❌ 保存失败: {str(e)}"
 
-    def get_react_config(self, plan_id: int) -> dict:
-        """获取ReAct配置"""
-        try:
-            with get_db() as db:
-                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
-                if not plan:
-                    # 返回默认配置
-                    return {
-                        'max_iterations': 3,
-                        'enable_thinking': True,
-                        'thinking_style': '详细'
-                    }
-
-                react_config = plan.react_config or {}
-                # 确保所有必需字段都有默认值
-                return {
-                    'max_iterations': int(react_config.get('max_iterations', 3)),
-                    'enable_thinking': bool(react_config.get('enable_thinking', True)),
-                    'thinking_style': react_config.get('thinking_style', '详细')
-                }
-        except Exception as e:
-            logger.error(f"获取ReAct配置失败: {e}")
-            return {
-                'max_iterations': 3,
-                'enable_thinking': True,
-                'thinking_style': '详细'
-            }
-
-    def save_react_config(self, plan_id: int, max_iterations: int, enable_thinking: bool,
-                          thinking_style: str) -> str:
-        """保存ReAct配置"""
-        try:
-            react_config = {
-                'max_iterations': max_iterations,
-                'enable_thinking': enable_thinking,
-                'thinking_style': thinking_style
-            }
-
-            with get_db() as db:
-                db.query(TradingPlan).filter(TradingPlan.id == plan_id).update({
-                    'react_config': react_config
-                })
-                db.commit()
-                logger.info(f"ReAct配置已保存: plan_id={plan_id}, config={react_config}")
-                return f"✅ ReAct配置已保存\n- 最大推理轮数: {max_iterations}\n- 思考过程显示: {'启用' if enable_thinking else '禁用'}\n- 思考风格: {thinking_style}"
-        except Exception as e:
-            logger.error(f"保存ReAct配置失败: {e}")
-            return f"❌ 保存失败: {str(e)}"
-
+    
     def get_trading_limits_config(self, plan_id: int) -> dict:
         """获取交易限制配置"""
         try:
@@ -2765,16 +2714,12 @@ class PlanDetailUI:
             return f"❌ 推理失败: {str(e)}"
 
     async def manual_inference_stream(self, plan_id: int):
-        """手动执行AI Agent推理（流式输出），使用统一LangChain Agent服务"""
+        """手动执行AI Agent推理（流式输出），使用新的LangChain Agent v2服务"""
         try:
-            from services.langchain_agent_v2 import langchain_agent_v2_service, ConversationType
+            from services.langchain_agent_v2 import langchain_agent_v2_service
 
-            # 使用统一的LangChain Agent服务v2进行流式推理
-            async for message_batch in langchain_agent_v2_service.stream_agent_response(
-                plan_id=plan_id,
-                user_message=None,  # 自动推理不需要用户消息
-                conversation_type=ConversationType.AUTO_INFERENCE
-            ):
+            # 使用新的LangChain Agent v2服务进行流式推理
+            async for message_batch in langchain_agent_v2_service.stream_auto_inference(plan_id=plan_id):
                 yield message_batch
 
         except Exception as e:
@@ -2786,13 +2731,12 @@ class PlanDetailUI:
     async def chat_with_agent_stream(self, plan_id: int, user_message: str):
         """与AI Agent进行流式对话"""
         try:
-            from services.langchain_agent_v2 import langchain_agent_v2_service, ConversationType
+            from services.langchain_agent_v2 import langchain_agent_v2_service
 
-            # 使用统一的LangChain Agent服务v2进行流式对话
-            async for message_batch in langchain_agent_v2_service.stream_agent_response(
+            # 使用新的LangChain Agent v2服务进行流式对话
+            async for message_batch in langchain_agent_v2_service.stream_conversation(
                 plan_id=plan_id,
-                user_message=user_message,
-                conversation_type=ConversationType.MANUAL_CHAT
+                user_message=user_message
             ):
                 yield message_batch
 
@@ -3687,7 +3631,7 @@ class PlanDetailUI:
                         '更新时间': update_time
                     })
 
-                return pd.DataFrame(df_data)
+                return safe_dataframe_from_data(df_data)
 
         except Exception as e:
             logger.error(f"获取订单信息失败: {e}")
@@ -3769,16 +3713,8 @@ class PlanDetailUI:
                     '进度(%)': task['progress_percentage'] or 0  # 确保数字类型
                 })
 
-            # 创建DataFrame
-            df = pd.DataFrame(df_data)
-
-            # 确保数字列的类型正确
-            if '执行时长(秒)' in df.columns:
-                df['执行时长(秒)'] = pd.to_numeric(df['执行时长(秒)'], errors='coerce').fillna(0).astype(int)
-            if '进度(%)' in df.columns:
-                df['进度(%)'] = pd.to_numeric(df['进度(%)'], errors='coerce').fillna(0).astype(int)
-
-            return df
+            # 使用安全的DataFrame创建函数
+            return safe_dataframe_from_data(df_data)
 
         except Exception as e:
             logger.error(f"加载任务执行记录失败: {e}")

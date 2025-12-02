@@ -4,7 +4,10 @@ KOKEX 主应用入口
 import gradio as gr
 import asyncio
 import sys
+import pandas as pd
 from pathlib import Path
+from typing import Optional, Tuple, Callable, Any
+from functools import wraps
 
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent))
@@ -20,6 +23,100 @@ from utils.logger import setup_logger
 from services.langchain_agent_v2 import langchain_agent_v2_service as agent_service
 
 logger = setup_logger(__name__, "app.log")
+
+
+def safe_plan_id(pid) -> Optional[int]:
+    """
+    安全的plan_id处理函数，统一处理各种输入类型
+
+    Args:
+        pid: 输入的plan_id，可能是int、float、str或None
+
+    Returns:
+        Optional[int]: 处理后的整数plan_id，如果无效则返回None
+    """
+    if pid is None:
+        return None
+
+    if pd.isna(pid):
+        return None
+
+    try:
+        # 处理字符串输入
+        if isinstance(pid, str):
+            if pid.strip() == "":
+                return None
+            return int(float(pid.strip()))
+
+        # 处理数值输入
+        if isinstance(pid, (int, float)):
+            if pd.isna(pid):
+                return None
+            return int(pid)
+
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+    return None
+
+
+def validate_plan_id(pid) -> Tuple[bool, Optional[int], str]:
+    """
+    验证plan_id并返回验证结果
+
+    Args:
+        pid: 输入的plan_id
+
+    Returns:
+        Tuple[bool, Optional[int], str]: (是否有效, 处理后的plan_id, 错误信息)
+    """
+    from database.db import get_db
+
+    safe_id = safe_plan_id(pid)
+
+    if safe_id is None:
+        return False, None, "请输入有效的计划ID"
+
+    # 验证计划是否存在
+    try:
+        with get_db() as db:
+            plan = db.query(TradingPlan).filter(TradingPlan.id == safe_id).first()
+            if not plan:
+                return False, safe_id, f"计划ID {safe_id} 不存在"
+
+        return True, safe_id, ""
+    except Exception as e:
+        return False, safe_id, f"验证计划ID失败: {str(e)}"
+
+
+def safe_plan_id_wrapper(error_return_value=None):
+    """
+    装饰器：自动处理plan_id验证和错误处理
+
+    Args:
+        error_return_value: 发生错误时的返回值
+
+    Returns:
+        装饰器函数
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            # 假设第一个参数是pid
+            if args:
+                pid = args[0]
+                is_valid, plan_id, error_msg = validate_plan_id(pid)
+                if not is_valid:
+                    return error_return_value if error_return_value is not None else f"❌ {error_msg}"
+
+                # 用安全的plan_id替换原参数
+                new_args = (plan_id,) + args[1:]
+                return func(*new_args, **kwargs)
+            else:
+                # 如果没有参数，直接调用原函数
+                return func(*args, **kwargs)
+        return wrapper
+    return decorator
 
 
 def initialize_app():
@@ -715,30 +812,7 @@ def create_app():
                                 tool_run_inference = gr.Checkbox(label="🤖 run_latest_model_inference", value=False, info="执行最新微调版本模型的预测推理")
                                 tool_delete_prediction = gr.Checkbox(label="🗑️ delete_prediction_data_by_batch", value=False, info="删除预测数据(按推理批次),请谨慎使用")
 
-                            # ReAct配置
-                            gr.Markdown("**🧠 ReAct推理配置**")
-                            with gr.Row():
-                                max_iterations = gr.Number(
-                                    label="最大推理轮数",
-                                    value=3,
-                                    minimum=1,
-                                    maximum=10,
-                                    step=1,
-                                    info="AI Agent最多进行几轮推理分析"
-                                )
-                                enable_thinking = gr.Checkbox(
-                                    label="显示思考过程",
-                                    value=True,
-                                    info="在推理过程中显示AI的详细思考内容"
-                                )
-                            with gr.Row():
-                                thinking_style = gr.Dropdown(
-                                    label="思考风格",
-                                    choices=["详细", "简洁", "极简"],
-                                    value="详细",
-                                    info="控制思考内容的详细程度"
-                                )
-  
+                              
                          # 保存按钮
                             with gr.Row():
                                 save_agent_config_btn = gr.Button("💾 保存配置", size="sm")
@@ -987,12 +1061,10 @@ def create_app():
                     agent_config = detail_ui.get_agent_config(int(plan_id))
                     tools_config = agent_config.get('agent_tools_config', {})
 
-                    # 获取ReAct配置
-                    react_config = detail_ui.get_react_config(int(plan_id))
-                    # 确保类型转换正确，避免从数据库读取的字符串导致的错误
-                    max_iterations = int(react_config.get('max_iterations', 3))
-                    enable_thinking = bool(react_config.get('enable_thinking', True))
-                    thinking_style = str(react_config.get('thinking_style', '详细'))
+                    # ReAct 配置已移除，使用默认值
+                    max_iterations = 3
+                    enable_thinking = True
+                    thinking_style = "详细"
 
                     # 获取推理参数配置
                     inference_params = detail_ui.get_inference_params(int(plan_id))
@@ -1079,9 +1151,6 @@ def create_app():
                         tools_config.get('get_current_utc_time', True),  # tool_get_utc_time
                         tools_config.get('run_latest_model_inference', False),  # tool_run_inference
                         tools_config.get('delete_prediction_data_by_batch', False),  # tool_delete_prediction
-                        safe_int(max_iterations, 3),  # max_iterations
-                        enable_thinking,  # enable_thinking
-                        thinking_style,  # thinking_style
                         safe_float(quick_usdt_amount, 1000.0),  # quick_usdt_amount
                         safe_float(quick_usdt_percentage, 30.0),  # quick_usdt_percentage
                         safe_int(quick_avg_orders, 10),  # quick_avg_orders
@@ -1333,7 +1402,7 @@ def create_app():
                         tool_query_prediction, tool_prediction_history, tool_place_order,  # 工具选择
                         tool_cancel_order, tool_modify_order, tool_stop_loss,
                         tool_query_historical_kline, tool_get_utc_time, tool_run_inference, tool_delete_prediction,  # 新增工具
-                        max_iterations, enable_thinking, thinking_style,  # ReAct配置
+                        # ReAct配置已移除
                         quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss,  # 交易限制配置
                         training_df, kline_chart, probability_indicators_md,  # K线图和概率指标
                         inference_df, inference_data_range_info, prediction_data_preview, agent_df,
@@ -1407,7 +1476,7 @@ def create_app():
                         tool_query_prediction, tool_prediction_history, tool_place_order,  # 工具选择
                         tool_cancel_order, tool_modify_order, tool_stop_loss,
                         tool_query_historical_kline, tool_get_utc_time, tool_run_inference, tool_delete_prediction,  # 新增工具
-                        max_iterations, enable_thinking, thinking_style,  # ReAct配置
+                        # ReAct配置已移除
                         quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss,  # 交易限制配置
                         training_df, kline_chart, probability_indicators_md,  # K线图和概率指标
                         inference_df, inference_data_range_info, prediction_data_preview, agent_df,
@@ -1539,7 +1608,7 @@ def create_app():
                     inputs=[training_record_id],
                     outputs=[training_operation_result]
                 ).then(
-                    fn=lambda pid: detail_ui.load_training_records(int(pid)) if pid else gr.DataFrame(),
+                    fn=lambda pid: detail_ui.load_training_records(safe_plan_id(pid)) if pid else gr.DataFrame(),
                     inputs=[plan_id_input],
                     outputs=[training_df]
                 )
@@ -1557,7 +1626,7 @@ def create_app():
                     inputs=[training_record_id],
                     outputs=[training_operation_result]
                 ).then(
-                    fn=lambda pid: detail_ui.load_training_records(int(pid)) if pid else gr.DataFrame(),
+                    fn=lambda pid: detail_ui.load_training_records(safe_plan_id(pid)) if pid else gr.DataFrame(),
                     inputs=[plan_id_input],
                     outputs=[training_df]
                 )
@@ -1580,7 +1649,7 @@ def create_app():
                 )
 
                 # Agent配置事件
-                def save_agent_config_wrapper(pid, llm_id, prompt, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11, t12, t13, max_iter, enable_think, think_style):
+                def save_agent_config_wrapper(pid, llm_id, prompt, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11, t12, t13, max_iter=None, enable_think=None, think_style=None):
                     if not pid:
                         return "❌ 请先选择计划"
                     tools_config = {
@@ -1601,15 +1670,8 @@ def create_app():
                     # 保存Agent配置
                     agent_result = detail_ui.save_agent_config(int(pid), llm_id, prompt, tools_config)
 
-                    # 保存ReAct配置
-                    react_result = detail_ui.save_react_config(
-                        int(pid),
-                        int(max_iter),
-                        enable_think,
-                        think_style
-                    )
-
-                    return f"{agent_result}\n\n{react_result}"
+                    # ReAct 配置已移除
+                    return f"{agent_result}\n\n注意：ReAct 配置已整合到新的 Agent 系统中"
 
                 save_agent_config_btn.click(
                     fn=save_agent_config_wrapper,
@@ -1618,8 +1680,7 @@ def create_app():
                         tool_get_account, tool_get_positions, tool_get_pending_orders,
                         tool_query_prediction, tool_prediction_history, tool_place_order,
                         tool_cancel_order, tool_modify_order, tool_stop_loss,
-                        tool_query_historical_kline, tool_get_utc_time, tool_run_inference, tool_delete_prediction,
-                        max_iterations, enable_thinking, thinking_style
+                        tool_query_historical_kline, tool_get_utc_time, tool_run_inference, tool_delete_prediction
                     ],
                     outputs=[agent_config_status]
                 )
@@ -1754,7 +1815,10 @@ def create_app():
                         return
 
                     try:
-                        plan_id = int(pid)
+                        is_valid, plan_id, error_msg = validate_plan_id(pid)
+                        if not is_valid:
+                            yield [{"role": "assistant", "content": f"❌ {error_msg}"}]
+                            return
                         conversation_history = []  # 用于累积消息
 
                         # 使用Agent服务 - 追加模式
@@ -1776,7 +1840,7 @@ def create_app():
                     show_progress="full",  # 显示完整进度
                     api_name="manual_inference_stream"  # 添加API名称
                 ).then(
-                    fn=lambda pid: detail_ui.load_agent_decisions(int(pid)) if pid else gr.DataFrame(),
+                    fn=lambda pid: detail_ui.load_agent_decisions(safe_plan_id(pid)) if pid else gr.DataFrame(),
                     inputs=[plan_id_input],
                     outputs=[agent_df]
                 )
@@ -1831,15 +1895,18 @@ def create_app():
 
                 # 刷新决策记录和聊天上下文
                 def refresh_agent_wrapper(pid):
-                    if not pid:
-                        return gr.DataFrame(), [{"role": "assistant", "content": "❌ 请先选择计划"}]
+                    # 使用安全的plan_id处理函数
+                    is_valid, plan_id, error_msg = validate_plan_id(pid)
+
+                    if not is_valid:
+                        return gr.DataFrame(), [{"role": "assistant", "content": f"❌ {error_msg}"}]
 
                     try:
                         # 刷新决策列表
-                        agent_df_updated = detail_ui.load_agent_decisions(int(pid))
+                        agent_df_updated = detail_ui.load_agent_decisions(plan_id)
 
                         # 刷新最新的聊天上下文
-                        latest_messages = detail_ui.get_latest_conversation_messages(int(pid))
+                        latest_messages = detail_ui.get_latest_conversation_messages(plan_id)
 
                         return agent_df_updated, latest_messages
                     except Exception as e:
@@ -1848,13 +1915,16 @@ def create_app():
 
                 # 清除推理记录
                 def clear_agent_records_wrapper(pid):
-                    if not pid:
-                        return gr.DataFrame(), [{"role": "assistant", "content": "❌ 请先选择计划"}]
+                    # 使用安全的plan_id处理函数
+                    is_valid, plan_id, error_msg = validate_plan_id(pid)
+
+                    if not is_valid:
+                        return gr.DataFrame(), [{"role": "assistant", "content": f"❌ {error_msg}"}]
 
                     try:
-                        result = detail_ui.clear_agent_records(int(pid))
+                        result = detail_ui.clear_agent_records(plan_id)
                         # 刷新推理记录列表
-                        agent_df_updated = detail_ui.load_agent_decisions(int(pid))
+                        agent_df_updated = detail_ui.load_agent_decisions(plan_id)
                         # 将结果显示在聊天中
                         status_message = f"✅ {result}"
                         return agent_df_updated, [{"role": "assistant", "content": status_message}]
@@ -1876,9 +1946,17 @@ def create_app():
 
                 # 刷新账户信息
                 def refresh_account_wrapper(pid):
-                    if not pid:
-                        return "### 💰 账户信息\n\n未选择计划"
-                    return detail_ui.get_account_info(int(pid))
+                    # 使用安全的plan_id处理函数
+                    is_valid, plan_id, error_msg = validate_plan_id(pid)
+
+                    if not is_valid:
+                        return f"### 💰 账户信息\n\n❌ {error_msg}"
+
+                    try:
+                        return detail_ui.get_account_info(plan_id)
+                    except Exception as e:
+                        logger.error(f"刷新账户信息失败: {e}")
+                        return f"### 💰 账户信息\n\n❌ 刷新失败: {str(e)}"
 
                 account_refresh_btn.click(
                     fn=refresh_account_wrapper,
@@ -1888,9 +1966,17 @@ def create_app():
 
                 # 刷新订单记录
                 def refresh_orders_wrapper(pid):
-                    if not pid:
+                    # 使用安全的plan_id处理函数
+                    is_valid, plan_id, error_msg = validate_plan_id(pid)
+
+                    if not is_valid:
                         return gr.DataFrame()
-                    return detail_ui.get_orders_info(int(pid))
+
+                    try:
+                        return detail_ui.get_orders_info(plan_id)
+                    except Exception as e:
+                        logger.error(f"刷新订单记录失败: {e}")
+                        return gr.DataFrame()
 
                 order_refresh_btn.click(
                     fn=refresh_orders_wrapper,
@@ -1900,9 +1986,17 @@ def create_app():
 
                 # 任务执行记录刷新
                 def refresh_tasks_wrapper(pid):
-                    if not pid:
+                    # 使用安全的plan_id处理函数
+                    is_valid, plan_id, error_msg = validate_plan_id(pid)
+
+                    if not is_valid:
                         return pd.DataFrame()
-                    return detail_ui.load_task_executions(int(pid))
+
+                    try:
+                        return detail_ui.load_task_executions(plan_id)
+                    except Exception as e:
+                        logger.error(f"刷新任务执行记录失败: {e}")
+                        return pd.DataFrame()
 
                 task_refresh_btn.click(
                     fn=refresh_tasks_wrapper,

@@ -74,8 +74,7 @@ class TradingPlan(Base):
     agent_prompt = Column(Text, comment='AI Agent 提示词')
     agent_tools_config = Column(JSONB, comment='Agent 工具配置（JSON）')
     trading_limits = Column(JSONB, comment='交易限制配置（JSON）')
-    react_config = Column(JSONB, comment='ReAct推理配置（JSON）')
-
+    
     # 资金管理配置
     initial_capital = Column(Float, default=1000.0, comment='初始本金（USDT）')
     avg_orders_per_batch = Column(Integer, default=10, comment='平均每批订单数（用于平摊策略）')
