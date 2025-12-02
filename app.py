@@ -1077,8 +1077,19 @@ def create_app():
                     inference_schedule_text = ', '.join(str(x) for x in inference_schedule_list) + '小时间隔' if inference_schedule_list else '暂无预测时间点'
 
                     # 获取LLM配置和提示词模板列表
-                    llm_configs = detail_ui.get_llm_configs()
-                    prompt_templates = detail_ui.get_prompt_templates()
+                    try:
+                        llm_configs = detail_ui.get_llm_configs()
+                        logger.info(f"获取到 {len(llm_configs)} 个LLM配置: {llm_configs}")
+                    except Exception as e:
+                        logger.error(f"获取LLM配置失败: {e}")
+                        llm_configs = []
+
+                    try:
+                        prompt_templates = detail_ui.get_prompt_templates()
+                        logger.info(f"获取到 {len(prompt_templates)} 个提示词模板: {prompt_templates}")
+                    except Exception as e:
+                        logger.error(f"获取提示词模板失败: {e}")
+                        prompt_templates = []
 
                     # 获取交易限制配置
                     trading_limits = detail_ui.get_trading_limits_config(int(plan_id))
@@ -1643,6 +1654,19 @@ def create_app():
                 def save_agent_config_wrapper(pid, llm_id, prompt, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10):
                     if not pid:
                         return "❌ 请先选择计划"
+
+                    # 验证LLM配置ID是否有效
+                    if llm_id:
+                        try:
+                            # 动态获取LLM配置列表
+                            llm_configs = detail_ui.get_llm_configs()
+                            valid_llm_ids = [config_id for _, config_id in llm_configs]
+                            if llm_id not in valid_llm_ids:
+                                return f"❌ 选择的LLM配置ID {llm_id} 无效，请重新选择LLM配置"
+                        except Exception as e:
+                            logger.error(f"验证LLM配置失败: {e}")
+                            return "❌ 获取LLM配置列表失败，请重试"
+
                     tools_config = {
                         'query_prediction_data': t1,
                         'get_prediction_history': t2,
@@ -1824,46 +1848,16 @@ def create_app():
 
                             db.commit()
 
-                        # 获取并显示系统提示词
-                        try:
-                            with get_db() as db:
-                                from database.models import TradingPlan, LLMConfig
-                                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
-                                if plan:
-                                    llm_config = db.query(LLMConfig).filter(LLMConfig.id == plan.llm_config_id).first()
-                                    if llm_config:
-                                        tools_config = plan.agent_tools_config if isinstance(plan.agent_tools_config, dict) else {}
-                                        if isinstance(plan.agent_tools_config, str):
-                                            tools_config = {}
-                                        system_prompt = agent_service._build_system_prompt(plan, tools_config, plan_id)
-
-                                        # 显示系统提示词
-                                        system_msg = f"""🔧 **系统提示词配置**
-
-**计划信息**: {plan.plan_name} ({plan.inst_id} - {plan.interval})
-**LLM配置**: {llm_config.provider} - {llm_config.model_name}
-**对话类型**: 自动推理 (基于预测数据)
-
----
-**完整系统提示词**:
-```
-{system_prompt}
-```
----
-🚀 **开始AI推理分析...**
-"""
-                                        yield [{"role": "assistant", "content": system_msg}]
-                        except Exception as prompt_error:
-                            logger.error(f"获取系统提示词失败: {prompt_error}")
-                            yield [{"role": "assistant", "content": "⚠️ 获取系统提示词失败，但继续推理..."}]
-
-                        # 使用Agent服务 - 自动推理模式
+                        # 直接使用Agent服务 - 自动推理模式，让agent服务处理所有消息
                         async for response_batch in agent_service.stream_auto_inference(plan_id):
                             if response_batch:
                                 # 追加新消息到历史记录
                                 conversation_history.extend(response_batch)
-                                # 返回完整的历史记录（确保Gradio能看到累积效果）
-                                yield conversation_history.copy()
+                                # 使用 process_streaming_messages 格式化消息以确保Gradio正确显示
+                                from ui.custom_chatbot import process_streaming_messages
+                                formatted_messages = process_streaming_messages([conversation_history.copy()])
+                                # 返回格式化后的消息
+                                yield formatted_messages
 
                     except Exception as e:
                         logger.error(f"推理失败: {e}")
@@ -1935,43 +1929,16 @@ def create_app():
                             is_new_conversation = not history or len(history) == 0
                             conversation_history = history.copy() if history else []
 
-                            if is_new_conversation:
-                                # 新对话开始，显示系统提示词
-                                try:
-                                    with get_db() as db:
-                                        from database.models import TradingPlan, LLMConfig
-                                        plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
-                                        if plan:
-                                            llm_config = db.query(LLMConfig).filter(LLMConfig.id == plan.llm_config_id).first()
-                                            if llm_config:
-                                                tools_config = plan.agent_tools_config if isinstance(plan.agent_tools_config, dict) else {}
-                                                if isinstance(plan.agent_tools_config, str):
-                                                    tools_config = {}
-                                                system_prompt = agent_service._build_system_prompt(plan, tools_config, plan_id)
-
-                                                # 显示简化的系统提示词信息
-                                                system_msg = f"""🔧 **新对话开始**
-
-**计划**: {plan.plan_name} ({plan.inst_id} - {plan.interval})
-**AI模型**: {llm_config.provider} - {llm_config.model_name}
-**对话模式**: 手动聊天
-
-💡 **提示**: Agent已配置{len([k for k, v in tools_config.items() if v])}个工具，将根据您的请求智能选择使用
-
-🚀 **请输入您的问题或交易分析需求...**
-"""
-                                                conversation_history.append({"role": "assistant", "content": system_msg})
-                                except Exception as prompt_error:
-                                    logger.error(f"获取系统信息失败: {prompt_error}")
-                                    conversation_history.append({"role": "assistant", "content": "⚠️ 新对话已开始，但系统信息获取失败"})
-
                             # 使用Agent v2服务 - 追加模式
                             async for response_batch in agent_service.stream_conversation(plan_id, message):
                                 if response_batch:
                                     # 追加新消息到历史记录
                                     conversation_history.extend(response_batch)
-                                    # 返回累积的历史记录，清空输入框
-                                    yield conversation_history.copy(), ""
+                                    # 使用 process_streaming_messages 格式化消息以确保Gradio正确显示
+                                    from ui.custom_chatbot import process_streaming_messages
+                                    formatted_messages = process_streaming_messages([conversation_history.copy()])
+                                    # 返回格式化后的消息，清空输入框
+                                    yield formatted_messages, ""
 
                         except Exception as e:
                             logger.error(f"对话失败: {e}")
