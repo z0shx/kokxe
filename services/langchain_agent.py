@@ -271,7 +271,9 @@ class LangChainAgentService:
             try:
                 limits = plan.trading_limits if isinstance(plan.trading_limits, dict) else json.loads(plan.trading_limits)
                 if limits:
-                    limits_desc = f"\n\n交易限制：{json.dumps(limits, ensure_ascii=False, indent=2)}"
+                    # 生成友好的交易限制提示词文本
+                    limits_text = self._build_trading_limits_prompt(limits)
+                    limits_desc = f"\n\n交易限制配置：\n{limits_text}"
             except:
                 pass
 
@@ -290,6 +292,35 @@ class LangChainAgentService:
 请根据当前市场情况、交易计划和技术分析，为用户提供专业的交易建议。如果需要执行交易操作，请使用相应的工具。所有交易操作都会在模拟环境中进行。"""
 
         return system_prompt
+
+    def _build_trading_limits_prompt(self, limits: Dict) -> str:
+        """构建交易限制的提示词文本"""
+        limits_parts = []
+
+        # 可用资金 (USDT)
+        available_usdt = limits.get('available_usdt_amount', 0)
+        if available_usdt > 0:
+            limits_parts.append(f"- 可用资金: {available_usdt} USDT (下单买入时使用)")
+
+        # 资金比例 (%)
+        usdt_percentage = limits.get('available_usdt_percentage', 0)
+        if usdt_percentage > 0:
+            limits_parts.append(f"- 资金比例: {usdt_percentage}% (如果可用资金不足，则使用账户可用资金百分比计算)")
+
+        # 平摊单量
+        avg_orders = limits.get('avg_order_count', 1)
+        if avg_orders > 0:
+            limits_parts.append(f"- 平摊单量: {avg_orders} 笔 (挂单限制，最多未成交订单数)")
+
+        # 止损比例 (%)
+        stop_loss = limits.get('stop_loss_percentage', 0)
+        if stop_loss > 0:
+            limits_parts.append(f"- 止损比例: {stop_loss}% (如果买入后价格低于预期，触发挂单调价)")
+
+        if not limits_parts:
+            return "- 未设置特殊交易限制"
+
+        return "\n".join(limits_parts)
 
     async def stream_conversation(
         self,
@@ -334,7 +365,7 @@ class LangChainAgentService:
         system_prompt = self._build_system_prompt(plan, tools_config)
 
         # 输出系统消息
-        yield [{"role": "system", "content": system_prompt}]
+        yield [{"role": "system", "content": f"🤖 **系统提示词**:\n\n{system_prompt}"}]
 
         # 保存系统消息到数据库
         with get_db() as db:
@@ -343,7 +374,7 @@ class LangChainAgentService:
             )
 
         # 输出用户消息
-        yield [{"role": "user", "content": user_message}]
+        yield [{"role": "user", "content": f"👤 **用户消息**:\n\n{user_message}"}]
         with get_db() as db:
             await self._save_message(
                 db, conversation.id, "user", user_message, "text"
@@ -408,7 +439,7 @@ class LangChainAgentService:
                                 "arguments": tool_input,
                                 "status": "calling"
                             }
-                            tool_call_str = f"🔧 **调用工具**: `{tool_name}`\n\n**参数**: \n```json\n{json.dumps(tool_input, ensure_ascii=False, indent=2)}\n```"
+                            tool_call_str = f"🔧 **工具调用**: `{tool_name}`\n\n📋 **调用参数**:\n```json\n{json.dumps(tool_input, ensure_ascii=False, indent=2)}\n```\n⏳ **状态**: 执行中..."
                             yield [{"role": "tool", "content": tool_call_str}]
 
                             # 保存工具调用到数据库
@@ -428,13 +459,14 @@ class LangChainAgentService:
 
                                 # 格式化工具结果
                                 try:
+                                    tool_params = getattr(step.action, 'tool_input', {})
                                     if isinstance(obs, str) and obs.startswith('{'):
                                         result_data = json.loads(obs)
-                                        result_str = f"**✅ 工具执行完成**: `{tool_name}`\n\n**参数**: \n```json\n{json.dumps(getattr(step.action, 'tool_input', {}), ensure_ascii=False, indent=2)}\n```\n\n**结果**:\n```json\n{obs}\n```"
+                                        result_str = f"✅ **工具执行完成**: `{tool_name}`\n\n📋 **调用参数**:\n```json\n{json.dumps(tool_params, ensure_ascii=False, indent=2)}\n```\n\n📊 **执行结果**:\n```json\n{obs}\n```"
                                     else:
-                                        result_str = f"**✅ 工具执行完成**: `{tool_name}`\n\n**结果**:\n{obs}"
+                                        result_str = f"✅ **工具执行完成**: `{tool_name}`\n\n📋 **调用参数**:\n```json\n{json.dumps(tool_params, ensure_ascii=False, indent=2)}\n```\n\n📊 **执行结果**:\n{obs}"
                                 except:
-                                    result_str = f"**✅ 工具执行完成**: `{tool_name}`\n\n**结果**:\n{obs}"
+                                    result_str = f"✅ **工具执行完成**: `{tool_name}`\n\n📊 **执行结果**:\n{obs}"
 
                                 yield [{"role": "tool", "content": result_str}]
 
@@ -451,7 +483,12 @@ class LangChainAgentService:
                         output = chunk["output"]
                         if output and output.strip():
                             response = output
-                            yield [{"role": "assistant", "content": output}]
+                            # 检查是否是思考过程（某些模型如Qwen会输出思考过程）
+                            if output.startswith("<think>") or output.startswith("思考:"):
+                                formatted_output = f"🧠 **思考过程**:\n\n{output}"
+                            else:
+                                formatted_output = f"🤖 **AI助手回复**:\n\n{output}"
+                            yield [{"role": "assistant", "content": formatted_output}]
 
                             # 保存助手回复到数据库
                             with get_db() as db:
@@ -549,7 +586,7 @@ class LangChainAgentService:
                 content=content,
                 message_type=message_type,
                 tool_name=tool_name,
-                tool_args=json.dumps(tool_args) if tool_args else None,
+                tool_arguments=json.dumps(tool_args) if tool_args else None,
                 tool_result=json.dumps(tool_result) if tool_result else None,
                 created_at=now_beijing()
             )
