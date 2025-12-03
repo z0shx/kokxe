@@ -3830,3 +3830,13 @@ class PlanDetailUI:
                     '执行时长(秒)': 'int',
                     '进度(%)': 'int'
                 })
+
+    def get_chat_ui_components(self):
+        """获取 AI Agent 对话 UI 组件"""
+        from ui.plan_detail_chat_ui import PlanDetailChatUI
+        chat_ui = PlanDetailChatUI(self)
+        return chat_ui
+
+    def get_latest_chat_history(self, plan_id: int):
+        """获取最新的聊天历史"""
+        return self.get_latest_conversation_messages(plan_id)

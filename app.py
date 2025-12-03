@@ -823,19 +823,18 @@ def create_app():
 
                         # 移除agent_detail，因为详情将显示在chatbot中
 
-                        # AI Agent 对话
-                        gr.Markdown("**AI Agent 对话**")
-                        agent_chatbot = gr.Chatbot(
-                            label="AI Agent 推理过程",
-                            height=500,
-                            show_copy_button=True,
-                            type='messages'
-                        )
+                        # AI Agent 对话界面
+                        chat_ui = detail_ui.get_chat_ui_components()
+                        chat_components = chat_ui.build_ui()
 
-                        # AI Agent 聊天功能已移动到计划详情页面
+                        # 从 chat_components 中提取主要组件
+                        agent_chatbot = chat_components['agent_chatbot']
+                        agent_user_input = chat_components['agent_user_input']
+                        agent_send_btn = chat_components['agent_send_btn']
+                        execute_inference_btn = chat_components['execute_inference_btn']
+                        agent_clear_btn = chat_components['agent_clear_btn']
+                        agent_status = chat_components['agent_status']
 
-  
-                    
                         # 工具确认功能已废弃 - AI Agent现在可以直接使用启用的工具
 
                     # === 账户信息区域 ===
@@ -887,16 +886,16 @@ def create_app():
                             "", "",  # ws_result, plan_result
                             "**WebSocket状态**: ⚪ 未连接", "**计划状态**: ⚪ 已创建",  # ws_status_md, plan_status_md
                             gr.update(visible=True), gr.update(visible=False), gr.update(visible=True), gr.update(visible=False),  # ws_start_btn, ws_stop_btn, plan_start_btn, plan_stop_btn
-                            False, False, False, False, "",  # automation switches & result
+                            False, False, False, "",  # automation switches & result
                             "", "", "", "",  # schedule_time_list, schedule_operation_result, inference_schedule_display, inference_schedule_operation_result
                             512, 48, 16, 25, 50, 1e-4, "",  # 微调参数
                             "", "", "", "",  # train_data_range_info, train_start_date, train_end_date, train_data_config_result
                             512, 48,  # inference_lookback_window, inference_predict_window
                             1.0, 0.9, 30, 0, "",  # inference_temperature, inference_top_p, inference_sample_count, inference_data_offset, inference_params_status
                             gr.update(), None, "",  # llm_config, prompt_template, agent_prompt
-                            True, True, True, True, True, True, True, True, True, True, True, True, True, True,  # 工具选择
+                            True, True, True, True, True, True, True, True, True, True, True, True, True,  # 工具选择
                             1000.0, 30.0, 10.0, 20.0,  # 交易限制默认值：quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss
-                            gr.DataFrame(), gr.Plot(), "", gr.DataFrame(), "请保存推理参数后查看数据范围...", "", gr.DataFrame(), [{"role": "assistant", "content": "请先选择计划"}],  # training_df, kline_chart, probability_indicators_md, inference_df, inference_data_range_info, prediction_data_preview, agent_df, agent_chatbot
+                            gr.DataFrame(), gr.Plot(), "", gr.DataFrame(), "请保存推理参数后查看数据范围...", "", gr.DataFrame(), [{"role": "assistant", "content": "请先选择计划"}], "", "", "",  # training_df, kline_chart, probability_indicators_md, inference_df, inference_data_range_info, prediction_data_preview, agent_df, agent_chatbot, agent_user_input, agent_status
                             "### 💰 账户信息\n\n未加载",  # account_status
                             gr.DataFrame(),  # order_table
                             gr.DataFrame(),  # task_executions_df  # task_executions
@@ -1034,8 +1033,20 @@ def create_app():
                     account_info = detail_ui.get_account_info(int(plan_id))
                     orders_df = detail_ui.get_orders_info(int(plan_id))
 
+                    # 确保 orders_df 是有效的 DataFrame
+                    if not isinstance(orders_df, pd.DataFrame):
+                        logger.warning(f"orders_df 不是 DataFrame 类型: {type(orders_df)}")
+                        orders_df = pd.DataFrame()
+
                     # 获取概率指标
                     probability_indicators = detail_ui.get_probability_indicators(int(plan_id))
+
+                    # 获取任务执行记录
+                    task_executions_df = detail_ui.load_task_executions(int(plan_id))
+                    # 确保 task_executions_df 是有效的 DataFrame
+                    if not isinstance(task_executions_df, pd.DataFrame):
+                        logger.warning(f"task_executions_df 不是 DataFrame 类型: {type(task_executions_df)}")
+                        task_executions_df = pd.DataFrame()
 
                     return (
                         gr.update(visible=True),   # detail_container
@@ -1094,10 +1105,10 @@ def create_app():
                         detail_ui.get_inference_data_timestamp_range(int(plan_id)),  # inference_data_range_info
                         "",  # prediction_data_preview (空字符串)
                         detail_ui.load_agent_decisions(int(plan_id)),  # agent_df
-                        latest_agent_output,  # agent_chatbot
+                        latest_agent_output, "", "",  # agent_chatbot, agent_user_input, agent_status
                         account_info,  # account_status
                         orders_df,  # order_table
-                        detail_ui.load_task_executions(int(plan_id)),  # task_executions_df
+                        task_executions_df,  # task_executions_df
                         gr.Timer(active=True)  # account_timer - 启动账户定时器
                     )
 
@@ -1337,7 +1348,7 @@ def create_app():
                         quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss,  # 交易限制配置
                         training_df, kline_chart, probability_indicators_md,  # K线图和概率指标
                         inference_df, inference_data_range_info, prediction_data_preview, agent_df,
-                        agent_chatbot,  # agent_chatbot
+                        agent_chatbot, agent_user_input, agent_status,  # agent_chatbot, agent_user_input, agent_status
                         account_status, order_table, task_executions_df,  # 账户信息、订单记录和任务记录
                         account_timer  # 定时器
                     ]
@@ -1383,8 +1394,8 @@ def create_app():
                     """刷新计划详情的包装函数，使用原有的load_plan_detail逻辑"""
                     # 直接调用原有的load_plan_detail函数
                     result = load_plan_detail(pid)
-                    # 返回除了detail_container和no_plan_msg之外的所有值
-                    return result[2:]
+                    # 返回除了detail_container和no_plan_msg之外的所有值，只取前66个
+                    return result[2:68]
 
                 detail_refresh_btn.click(
                     fn=refresh_plan_detail_wrapper,
@@ -1410,7 +1421,7 @@ def create_app():
                         quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss,  # 交易限制配置
                         training_df, kline_chart, probability_indicators_md,  # K线图和概率指标
                         inference_df, inference_data_range_info, prediction_data_preview, agent_df,
-                        agent_chatbot,  # agent_chatbot
+                        agent_chatbot, agent_user_input, agent_status,  # agent_chatbot, agent_user_input, agent_status
                         account_status, order_table, task_executions_df,  # 账户信息、订单记录和任务记录
                         account_timer  # 定时器
                     ]
@@ -1805,6 +1816,9 @@ def create_app():
                     inputs=[plan_id_input],
                     outputs=[agent_df, agent_chatbot]
                 )
+
+                # AI Agent 事件绑定现在通过 chat_ui.bind_events() 处理
+                chat_ui.bind_events(chat_components, plan_id_input)
 
                 # 刷新账户信息
                 def refresh_account_wrapper(pid):
