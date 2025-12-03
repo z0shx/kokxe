@@ -20,73 +20,13 @@ from ui.plan_create import create_plan_ui
 from ui.plan_list import create_plan_list_ui
 from ui.config_center import create_config_center_ui
 from utils.logger import setup_logger
-from services.langchain_agent_v2 import langchain_agent_v2_service as agent_service
+from utils.common import safe_plan_id, validate_plan_exists
+from services.langchain_agent import agent_service
 
 logger = setup_logger(__name__, "app.log")
 
 
-def safe_plan_id(pid) -> Optional[int]:
-    """
-    安全的plan_id处理函数，统一处理各种输入类型
-
-    Args:
-        pid: 输入的plan_id，可能是int、float、str或None
-
-    Returns:
-        Optional[int]: 处理后的整数plan_id，如果无效则返回None
-    """
-    if pid is None:
-        return None
-
-    if pd.isna(pid):
-        return None
-
-    try:
-        # 处理字符串输入
-        if isinstance(pid, str):
-            if pid.strip() == "":
-                return None
-            return int(float(pid.strip()))
-
-        # 处理数值输入
-        if isinstance(pid, (int, float)):
-            if pd.isna(pid):
-                return None
-            return int(pid)
-
-    except (ValueError, TypeError, AttributeError):
-        return None
-
-    return None
-
-
-def validate_plan_id(pid) -> Tuple[bool, Optional[int], str]:
-    """
-    验证plan_id并返回验证结果
-
-    Args:
-        pid: 输入的plan_id
-
-    Returns:
-        Tuple[bool, Optional[int], str]: (是否有效, 处理后的plan_id, 错误信息)
-    """
-    from database.db import get_db
-
-    safe_id = safe_plan_id(pid)
-
-    if safe_id is None:
-        return False, None, "请输入有效的计划ID"
-
-    # 验证计划是否存在
-    try:
-        with get_db() as db:
-            plan = db.query(TradingPlan).filter(TradingPlan.id == safe_id).first()
-            if not plan:
-                return False, safe_id, f"计划ID {safe_id} 不存在"
-
-        return True, safe_id, ""
-    except Exception as e:
-        return False, safe_id, f"验证计划ID失败: {str(e)}"
+# 安全转换和验证函数已移至 utils/common
 
 
 def safe_plan_id_wrapper(error_return_value=None):
@@ -105,7 +45,7 @@ def safe_plan_id_wrapper(error_return_value=None):
             # 假设第一个参数是pid
             if args:
                 pid = args[0]
-                is_valid, plan_id, error_msg = validate_plan_id(pid)
+                is_valid, plan_id, error_msg = validate_plan_exists(pid)
                 if not is_valid:
                     return error_return_value if error_return_value is not None else f"❌ {error_msg}"
 
@@ -892,19 +832,7 @@ def create_app():
                             type='messages'
                         )
 
-                        with gr.Row():
-                            agent_input = gr.Textbox(
-                                label="",
-                                placeholder="输入消息与AI对话（用于测试）...",
-                                scale=9,
-                                show_label=False,
-                                container=False
-                            )
-                            agent_send_btn = gr.Button("发送", scale=1, min_width=80)
-
-                        with gr.Row():
-                            manual_agent_inference_btn = gr.Button("🎯 执行推理", variant="primary")
-                            clear_chat_btn = gr.Button("🗑️ 清空对话", size="sm")
+                        # AI Agent 聊天功能已移动到计划详情页面
 
   
                     
@@ -1818,145 +1746,19 @@ def create_app():
                     outputs=[inference_operation_result, prediction_data_preview, kline_chart, probability_indicators_md]
                 )
 
-                # 手动推理（流式）
-                async def manual_inference_wrapper_stream(pid):
-                    """流式推理包装函数 - 每次推理重置上下文"""
-                    if not pid:
-                        yield [{"role": "assistant", "content": "❌ 请先选择计划"}]
-                        return
-
-                    try:
-                        is_valid, plan_id, error_msg = validate_plan_id(pid)
-                        if not is_valid:
-                            yield [{"role": "assistant", "content": f"❌ {error_msg}"}]
-                            return
-
-                        conversation_history = []  # 用于累积消息
-
-                        # 完成之前的对话，确保每次推理都是新的上下文
-                        with get_db() as db:
-                            from database.models import AgentConversation
-                            conversations = db.query(AgentConversation).filter(
-                                AgentConversation.plan_id == plan_id,
-                                AgentConversation.conversation_type == 'auto_inference',
-                                AgentConversation.status == 'active'
-                            ).all()
-
-                            for conv in conversations:
-                                conv.status = 'completed'
-                                conv.completed_at = now_beijing()
-
-                            db.commit()
-
-                        # 直接使用Agent服务 - 自动推理模式，让agent服务处理所有消息
-                        async for response_batch in agent_service.stream_auto_inference(plan_id):
-                            if response_batch:
-                                # 追加新消息到历史记录
-                                conversation_history.extend(response_batch)
-                                # 使用 process_streaming_messages 格式化消息以确保Gradio正确显示
-                                from ui.custom_chatbot import process_streaming_messages
-                                formatted_messages = process_streaming_messages([conversation_history.copy()])
-                                # 返回格式化后的消息
-                                yield formatted_messages
-
-                    except Exception as e:
-                        logger.error(f"推理失败: {e}")
-                        yield [{"role": "assistant", "content": f"❌ 推理失败: {str(e)}"}]
-
-                manual_agent_inference_btn.click(
-                    fn=manual_inference_wrapper_stream,
-                    inputs=[plan_id_input],
-                    outputs=[agent_chatbot],
-                    show_progress="full",  # 显示完整进度
-                    api_name="manual_inference_stream"  # 添加API名称
-                ).then(
-                    fn=lambda pid: detail_ui.load_agent_decisions(safe_plan_id(pid)) if pid else gr.DataFrame(),
-                    inputs=[plan_id_input],
-                    outputs=[agent_df]
-                )
+                # 聊天功能已移动到计划详情页面
 
   
   
-                # 清空对话
-                def clear_chat_wrapper(pid):
-                    """清空对话历史"""
-                    try:
-                        # 验证plan_id
-                        is_valid, plan_id, error_msg = validate_plan_id(pid)
-                        if not is_valid:
-                            return [{"role": "assistant", "content": f"❌ {error_msg}"}]
-
-                        # 完成所有活跃对话
-                        with get_db() as db:
-                            from database.models import AgentConversation
-                            conversations = db.query(AgentConversation).filter(
-                                AgentConversation.plan_id == plan_id,
-                                AgentConversation.status == 'active'
-                            ).all()
-
-                            for conv in conversations:
-                                conv.status = 'completed'
-                                conv.completed_at = now_beijing()
-
-                            db.commit()
-
-                        return [{"role": "assistant", "content": "✅ 对话历史已清空，点击\"执行推理\"开始新的推理"}]
-                    except Exception as e:
-                        logger.error(f"清空对话失败: {e}")
-                        return [{"role": "assistant", "content": f"❌ 清空对话失败: {str(e)}"}]
-
-                clear_chat_btn.click(
-                    fn=clear_chat_wrapper,
-                    inputs=[plan_id_input],
-                    outputs=[agent_chatbot]
-                )
+                # 聊天功能已移动到计划详情页面
 
               
-                # 发送消息 - 使用LangChain Agent v2服务，支持追加模式
-                def send_message_wrapper(message, history, pid):
-                    """与Agent进行对话，使用LangChain Agent v2服务"""
-                    if not pid:
-                        return [{"role": "assistant", "content": "❌ 请先选择计划"}], ""
-
-                    if not message or not message.strip():
-                        return history, ""
-
-                    async def generate_response():
-                        try:
-                            plan_id = int(pid)
-
-                            # 检查是否是新的对话开始（没有历史记录）
-                            is_new_conversation = not history or len(history) == 0
-                            conversation_history = history.copy() if history else []
-
-                            # 使用Agent v2服务 - 追加模式
-                            async for response_batch in agent_service.stream_conversation(plan_id, message):
-                                if response_batch:
-                                    # 追加新消息到历史记录
-                                    conversation_history.extend(response_batch)
-                                    # 使用 process_streaming_messages 格式化消息以确保Gradio正确显示
-                                    from ui.custom_chatbot import process_streaming_messages
-                                    formatted_messages = process_streaming_messages([conversation_history.copy()])
-                                    # 返回格式化后的消息，清空输入框
-                                    yield formatted_messages, ""
-
-                        except Exception as e:
-                            logger.error(f"对话失败: {e}")
-                            error_msg = [{"role": "assistant", "content": f"❌ 对话失败: {str(e)}"}]
-                            yield (conversation_history or []) + error_msg, ""
-
-                    return generate_response()
-
-                agent_send_btn.click(
-                    fn=send_message_wrapper,
-                    inputs=[agent_input, agent_chatbot, plan_id_input],
-                    outputs=[agent_chatbot, agent_input]
-                )
+                # 聊天功能已移动到计划详情页面
 
                 # 刷新决策记录和聊天上下文
                 def refresh_agent_wrapper(pid):
                     # 使用安全的plan_id处理函数
-                    is_valid, plan_id, error_msg = validate_plan_id(pid)
+                    is_valid, plan_id, error_msg = validate_plan_exists(pid)
 
                     if not is_valid:
                         return gr.DataFrame(), [{"role": "assistant", "content": f"❌ {error_msg}"}]
@@ -1976,7 +1778,7 @@ def create_app():
                 # 清除推理记录
                 def clear_agent_records_wrapper(pid):
                     # 使用安全的plan_id处理函数
-                    is_valid, plan_id, error_msg = validate_plan_id(pid)
+                    is_valid, plan_id, error_msg = validate_plan_exists(pid)
 
                     if not is_valid:
                         return gr.DataFrame(), [{"role": "assistant", "content": f"❌ {error_msg}"}]
@@ -2007,7 +1809,7 @@ def create_app():
                 # 刷新账户信息
                 def refresh_account_wrapper(pid):
                     # 使用安全的plan_id处理函数
-                    is_valid, plan_id, error_msg = validate_plan_id(pid)
+                    is_valid, plan_id, error_msg = validate_plan_exists(pid)
 
                     if not is_valid:
                         return f"### 💰 账户信息\n\n❌ {error_msg}"
@@ -2027,7 +1829,7 @@ def create_app():
                 # 刷新订单记录
                 def refresh_orders_wrapper(pid):
                     # 使用安全的plan_id处理函数
-                    is_valid, plan_id, error_msg = validate_plan_id(pid)
+                    is_valid, plan_id, error_msg = validate_plan_exists(pid)
 
                     if not is_valid:
                         return gr.DataFrame()
@@ -2047,7 +1849,7 @@ def create_app():
                 # 任务执行记录刷新
                 def refresh_tasks_wrapper(pid):
                     # 使用安全的plan_id处理函数
-                    is_valid, plan_id, error_msg = validate_plan_id(pid)
+                    is_valid, plan_id, error_msg = validate_plan_exists(pid)
 
                     if not is_valid:
                         return pd.DataFrame()

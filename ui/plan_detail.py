@@ -2716,10 +2716,14 @@ class PlanDetailUI:
     async def manual_inference_stream(self, plan_id: int):
         """手动执行AI Agent推理（流式输出），使用新的LangChain Agent v2服务"""
         try:
-            from services.langchain_agent_v2 import langchain_agent_v2_service
+            from services.langchain_agent import agent_service
 
-            # 使用新的LangChain Agent v2服务进行流式推理
-            async for message_batch in langchain_agent_v2_service.stream_auto_inference(plan_id=plan_id):
+            # 使用Agent服务进行流式推理
+            async for message_batch in agent_service.stream_conversation(
+                plan_id=plan_id,
+                user_message="请根据最新数据进行分析和决策",
+                conversation_type="auto_inference"
+            ):
                 yield message_batch
 
         except Exception as e:
@@ -2731,10 +2735,10 @@ class PlanDetailUI:
     async def chat_with_agent_stream(self, plan_id: int, user_message: str):
         """与AI Agent进行流式对话"""
         try:
-            from services.langchain_agent_v2 import langchain_agent_v2_service
+            from services.langchain_agent import agent_service
 
-            # 使用新的LangChain Agent v2服务进行流式对话
-            async for message_batch in langchain_agent_v2_service.stream_conversation(
+            # 使用Agent服务进行流式对话
+            async for message_batch in agent_service.stream_conversation(
                 plan_id=plan_id,
                 user_message=user_message
             ):
