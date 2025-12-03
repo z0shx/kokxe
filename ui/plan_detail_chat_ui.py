@@ -1,6 +1,7 @@
 """
 计划详情页 AI Agent 对话界面模块
 """
+import asyncio
 import gradio as gr
 from utils.logger import setup_logger
 
@@ -12,6 +13,25 @@ class PlanDetailChatUI:
 
     def __init__(self, plan_detail_ui):
         self.plan_detail_ui = plan_detail_ui
+
+    async def _collect_stream_messages(self, plan_id: int, user_message: str, conversation_type: str):
+        """收集流式消息的辅助方法"""
+        from services.langchain_agent import agent_service
+
+        messages = []
+        try:
+            async for message_batch in agent_service.stream_conversation(
+                plan_id=plan_id,
+                user_message=user_message,
+                conversation_type=conversation_type
+            ):
+                for message in message_batch:
+                    messages.append(message)
+        except Exception as e:
+            logger.error(f"收集流式消息失败: {e}")
+            messages = [{"role": "assistant", "content": f"❌ 对话失败: {str(e)}"}]
+
+        return messages
 
     def build_ui(self):
         """构建 AI Agent 对话界面"""
@@ -69,14 +89,24 @@ class PlanDetailChatUI:
                 return history, gr.update(value=""), gr.update(visible=True, value=f"❌ 请输入消息内容")
 
             try:
-                # 简化处理：显示处理中的消息
-                processing_msg = [{"role": "assistant", "content": f"🤖 正在处理您的消息: {user_message[:50]}..."}]
+                # 调用真实的 Agent 服务进行对话
+                from services.langchain_agent import agent_service
+                import asyncio
 
-                # TODO: 这里应该调用实际的 Agent 服务
-                # 暂时返回一个简单的响应
-                response_msg = [{"role": "assistant", "content": f"✅ 消息已发送到 AI Agent (计划ID: {plan_id})\n\n您的消息: {user_message}"}]
+                # 创建异步运行器
+                def run_async_generator():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        return loop.run_until_complete(
+                            self._collect_stream_messages(plan_id, user_message.strip(), "user_chat")
+                        )
+                    finally:
+                        loop.close()
 
-                return history + processing_msg + response_msg, gr.update(value=""), gr.update(visible=False, value="")
+                # 获取所有消息后更新界面
+                messages = run_async_generator()
+                return history + messages, gr.update(value=""), gr.update(visible=False, value="")
 
             except Exception as e:
                 logger.error(f"发送消息失败: {e}")
@@ -93,14 +123,20 @@ class PlanDetailChatUI:
                 return history, gr.update(visible=True, value=f"❌ {error_msg}")
 
             try:
-                # 简化处理：显示推理开始
-                inference_msg = [{"role": "assistant", "content": f"🧠 开始执行 AI Agent 推理 (计划ID: {plan_id})...\n\n⏳ 正在分析最新数据并制定交易策略..."}]
+                # 创建异步运行器
+                def run_async_inference():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        return loop.run_until_complete(
+                            self._collect_stream_messages(plan_id, "请基于最新数据进行分析和决策", "auto_inference")
+                        )
+                    finally:
+                        loop.close()
 
-                # TODO: 这里应该调用实际的推理服务
-                # 暂时返回一个简单的响应
-                result_msg = [{"role": "assistant", "content": f"✅ AI Agent 推理完成\n\n📊 分析结果:\n- 市场趋势: 📈 看涨\n- 建议操作: 观望\n- 风险等级: 🟡 中等\n\n⚠️ 注意: 这是演示版本，实际的推理功能需要连接到完整的 AI Agent 服务"}]
-
-                return history + inference_msg + result_msg, gr.update(visible=False, value="")
+                # 获取所有消息后更新界面
+                messages = run_async_inference()
+                return history + messages, gr.update(visible=False, value="")
 
             except Exception as e:
                 logger.error(f"执行推理失败: {e}")
