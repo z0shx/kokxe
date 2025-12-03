@@ -617,7 +617,10 @@ def create_app():
                                 label="显示天数"
                             )
 
-                        kline_chart = gr.Plot(show_label=False)
+                        kline_chart = gr.Plot(
+                            label="K线预览图",
+                            show_label=True
+                        )
 
                         # 概率指标展示（紧跟在K线图下方）
                         probability_indicators_md = gr.Markdown("")
@@ -1716,7 +1719,7 @@ def create_app():
                             kline_chart = detail_ui.generate_kline_chart(record.plan_id, show_predictions=True, training_id=int(training_id))
                             probability_indicators = detail_ui.get_probability_indicators(record.plan_id)
                         else:
-                            kline_chart = gr.Plot()
+                            kline_chart = detail_ui._empty_chart("训练记录不存在")
                             probability_indicators = ""
                     return result, prediction_text, kline_chart, probability_indicators
 
@@ -1747,7 +1750,7 @@ def create_app():
                             kline_chart = detail_ui.generate_kline_chart(record.plan_id, show_predictions=True, training_id=int(training_id))
                             probability_indicators = detail_ui.get_probability_indicators(record.plan_id)
                         else:
-                            kline_chart = gr.Plot()
+                            kline_chart = detail_ui._empty_chart("训练记录不存在")
                             probability_indicators = ""
                     return result, prediction_text, kline_chart, probability_indicators
 
