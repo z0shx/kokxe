@@ -13,10 +13,11 @@ import asyncio
 import traceback
 from typing import Dict, List, AsyncGenerator, Optional, Any
 from datetime import datetime
+from sqlalchemy import and_, desc
 
 from database.models import (
     TradingPlan, AgentConversation, AgentMessage,
-    LLMConfig, now_beijing
+    LLMConfig, TrainingRecord, PredictionData, now_beijing
 )
 from database.db import get_db
 from utils.logger import setup_logger
@@ -818,6 +819,289 @@ class LangChainAgentService:
                             order_ids.append(str(item['order_id']))
 
         return list(set(order_ids))  # 去重
+
+    async def auto_decision(
+        self,
+        plan_id: int,
+        training_id: int = None,
+        prediction_data: List[Dict] = None
+    ) -> AsyncGenerator[List[Dict[str, str]], None]:
+        """
+        基于预测数据的自动决策（后台推理，不展示到chatbot）
+
+        Args:
+            plan_id: 计划ID
+            training_id: 训练记录ID（可选）
+            prediction_data: 预测数据（可选，如果不提供则从数据库获取）
+
+        Yields:
+            流式消息列表
+        """
+        try:
+            logger.info(f"开始自动决策: plan_id={plan_id}, training_id={training_id}")
+
+            # 获取计划和配置
+            with get_db() as db:
+                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                if not plan:
+                    yield [{"role": "assistant", "content": "❌ 计划不存在"}]
+                    return
+
+                llm_config = db.query(LLMConfig).filter(LLMConfig.id == plan.llm_config_id).first()
+                if not llm_config:
+                    yield [{"role": "assistant", "content": "❌ LLM配置不存在"}]
+                    return
+
+            # 获取预测数据
+            if not prediction_data:
+                predictions = self._get_latest_predictions(plan_id, training_id)
+            else:
+                # 将字典格式转换为PredictionData对象（模拟）
+                predictions = prediction_data
+
+            if not predictions:
+                yield [{"role": "assistant", "content": "❌ 没有可用的预测数据"}]
+                return
+
+            logger.info(f"获取到 {len(predictions)} 条预测数据")
+
+            # 构建决策提示词
+            decision_prompt = self._build_decision_prompt(plan, predictions)
+
+            logger.info("开始流式自动决策...")
+
+            # 使用统一的流式对话接口进行自动推理
+            async for chunk in self.stream_conversation(
+                plan_id=plan_id,
+                user_message=decision_prompt,
+                conversation_type="auto_inference"
+            ):
+                yield chunk
+
+            logger.info("自动决策完成")
+
+        except Exception as e:
+            logger.error(f"自动决策失败: {e}")
+            import traceback
+            traceback.print_exc()
+            yield [{"role": "assistant", "content": f"❌ 自动决策失败: {str(e)}"}]
+
+    async def manual_inference(self, plan_id: int) -> AsyncGenerator[List[Dict[str, str]], None]:
+        """
+        统一的手动推理入口（流式）
+
+        Args:
+            plan_id: 计划ID
+
+        Yields:
+            流式消息列表
+        """
+        try:
+            logger.info(f"开始手动推理: plan_id={plan_id}")
+
+            # 获取计划和配置
+            with get_db() as db:
+                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                if not plan:
+                    yield [{"role": "assistant", "content": "❌ 计划不存在"}]
+                    return
+
+                llm_config = db.query(LLMConfig).filter(LLMConfig.id == plan.llm_config_id).first()
+                if not llm_config:
+                    yield [{"role": "assistant", "content": "❌ LLM配置不存在"}]
+                    return
+
+            # 获取最新的训练记录
+            with get_db() as db:
+                latest_training = db.query(TrainingRecord).filter(
+                    and_(
+                        TrainingRecord.plan_id == plan_id,
+                        TrainingRecord.status == 'completed',
+                        TrainingRecord.is_active == True
+                    )
+                ).order_by(desc(TrainingRecord.created_at)).first()
+
+                if not latest_training:
+                    yield [{"role": "assistant", "content": "❌ 没有可用的训练记录，请先完成模型训练"}]
+                    return
+
+            # 使用自动决策功能，但指定为手动推理类型
+            async for chunk in self.auto_decision(plan_id, latest_training.id):
+                yield chunk
+
+        except Exception as e:
+            logger.error(f"手动推理失败: {e}")
+            import traceback
+            traceback.print_exc()
+            yield [{"role": "assistant", "content": f"❌ 手动推理失败: {str(e)}"}]
+
+    async def scheduled_decision(self, plan_id: int, training_id: int) -> AsyncGenerator[List[Dict[str, str]], None]:
+        """
+        定时任务决策入口
+
+        Args:
+            plan_id: 计划ID
+            training_id: 训练记录ID
+
+        Yields:
+            流式消息列表
+        """
+        try:
+            logger.info(f"开始定时决策: plan_id={plan_id}, training_id={training_id}")
+
+            # 使用自动决策功能，但指定为定时决策类型
+            async for chunk in self.stream_conversation(
+                plan_id=plan_id,
+                user_message=f"请基于训练记录 v{training_id} 的预测数据进行定时交易决策分析",
+                conversation_type="scheduled_decision"
+            ):
+                yield chunk
+
+        except Exception as e:
+            logger.error(f"定时决策失败: {e}")
+            yield [{"role": "assistant", "content": f"❌ 定时决策失败: {str(e)}"}]
+
+    def _get_latest_predictions(self, plan_id: int, training_id: int = None) -> List[PredictionData]:
+        """获取最新的预测数据（从agent_decision_service迁移逻辑）"""
+        try:
+            with get_db() as db:
+                if training_id:
+                    # 使用指定的训练记录
+                    predictions = db.query(PredictionData).filter(
+                        PredictionData.training_record_id == training_id
+                    ).order_by(PredictionData.timestamp).all()
+                    logger.info(f"使用指定训练记录 {training_id}，获取到 {len(predictions)} 条预测数据")
+                else:
+                    # 获取最新的预测数据
+                    latest_training = db.query(TrainingRecord).filter(
+                        TrainingRecord.plan_id == plan_id,
+                        TrainingRecord.status == 'completed'
+                    ).order_by(TrainingRecord.completed_at.desc()).first()
+
+                    if latest_training:
+                        predictions = db.query(PredictionData).filter(
+                            PredictionData.training_record_id == latest_training.id
+                        ).order_by(PredictionData.timestamp).all()
+                        logger.info(f"使用最新训练记录 {latest_training.id}，获取到 {len(predictions)} 条预测数据")
+                    else:
+                        predictions = []
+                        logger.warning(f"计划 {plan_id} 没有找到完成的训练记录")
+
+                return predictions
+
+        except Exception as e:
+            logger.error(f"获取预测数据失败: {e}")
+            return []
+
+    def _build_decision_prompt(self, plan: TradingPlan, predictions: List[PredictionData]) -> str:
+        """构建决策提示词"""
+        try:
+            # 格式化预测数据
+            pred_text = []
+            for pred in predictions[:20]:  # 限制显示最新的20条预测数据
+                pred_text.append(
+                    f"时间: {pred.timestamp.strftime('%Y-%m-%d %H:%M')}, "
+                    f"预测价格: {pred.predicted_price:.6f}, "
+                    f"置信度: {pred.confidence:.2f}, "
+                    f"上涨概率: {pred.upward_prob:.2%}, "
+                    f"波动率: {pred.volatility:.2%}"
+                )
+
+            # 获取当前价格信息
+            current_price_info = ""
+            try:
+                trading_tools = self.get_plan_trading_tools(plan.id)
+                if trading_tools:
+                    current_price = trading_tools.get_current_price(plan.inst_id)
+                    current_price_info = f"\n当前价格: {current_price}"
+            except Exception as e:
+                logger.warning(f"获取当前价格失败: {e}")
+                current_price_info = "\n当前价格: 无法获取"
+
+            # 构建决策提示词
+            prompt = f"""基于以下预测数据进行交易决策分析：
+
+交易计划：{plan.inst_id} ({plan.interval})
+当前时间：{now_beijing().strftime('%Y-%m-%d %H:%M:%S')}{current_price_info}
+
+预测数据：
+{chr(10).join(pred_text)}
+
+请分析这些预测数据，给出具体的交易建议：
+1. 当前市场趋势分析
+2. 建议的交易操作（买入/卖出/持有）
+3. 具体的下单策略（价格、数量等）
+4. 风险控制建议
+
+如果决定执行交易，请使用相应的工具进行操作。请基于量化分析结果做出决策，而不是主观猜测。"""
+
+            return prompt
+
+        except Exception as e:
+            logger.error(f"构建决策提示词失败: {e}")
+            return "请基于可用的预测数据进行交易决策分析。"
+
+    def get_unified_decisions(self, plan_id: int, limit: int = 50):
+        """
+        统一的决策查询接口，兼容历史数据
+
+        Args:
+            plan_id: 计划ID
+            limit: 返回记录数限制
+
+        Returns:
+            List[Dict]: 统一格式的决策记录列表
+        """
+        decisions = []
+
+        try:
+            with get_db() as db:
+                # 1. 优先从AgentMessage获取新数据
+                auto_messages = db.query(AgentMessage).join(AgentConversation).filter(
+                    AgentConversation.plan_id == plan_id,
+                    AgentConversation.conversation_type.in_(['auto_inference', 'scheduled_decision']),
+                    AgentMessage.role == 'assistant'
+                ).order_by(AgentMessage.created_at.desc()).limit(limit).all()
+
+                for msg in auto_messages:
+                    decisions.append({
+                        'id': msg.id,
+                        'created_at': msg.created_at,
+                        'content': msg.content,
+                        'source': 'agent_message',
+                        'conversation_id': msg.conversation_id,
+                        'conversation_type': db.query(AgentConversation).filter(
+                            AgentConversation.id == msg.conversation_id
+                        ).first().conversation_type if msg.conversation_id else 'unknown'
+                    })
+
+                # 2. 从旧的AgentDecision获取历史数据（只读，兼容性）
+                try:
+                    from database.models import AgentDecision
+                    old_decisions = db.query(AgentDecision).filter(
+                        AgentDecision.plan_id == plan_id
+                    ).order_by(AgentDecision.decision_time.desc()).limit(limit).all()
+
+                    for decision in old_decisions:
+                        decisions.append({
+                            'id': decision.id,
+                            'created_at': decision.decision_time,
+                            'content': f"决策类型: {decision.decision_type}\n推理: {decision.reasoning}\n状态: {decision.status}",
+                            'source': 'agent_decision',
+                            'training_id': decision.training_record_id,
+                            'llm_model': decision.llm_model
+                        })
+                except ImportError:
+                    # AgentDecision模型可能已被删除，跳过
+                    pass
+
+            # 按时间排序
+            decisions.sort(key=lambda x: x['created_at'], reverse=True)
+            return decisions[:limit]
+
+        except Exception as e:
+            logger.error(f"获取统一决策记录失败: {e}")
+            return []
 
 
 # 全局实例

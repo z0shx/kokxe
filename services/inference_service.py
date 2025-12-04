@@ -219,8 +219,8 @@ class InferenceService:
 
                         if plan and plan.auto_agent_enabled:
                             logger.info(f"自动触发Agent: training_id={training_id}")
-                            from services.agent_decision_service import AgentDecisionService
-                            asyncio.create_task(AgentDecisionService.trigger_decision(
+                            from services.langchain_agent import agent_service
+                            asyncio.create_task(agent_service.auto_decision(
                                 plan.id,
                                 training_id
                             ))

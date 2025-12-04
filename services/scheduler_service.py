@@ -436,15 +436,18 @@ class SchedulerService:
             if not training_record_id:
                 raise ValueError("缺少训练记录ID")
 
-            # 调用AgentDecisionService执行Agent决策
-            from services.agent_decision_service import AgentDecisionService
+            # 调用LangChainAgentService执行Agent决策
+            from services.langchain_agent import agent_service
 
-            result = await AgentDecisionService.trigger_decision_stream(
+            # 使用新的scheduled_decision方法
+            result_chunks = []
+            async for chunk in agent_service.scheduled_decision(
                 plan_id=task.plan_id,
                 training_id=training_record_id
-            )
+            ):
+                result_chunks.extend(chunk)
 
-            # 由于trigger_decision_stream是异步生成器，我们这里只记录启动
+            # 收集所有chunks作为结果
             task.status = 'completed'
             task.output_data = {
                 'success': True,

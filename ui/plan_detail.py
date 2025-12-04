@@ -1354,7 +1354,7 @@ class PlanDetailUI:
 
     async def enhanced_inference_stream(self, plan_id: int, training_record_id: int = None, progress=None):
         """
-        增强版推理流式输出，支持React循环展示和工具调用记录
+        增强版推理流式输出，支持React循环展示和工具调用记录（使用新的LangChainAgentService）
 
         Args:
             plan_id: 计划ID
@@ -1365,15 +1365,27 @@ class PlanDetailUI:
             Dict: 包含对话状态、消息等的流式数据
         """
         try:
-            from services.agent_decision_service import AgentDecisionService
+            from services.langchain_agent import agent_service
 
-            async for chunk in AgentDecisionService.enhanced_react_tool_use_stream(
+            # 使用新的stream_conversation方法，指定为推理会话类型
+            async for chunk_list in agent_service.stream_conversation(
                 plan_id=plan_id,
-                training_id=training_record_id,
-                progress=progress,
-                session_name=f"推理会话_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                user_message=f"请基于训练记录 {training_record_id} 的预测数据进行推理分析",
+                conversation_type="inference_session"
             ):
-                yield chunk
+                # 将新的消息格式转换为旧格式以保持兼容性
+                messages = []
+                for chunk in chunk_list:
+                    messages.append({
+                        "role": chunk.get("role", "assistant"),
+                        "content": chunk.get("content", "")
+                    })
+
+                yield {
+                    'type': 'message',
+                    'content': '',
+                    'messages': messages
+                }
 
         except Exception as e:
             logger.error(f"增强版推理流失败: {e}")
@@ -2621,11 +2633,10 @@ class PlanDetailUI:
             )
 
     async def manual_inference_async(self, plan_id: int) -> str:
-        """手动执行AI Agent推理"""
+        """手动执行AI Agent推理（使用新的LangChainAgentService）"""
         try:
-            from services.agent_decision_service import AgentDecisionService
-            from database.models import LLMConfig, AgentDecision
-            import json
+            from services.langchain_agent import agent_service
+            from database.models import LLMConfig
 
             # 获取计划配置
             with get_db() as db:
@@ -2641,69 +2652,75 @@ class PlanDetailUI:
                 if not llm_config:
                     return "❌ LLM配置不存在"
 
-            # 获取最新的训练记录
-            with get_db() as db:
-                latest_training = db.query(TrainingRecord).filter(
-                    and_(
-                        TrainingRecord.plan_id == plan_id,
-                        TrainingRecord.status == 'completed',
-                        TrainingRecord.is_active == True
-                    )
-                ).order_by(desc(TrainingRecord.created_at)).first()
+            # 使用新的流式推理接口
+            result_parts = []
+            tool_calls = []
 
-                if not latest_training:
-                    return "❌ 没有可用的训练记录，请先完成模型训练"
+            async for chunk_list in agent_service.manual_inference(plan_id):
+                for chunk in chunk_list:
+                    role = chunk.get('role', '')
+                    content = chunk.get('content', '')
 
-            # 触发AI Agent决策
-            decision_id = await AgentDecisionService.trigger_decision(plan_id, latest_training.id)
-
-            if not decision_id:
-                return "❌ AI Agent决策触发失败，请查看日志"
-
-            # 获取决策结果
-            with get_db() as db:
-                decision = db.query(AgentDecision).filter(
-                    AgentDecision.id == decision_id
-                ).first()
-
-                if not decision:
-                    return "❌ 无法获取决策结果"
+                    if role == 'system':
+                        continue  # 跳过系统消息
+                    elif role == 'user':
+                        continue  # 跳过用户消息
+                    elif role == 'assistant':
+                        # 提取AI回复内容
+                        if content.startswith('🤖 **AI助手回复**:'):
+                            ai_content = content.replace('🤖 **AI助手回复**:', '').strip()
+                            result_parts.append(ai_content)
+                        elif content.startswith('🧠 **思考过程**:'):
+                            thinking_content = content.replace('🧠 **思考过程**:', '').strip()
+                            result_parts.append(f"思考过程：{thinking_content}")
+                        else:
+                            result_parts.append(content)
+                    elif role == 'tool_call':
+                        # 记录工具调用
+                        try:
+                            import json
+                            tool_data = json.loads(content)
+                            tool_calls.append(f"调用工具: {tool_data.get('tool_name', 'unknown')}")
+                        except:
+                            tool_calls.append(f"工具调用: {content}")
+                    elif role == 'tool_result':
+                        # 记录工具结果
+                        try:
+                            import json
+                            result_data = json.loads(content)
+                            tool_name = result_data.get('tool_name', 'unknown')
+                            status = result_data.get('status', 'unknown')
+                            tool_calls.append(f"工具 {tool_name} 执行{status}")
+                        except:
+                            tool_calls.append(f"工具结果: {content}")
 
             # 构建返回结果
+            current_time = format_datetime_full_beijing(datetime.now())
+
             result_md = f"""## ✅ AI Agent 推理完成
 
-**决策时间**: {format_datetime_full_beijing(decision.decision_time)}
+**决策时间**: {current_time}
 
 **LLM**: {llm_config.provider} / {llm_config.model_name}
-
-**训练版本**: v{latest_training.version}
 
 ---
 
 ### 💭 AI分析与推理
 
-{decision.reasoning or '无'}
+{chr(10).join(result_parts) if result_parts else '无详细分析内容'}
 
 ---
 
 ### 🛠️ 工具调用
 
 """
-            tool_calls = decision.tool_calls or []
             if tool_calls:
-                for i, call in enumerate(tool_calls, 1):
-                    result_md += f"**{i}. {call.get('name', 'unknown')}**\n"
-                    result_md += f"   - 参数: `{call.get('arguments', {})}`\n"
-
-                    # 显示执行结果
-                    if decision.tool_results and len(decision.tool_results) >= i:
-                        result = decision.tool_results[i-1]
-                        success = result.get('success', False)
-                        status_emoji = '✅' if success else '❌'
-                        result_md += f"   - 结果: {status_emoji} {result.get('message', result.get('error', 'N/A'))}\n"
-                    result_md += "\n"
+                for tool_call in tool_calls:
+                    result_md += f"- {tool_call}\n"
             else:
                 result_md += "无工具调用\n"
+
+            result_md += f"\n---\n\n*此决策由AI Agent基于Kronos预测数据自动分析生成*"
 
             return result_md
 
