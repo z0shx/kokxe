@@ -79,7 +79,8 @@ class OKXTradingTools:
         secret_key: str,
         passphrase: str,
         is_demo: bool = True,
-        trading_limits: Optional[Dict] = None
+        trading_limits: Optional[Dict] = None,
+        plan_id: Optional[int] = None
     ):
         """
         初始化交易工具
@@ -90,18 +91,39 @@ class OKXTradingTools:
             passphrase: Passphrase
             is_demo: 是否使用模拟盘
             trading_limits: 交易限制配置
+            plan_id: 关联的交易计划ID（用于存储订单到数据库）
         """
         self.api_key = api_key
         self.secret_key = secret_key
         self.passphrase = passphrase
         self.is_demo = is_demo
         self.trading_limits = trading_limits or {}
+        self.plan_id = plan_id
+
+        # 工具调用上下文信息（用于关联订单和对话）
+        self.current_conversation_id = None
+        self.current_tool_call_id = None
 
         # 加载配置
         self.config = Config()
 
+        # 初始化API配置
+        self._init_api_config()
+
+    def set_tool_context(self, conversation_id: int = None, tool_call_id: str = None):
+        """设置工具调用上下文，用于关联订单和对话记录"""
+        self.current_conversation_id = conversation_id
+        self.current_tool_call_id = tool_call_id
+
+    def clear_tool_context(self):
+        """清除工具调用上下文"""
+        self.current_conversation_id = None
+        self.current_tool_call_id = None
+
+    def _init_api_config(self):
+        """初始化API配置"""
         # API地址
-        if is_demo:
+        if self.is_demo:
             self.base_url = "https://www.okx.com"
             self.simulate_flag = "1"  # 模拟盘标志
         else:
@@ -187,6 +209,80 @@ class OKXTradingTools:
             "x-simulated-trading": self.simulate_flag
         }
 
+    def _save_order_to_database(
+        self,
+        order_id: str,
+        inst_id: str,
+        side: str,
+        order_type: str,
+        size: float,
+        price: Optional[float] = None,
+        status: str = "live",
+        tool_call_id: Optional[str] = None,
+        conversation_id: Optional[int] = None
+    ) -> None:
+        """
+        将订单保存到数据库
+
+        Args:
+            order_id: OKX订单ID
+            inst_id: 交易对
+            side: 买卖方向
+            order_type: 订单类型
+            size: 数量
+            price: 价格
+            status: 订单状态
+            tool_call_id: 工具调用ID
+            conversation_id: 对话会话ID
+        """
+        if not self.plan_id:
+            logger.warning("plan_id未设置，跳过订单数据库存储")
+            return
+
+        try:
+            from database.db import get_db
+            from database.models import TradeOrder
+            from database.models import now_beijing
+
+            with get_db() as db:
+                # 检查订单是否已存在
+                existing_order = db.query(TradeOrder).filter(TradeOrder.order_id == order_id).first()
+                if existing_order:
+                    logger.info(f"订单 {order_id} 已存在，更新状态")
+                    existing_order.status = status
+                    existing_order.updated_at = now_beijing()
+                else:
+                    # 使用上下文信息如果没有显式传递参数
+                    final_conversation_id = conversation_id or self.current_conversation_id
+                    final_tool_call_id = tool_call_id or self.current_tool_call_id
+
+                    # 创建新订单记录
+                    new_order = TradeOrder(
+                        plan_id=self.plan_id,
+                        order_id=order_id,
+                        inst_id=inst_id,
+                        side=side,
+                        order_type=order_type,
+                        price=price,
+                        size=size,
+                        status=status,
+                        is_demo=self.is_demo,
+                        is_from_agent=True,  # 标记为Agent操作的订单
+                        agent_message_id=None,  # 可以在工具调用时更新
+                        conversation_id=final_conversation_id,
+                        tool_call_id=final_tool_call_id,
+                        related_order_id=order_id
+                    )
+                    db.add(new_order)
+                    logger.info(f"保存新订单到数据库: order_id={order_id}, plan_id={self.plan_id}")
+
+                db.commit()
+
+        except Exception as e:
+            logger.error(f"保存订单到数据库失败: {e}")
+            import traceback
+            traceback.print_exc()
+
     def place_order(
         self,
         inst_id: str,
@@ -247,6 +343,20 @@ class OKXTradingTools:
             # 解析结果
             if result.get('code') == '0' and result.get('data'):
                 order_id = result['data'][0].get('ordId')
+
+                # 保存订单到数据库（包含上下文信息）
+                self._save_order_to_database(
+                    order_id=order_id,
+                    inst_id=inst_id,
+                    side=side,
+                    order_type=order_type,
+                    size=size,
+                    price=price,
+                    status="live",
+                    tool_call_id=self._current_tool_call_id,
+                    conversation_id=self._current_conversation_id
+                )
+
                 return {
                     'success': True,
                     'order_id': order_id,

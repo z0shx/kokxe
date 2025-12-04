@@ -124,6 +124,12 @@ class TradeOrder(Base):
 
     is_demo = Column(Boolean, default=True, comment='是否模拟盘')
     is_from_agent = Column(Boolean, default=False, comment='是否来自Agent操作的订单')
+
+    # 与Agent对话的关联
+    agent_message_id = Column(Integer, comment='触发此订单的Agent消息ID')
+    conversation_id = Column(Integer, comment='关联的Agent对话会话ID')
+    tool_call_id = Column(String(100), comment='工具调用ID')
+
     created_at = Column(DateTime, default=now_beijing, comment='创建时间')
     updated_at = Column(DateTime, default=now_beijing, onupdate=now_beijing, comment='更新时间')
 
@@ -462,10 +468,13 @@ class AgentMessage(Base):
     react_stage = Column(String(50), comment='ReAct阶段：thought, action, observation')
 
     # 工具调用信息（当message_type为tool_call时）
+    tool_call_id = Column(String(100), comment='工具调用唯一ID')
     tool_name = Column(String(100), comment='工具名称')
     tool_arguments = Column(JSONB, comment='工具参数')
     tool_result = Column(JSONB, comment='工具执行结果')
     tool_status = Column(String(20), default='pending', comment='工具状态：pending, success, failed')
+    tool_execution_time = Column(Float, comment='工具执行耗时（秒）')
+    related_order_id = Column(String(100), comment='关联的订单ID（如果有）')
 
     # 模型信息
     llm_model = Column(String(100), comment='使用的LLM模型')

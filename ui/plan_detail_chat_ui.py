@@ -166,28 +166,30 @@ class PlanDetailChatUI:
 
         # 定义简化的同步事件处理函数
         def agent_send_message_wrapper(pid, user_message, history):
-            """发送消息给AI Agent（流式版本）"""
+            """发送消息给AI Agent（真正的流式版本）"""
             from utils.common import validate_plan_exists
 
             is_valid, plan_id, error_msg = validate_plan_exists(pid)
 
             if not is_valid:
-                return history, gr.update(value=""), gr.update(visible=True, value=f"❌ {error_msg}")
+                yield history + [{"role": "assistant", "content": f"❌ {error_msg}"}], gr.update(value=""), gr.update(visible=True, value=f"❌ {error_msg}")
+                return
 
             if not user_message or not user_message.strip():
-                return history, gr.update(value=""), gr.update(visible=True, value=f"❌ 请输入消息内容")
+                yield history + [{"role": "assistant", "content": f"❌ 请输入消息内容"}], gr.update(value=""), gr.update(visible=True, value=f"❌ 请输入消息内容")
+                return
 
             try:
                 # 调用真实的 Agent 服务进行流式对话
                 from services.langchain_agent import agent_service
 
-                # 创建同步消息收集器
-                def collect_messages():
+                # 创建流式输出生成器
+                def create_stream_generator():
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
 
-                    async def async_collect():
-                        messages = []
+                    async def async_stream():
+                        current_history = history.copy()
                         async for message_batch in agent_service.stream_conversation(
                             plan_id=plan_id,
                             user_message=user_message.strip(),
@@ -195,96 +197,144 @@ class PlanDetailChatUI:
                         ):
                             # 使用增强的消息处理
                             processed = process_streaming_messages([message_batch])
-                            messages.extend(processed)
-                        return messages
+                            for message in processed:
+                                current_history.append(message)
+                                yield current_history, gr.update(value=""), gr.update(visible=False, value="")
 
                     try:
-                        return loop.run_until_complete(async_collect())
+                        return loop.run_until_complete(async_stream().__anext__())
+                    except StopAsyncIteration:
+                        return None
                     finally:
                         loop.close()
 
-                # 收集所有消息用于显示
-                messages = collect_messages()
+                # 实现真正的流式输出 - 简化版本
+                def stream_chat_sync():
+                    """同步包装器，用于处理异步流式输出"""
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
 
-                return history + messages, gr.update(value=""), gr.update(visible=False, value="")
+                    async def async_stream():
+                        from services.langchain_agent import agent_service
+                        current_history = history.copy()
+
+                        async for message_batch in agent_service.stream_conversation(
+                            plan_id=plan_id,
+                            user_message=user_message.strip(),
+                            conversation_type="user_chat"
+                        ):
+                            # 使用增强的消息处理
+                            processed = process_streaming_messages([message_batch])
+                            for message in processed:
+                                current_history.append(message)
+                                # 实时yield当前状态
+                                yield current_history, gr.update(value=""), gr.update(visible=False, value="")
+
+                    try:
+                        # 创建异步生成器
+                        async_gen = async_stream()
+
+                        # 使用同步循环处理异步生成器
+                        while True:
+                            try:
+                                result = loop.run_until_complete(async_gen.__anext__())
+                                yield result
+                            except StopAsyncIteration:
+                                break
+                    finally:
+                        loop.close()
+
+                # 执行流式输出
+                for result in stream_chat_sync():
+                    yield result
 
             except Exception as e:
                 logger.error(f"发送消息失败: {e}")
                 error_message = [{"role": "assistant", "content": f"❌ 发送失败: {str(e)}"}]
-                return history + error_message, gr.update(value=""), gr.update(visible=False, value="")
+                yield history + error_message, gr.update(value=""), gr.update(visible=False, value="")
 
         def agent_execute_inference_wrapper(pid, history):
-            """执行AI Agent推理（增强版本 - 包含历史数据）"""
+            """执行AI Agent推理（重置上下文 - 流式版本）"""
             from utils.common import validate_plan_exists
             from services.historical_data_service import historical_data_service
 
             is_valid, plan_id, error_msg = validate_plan_exists(pid)
 
             if not is_valid:
-                return history + [{"role": "assistant", "content": f"❌ {error_msg}"}], gr.update(visible=True, value=f"❌ {error_msg}")
+                yield history + [{"role": "assistant", "content": f"❌ {error_msg}"}], gr.update(visible=True, value=f"❌ {error_msg}")
+                return
 
             try:
-                # 获取历史K线数据
+                # 清除现有对话历史，重置上下文
+                empty_history = []
+
+                # 获取最新25小时内的实际交易数据
                 historical_data = historical_data_service.get_optimal_historical_data(plan_id)
                 if not historical_data:
-                    return history + [{"role": "assistant", "content": "❌ 未找到可用的历史K线数据"}], gr.update(visible=False, value="")
+                    yield empty_history + [{"role": "assistant", "content": "❌ 未找到可用的历史K线数据"}], gr.update(visible=False, value="")
+                    return
 
-                # 获取最新预测数据
+                # 获取最新预测交易数据（最新批次号）
                 prediction_data = self._get_latest_prediction_csv_data(plan_id)
 
                 if not prediction_data:
                     error_message = [{"role": "assistant", "content": "❌ 未找到可用的预测数据，请先执行模型推理"}]
-                    return history + error_message, gr.update(visible=False, value="")
+                    yield empty_history + error_message, gr.update(visible=False, value="")
+                    return
 
-                # 构建包含历史和预测数据的完整分析请求
-                analysis_request = f"""请基于以下数据进行分析和决策：
-
-【最近24小时K线数据】
+                # 构建推理请求（简化版本，由系统提示词提供完整上下文）
+                inference_request = f"""【最新25小时实际交易数据】
 {historical_data}
 
-【最新预测交易数据】
+【最新预测交易数据（最新批次）】
 {prediction_data}
 
-请综合分析：
-1. 历史价格趋势和模式
-2. 预测数据的可信度和趋势
-3. 交易机会识别和风险评估
-4. 具体交易建议和执行策略
+请基于以上数据进行AI交易决策分析。"""
 
-如需执行交易操作，请使用相应的工具。"""
-
-                # 创建同步消息收集器
-                def collect_inference_messages():
-                    from services.langchain_agent import agent_service
+                # 实现真正的流式推理输出
+                def stream_inference_sync():
+                    """同步包装器，用于处理异步流式输出"""
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
 
-                    async def async_collect():
-                        messages = []
+                    async def async_stream():
+                        from services.langchain_agent import agent_service
+                        current_history = empty_history.copy()  # 重置历史
+
                         async for message_batch in agent_service.stream_conversation(
                             plan_id=plan_id,
-                            user_message=analysis_request,
-                            conversation_type="auto_inference"
+                            user_message=inference_request,
+                            conversation_type="inference_session"
                         ):
                             # 使用增强的消息处理
                             processed = process_streaming_messages([message_batch])
-                            messages.extend(processed)
-                        return messages
+                            for message in processed:
+                                current_history.append(message)
+                                # 实时yield当前状态 - 只返回2个值
+                                yield current_history, gr.update(visible=False, value="")
 
                     try:
-                        return loop.run_until_complete(async_collect())
+                        # 创建异步生成器
+                        async_gen = async_stream()
+
+                        # 使用同步循环处理异步生成器
+                        while True:
+                            try:
+                                result = loop.run_until_complete(async_gen.__anext__())
+                                yield result
+                            except StopAsyncIteration:
+                                break
                     finally:
                         loop.close()
 
-                # 收集所有消息用于显示
-                messages = collect_inference_messages()
-
-                return history + messages, gr.update(visible=False, value="")
+                # 执行流式输出
+                for result in stream_inference_sync():
+                    yield result
 
             except Exception as e:
                 logger.error(f"执行推理失败: {e}")
                 error_message = [{"role": "assistant", "content": f"❌ 执行推理失败: {str(e)}"}]
-                return history + error_message, gr.update(visible=False, value="")
+                yield history + error_message, gr.update(visible=False, value="")
 
         # 保存事件处理函数
         components.update({

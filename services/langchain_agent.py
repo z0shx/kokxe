@@ -67,7 +67,8 @@ class LangChainAgentService:
                     secret_key=plan.okx_secret_key,
                     passphrase=plan.okx_passphrase,
                     is_demo=plan.is_demo,
-                    trading_limits=plan.trading_limits
+                    trading_limits=plan.trading_limits,
+                    plan_id=plan_id  # 传递计划ID用于订单存储
                 )
 
         except Exception as e:
@@ -397,9 +398,12 @@ class LangChainAgentService:
                 return
 
             # 创建或获取对话
-            # 对于auto_inference类型，总是创建新对话；对于其他类型，才尝试复用
+            # 对于不同类型采用不同策略
             if conversation_type == 'auto_inference':
                 # 自动推理总是创建新对话，不复用
+                conversation = None
+            elif conversation_type == "inference_session":
+                # 推理会话每次都创建新会话（重置上下文）
                 conversation = None
             else:
                 # 其他类型尝试复用现有对话
@@ -494,11 +498,24 @@ class LangChainAgentService:
                             tool_name = getattr(action, 'tool', 'unknown')
                             tool_input = getattr(action, 'tool_input', {})
 
+                            # 生成工具调用ID
+                            import uuid
+                            tool_call_id = str(uuid.uuid4())[:8]
+
+                            # 为交易工具设置上下文信息
+                            plan_trading_tools = self.get_plan_trading_tools(plan_id)
+                            if plan_trading_tools:
+                                plan_trading_tools.set_tool_context(
+                                    conversation_id=conversation.id,
+                                    tool_call_id=tool_call_id
+                                )
+
                             # 输出工具调用 - 使用新的 role:tool_call
                             tool_call_data = {
                                 "tool_name": tool_name,
                                 "arguments": tool_input,
-                                "status": "calling"
+                                "status": "calling",
+                                "tool_call_id": tool_call_id
                             }
                             tool_call_content = json.dumps(tool_call_data, ensure_ascii=False)
                             yield [{"role": "tool_call", "content": tool_call_content}]
@@ -508,7 +525,8 @@ class LangChainAgentService:
                                 await self._save_message(
                                     db, conversation.id, "tool",
                                     f"调用工具 {tool_name}", "tool_call",
-                                    tool_name, tool_input
+                                    tool_name, tool_input,
+                                    tool_call_id=tool_call_id
                                 )
 
                     # 处理工具结果
@@ -660,7 +678,8 @@ class LangChainAgentService:
         message_type: str,
         tool_name: str = None,
         tool_args: dict = None,
-        tool_result: str = None
+        tool_result: str = None,
+        tool_call_id: str = None
     ):
         """保存消息到数据库"""
         try:
@@ -672,6 +691,7 @@ class LangChainAgentService:
                 tool_name=tool_name,
                 tool_arguments=json.dumps(tool_args) if tool_args else None,
                 tool_result=json.dumps(tool_result) if tool_result else None,
+                tool_call_id=tool_call_id,
                 created_at=now_beijing()
             )
             db.add(message)

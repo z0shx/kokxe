@@ -1664,7 +1664,7 @@ def create_app():
                     agent_result = detail_ui.save_agent_config(int(pid), llm_id, prompt, tools_config)
 
                     # ReAct 配置已移除
-                    return f"{agent_result}\n\n注意：ReAct 配置已整合到新的 Agent 系统中"
+                    return f"{agent_result}"
 
                 save_agent_config_btn.click(
                     fn=save_agent_config_wrapper,

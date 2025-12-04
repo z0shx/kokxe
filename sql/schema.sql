@@ -1,5 +1,5 @@
 -- KOKEX Database Schema
--- Generated at: 2025-12-04 13:53:17.320992
+-- Generated at: 2025-12-04 14:35:16.199882
 
 
 -- Table: agent_decisions
@@ -153,6 +153,9 @@ CREATE TABLE trade_orders (
 	avg_price FLOAT, 
 	is_demo BOOLEAN, 
 	is_from_agent BOOLEAN, 
+	agent_message_id INTEGER, 
+	conversation_id INTEGER, 
+	tool_call_id VARCHAR(100), 
 	created_at TIMESTAMP WITHOUT TIME ZONE, 
 	updated_at TIMESTAMP WITHOUT TIME ZONE, 
 	PRIMARY KEY (id), 
@@ -315,10 +318,13 @@ CREATE TABLE agent_messages (
 	message_type VARCHAR(50), 
 	react_iteration INTEGER, 
 	react_stage VARCHAR(50), 
+	tool_call_id VARCHAR(100), 
 	tool_name VARCHAR(100), 
 	tool_arguments JSONB, 
 	tool_result JSONB, 
 	tool_status VARCHAR(20), 
+	tool_execution_time FLOAT, 
+	related_order_id VARCHAR(100), 
 	llm_model VARCHAR(100), 
 	timestamp TIMESTAMP WITHOUT TIME ZONE, 
 	created_at TIMESTAMP WITHOUT TIME ZONE, 

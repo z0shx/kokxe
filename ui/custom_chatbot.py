@@ -24,8 +24,7 @@ def format_message_for_display(message: Dict[str, Any]) -> Tuple[str, str]:
     content = message.get("content", "")
 
     if role == "system":
-        # 系统消息在 process_streaming_messages 中已经转换为 assistant 格式
-        # 这里保持兼容性，但正常不会执行到
+        # 系统消息 - 显示系统提示词
         return "💻", content
 
     elif role == "user":
@@ -329,9 +328,9 @@ def process_streaming_messages(messages: List[List[Dict[str, Any]]]) -> List[Dic
 
             # 根据消息类型进行特殊处理
             if role == "system":
-                # 系统提示词 - 使用 assistant role 以确保在 Gradio 中显示，但保持系统格式
+                # 系统提示词 - 保持系统角色
                 formatted_content = f"💻 System: {content}"
-                chatbot_messages.append({"role": "assistant", "content": formatted_content})
+                chatbot_messages.append({"role": "system", "content": formatted_content})
 
             elif role == "user":
                 # 用户消息 - 直接显示
