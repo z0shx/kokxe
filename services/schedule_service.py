@@ -9,7 +9,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.jobstores.memory import MemoryJobStore
 from database.db import get_db
-from database.models import TradingPlan, PredictionData
+from database.models import TradingPlan, TrainingRecord, PredictionData
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__, "schedule_service.log")

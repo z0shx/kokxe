@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict
 from pathlib import Path
 from database.db import get_db
-from database.models import TradingPlan, TrainingRecord, KlineData, now_beijing
+from database.models import TradingPlan, TrainingRecord, KlineData, now_beijing, BEIJING_TZ
 from utils.logger import setup_logger
 from sqlalchemy import and_, func
 
@@ -99,13 +99,21 @@ class TrainingService:
 
                     # 如果训练开始时间超过8小时，标记为失败（优化超时时间）
                     if record.train_start_time:
-                        hours_elapsed = (now_beijing() - record.train_start_time).total_seconds() / 3600
-                        if hours_elapsed > 8:
-                            logger.error(f"训练记录卡住超过8小时，标记为失败: id={record.id}")
+                        # 确保时间比较时使用相同的时区
+                        if record.train_start_time.tzinfo is None:
+                            # 如果开始时间没有时区信息，假设是北京时间
+                            start_time_beijing = BEIJING_TZ.localize(record.train_start_time)
+                        else:
+                            # 如果有时区信息，转换为北京时间
+                            start_time_beijing = record.train_start_time.astimezone(BEIJING_TZ)
+
+                        hours_elapsed = (now_beijing() - start_time_beijing).total_seconds() / 3600
+                        if hours_elapsed > 4:
+                            logger.error(f"训练记录卡住超过4小时，标记为失败: id={record.id}")
                             record.status = 'failed'
                             record.train_end_time = now_beijing()
                             record.train_duration = int(hours_elapsed * 3600)
-                            record.error_message = f"训练卡住超过8小时，自动标记为失败"
+                            record.error_message = f"训练卡住超过4小时，自动标记为失败"
                             db.commit()
                         else:
                             logger.info(f"训练记录仍在合理时间内: id={record.id}, 已耗时{hours_elapsed:.1f}小时")
