@@ -643,7 +643,22 @@ class LangChainAgentService:
                                 formatted_output = f"🧠 **思考过程**:\n\n{output}"
                             else:
                                 formatted_output = f"🤖 **AI助手回复**:\n\n{output}"
-                            yield [{"role": "assistant", "content": formatted_output}]
+                            # 实现流式输出
+                            chunk_size = 15
+                            for i in range(0, len(output), chunk_size):
+                                chunk_text = output[i:i+chunk_size]
+                                if i == 0:
+                                    if output.startswith("思考:") or "思考过程" in output:
+                                        prefix = "🧠 **思考过程**:\n\n"
+                                    else:
+                                        prefix = "🤖 **AI助手回复**:\n\n"
+                                    formatted_chunk = prefix + chunk_text
+                                else:
+                                    formatted_chunk = chunk_text
+
+                                yield [{"role": "assistant", "content": formatted_chunk}]
+                                import asyncio
+                                await asyncio.sleep(0.03)
 
                             # 保存助手回复到数据库
                             with get_db() as db:
