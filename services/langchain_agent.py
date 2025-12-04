@@ -52,6 +52,28 @@ class LangChainAgentService:
             )
         return self._trading_tools
 
+    def get_plan_trading_tools(self, plan_id: int):
+        """获取计划特定的交易工具"""
+        try:
+            with get_db() as db:
+                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                if not plan:
+                    logger.error(f"计划不存在: plan_id={plan_id}")
+                    return None
+
+                # 使用计划特定的API密钥
+                return OKXTradingTools(
+                    api_key=plan.okx_api_key,
+                    secret_key=plan.okx_secret_key,
+                    passphrase=plan.okx_passphrase,
+                    is_demo=plan.is_demo,
+                    trading_limits=plan.trading_limits
+                )
+
+        except Exception as e:
+            logger.error(f"获取计划特定交易工具失败: {e}")
+            return None
+
     def _get_llm_client(self, llm_config: LLMConfig):
         """获取 LLM 客户端"""
         client_key = f"{llm_config.provider}_{llm_config.model_name}"
@@ -105,6 +127,12 @@ class LangChainAgentService:
         available_tools = {}
         enabled_tools = [name for name, enabled in tools_config.items() if enabled]
 
+        # 获取计划特定的交易工具
+        plan_trading_tools = self.get_plan_trading_tools(plan_id)
+        if not plan_trading_tools:
+            logger.error(f"无法获取计划 {plan_id} 的交易工具")
+            return list(available_tools.values())
+
         # 获取计划信息
         with get_db() as db:
             plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
@@ -116,7 +144,7 @@ class LangChainAgentService:
                 """获取交易对当前价格"""
                 try:
                     inst_id = inst_id or plan.inst_id
-                    price = self.trading_tools.get_current_price(inst_id)
+                    price = plan_trading_tools.get_current_price(inst_id)
                     return json.dumps({
                         "success": True,
                         "inst_id": inst_id,
@@ -148,7 +176,7 @@ class LangChainAgentService:
             def get_positions() -> str:
                 """查询当前持仓"""
                 try:
-                    positions = self.trading_tools.get_positions()
+                    positions = plan_trading_tools.get_positions()
                     return json.dumps({
                         "success": True,
                         "positions": positions,
@@ -185,7 +213,7 @@ class LangChainAgentService:
                 if order_type == "limit" and (not price or float(price) <= 0):
                     return json.dumps({"success": False, "error": "限价单必须指定有效价格"}, ensure_ascii=False)
                 try:
-                    result = self.trading_tools.place_order(
+                    result = plan_trading_tools.place_order(
                         inst_id=inst_id, side=side,
                         order_type=order_type, size=size, price=price
                     )
@@ -211,7 +239,7 @@ class LangChainAgentService:
                     order_id: 订单ID
                 """
                 try:
-                    result = self.trading_tools.cancel_order(inst_id, order_id)
+                    result = plan_trading_tools.cancel_order(inst_id, order_id)
                     return json.dumps({
                         "success": True,
                         "result": result,
@@ -229,7 +257,7 @@ class LangChainAgentService:
             def get_trading_limits() -> str:
                 """查询交易限制"""
                 try:
-                    limits = self.trading_tools.get_trading_limits()
+                    limits = plan_trading_tools.get_trading_limits()
                     return json.dumps({
                         "success": True,
                         "limits": limits,
@@ -243,12 +271,39 @@ class LangChainAgentService:
 
         return list(available_tools.values())
 
+    def _detect_qwen_thinking(self, content: str, llm_config: LLMConfig = None) -> bool:
+        """检测 Qwen 思考模式的双重策略"""
+        if not content or not content.strip():
+            return False
+
+        # 策略1: 内容检测
+        thinking_indicators = [
+            "思考:", "让我分析", "首先", "接下来", "综合考虑",
+            "分析结果", "判断", "决策", "建议", "根据",
+            "思考：", "考虑到", "从市场角度看", "技术分析"
+        ]
+
+        if any(indicator in content for indicator in thinking_indicators):
+            return True
+
+        # 策略2: Agent层级配置检测
+        if llm_config and llm_config.provider == "qwen":
+            if hasattr(llm_config, 'extra_params') and llm_config.extra_params:
+                try:
+                    extra_params = llm_config.extra_params if isinstance(llm_config.extra_params, dict) else json.loads(llm_config.extra_params)
+                    if extra_params.get('enable_thinking', False):
+                        return True
+                except:
+                    pass
+
+        return False
+
     def _build_system_prompt(self, plan: TradingPlan, tools_config: Dict[str, bool]) -> str:
-        """构建系统提示词"""
-        # 动态部分
+        """构建系统提示词 - 三部分结构"""
+        # 第一部分：动态用户提示词
         dynamic_prompt = plan.agent_prompt or "你是一个专业的加密货币交易AI助手。"
 
-        # 工具描述
+        # 第二部分：可用工具描述
         tools_desc = []
         enabled_tools = [name for name, enabled in tools_config.items() if enabled]
 
@@ -265,7 +320,7 @@ class LangChainAgentService:
             if tool_name in tool_descriptions:
                 tools_desc.append(f"- {tool_name}: {tool_descriptions[tool_name]}")
 
-        # 交易限制
+        # 第三部分：交易限制和计划信息
         limits_desc = ""
         if plan.trading_limits:
             try:
@@ -277,7 +332,7 @@ class LangChainAgentService:
             except:
                 pass
 
-        # 完整提示词
+        # 构建完整的系统提示词
         system_prompt = f"""{dynamic_prompt}
 
 可用工具：
@@ -342,11 +397,17 @@ class LangChainAgentService:
                 return
 
             # 创建或获取对话
-            conversation = db.query(AgentConversation).filter(
-                AgentConversation.plan_id == plan_id,
-                AgentConversation.status == 'active',
-                AgentConversation.conversation_type == conversation_type
-            ).first()
+            # 对于auto_inference类型，总是创建新对话；对于其他类型，才尝试复用
+            if conversation_type == 'auto_inference':
+                # 自动推理总是创建新对话，不复用
+                conversation = None
+            else:
+                # 其他类型尝试复用现有对话
+                conversation = db.query(AgentConversation).filter(
+                    AgentConversation.plan_id == plan_id,
+                    AgentConversation.status == 'active',
+                    AgentConversation.conversation_type == conversation_type
+                ).first()
 
             if not conversation:
                 conversation = AgentConversation(
@@ -364,8 +425,8 @@ class LangChainAgentService:
         tools_config = plan.agent_tools_config or {}
         system_prompt = self._build_system_prompt(plan, tools_config)
 
-        # 输出系统消息
-        yield [{"role": "system", "content": f"🤖 **系统提示词**:\n\n{system_prompt}"}]
+        # 输出系统消息 - 使用用户要求的 "System:" 格式
+        yield [{"role": "system", "content": system_prompt}]
 
         # 保存系统消息到数据库
         with get_db() as db:
@@ -374,7 +435,7 @@ class LangChainAgentService:
             )
 
         # 输出用户消息
-        yield [{"role": "user", "content": f"👤 **用户消息**:\n\n{user_message}"}]
+        yield [{"role": "user", "content": user_message}]
         with get_db() as db:
             await self._save_message(
                 db, conversation.id, "user", user_message, "text"
@@ -433,14 +494,14 @@ class LangChainAgentService:
                             tool_name = getattr(action, 'tool', 'unknown')
                             tool_input = getattr(action, 'tool_input', {})
 
-                            # 输出工具调用
+                            # 输出工具调用 - 使用新的 role:tool_call
                             tool_call_data = {
                                 "tool_name": tool_name,
                                 "arguments": tool_input,
                                 "status": "calling"
                             }
-                            tool_call_str = f"🔧 **工具调用**: `{tool_name}`\n\n📋 **调用参数**:\n```json\n{json.dumps(tool_input, ensure_ascii=False, indent=2)}\n```\n⏳ **状态**: 执行中..."
-                            yield [{"role": "tool", "content": tool_call_str}]
+                            tool_call_content = json.dumps(tool_call_data, ensure_ascii=False)
+                            yield [{"role": "tool_call", "content": tool_call_content}]
 
                             # 保存工具调用到数据库
                             with get_db() as db:
@@ -457,18 +518,41 @@ class LangChainAgentService:
                                 obs = step.observation
                                 tool_name = getattr(step.action, 'tool', 'unknown') if hasattr(step, 'action') else 'unknown'
 
-                                # 格式化工具结果
+                                # 格式化工具结果 - 使用新的 role:tool_result
                                 try:
                                     tool_params = getattr(step.action, 'tool_input', {})
-                                    if isinstance(obs, str) and obs.startswith('{'):
-                                        result_data = json.loads(obs)
-                                        result_str = f"✅ **工具执行完成**: `{tool_name}`\n\n📋 **调用参数**:\n```json\n{json.dumps(tool_params, ensure_ascii=False, indent=2)}\n```\n\n📊 **执行结果**:\n```json\n{obs}\n```"
-                                    else:
-                                        result_str = f"✅ **工具执行完成**: `{tool_name}`\n\n📋 **调用参数**:\n```json\n{json.dumps(tool_params, ensure_ascii=False, indent=2)}\n```\n\n📊 **执行结果**:\n{obs}"
-                                except:
-                                    result_str = f"✅ **工具执行完成**: `{tool_name}`\n\n📊 **执行结果**:\n{obs}"
 
-                                yield [{"role": "tool", "content": result_str}]
+                                    # 尝试解析结果
+                                    if isinstance(obs, str) and obs.startswith('{'):
+                                        try:
+                                            result_data = json.loads(obs)
+                                            result = result_data
+                                        except:
+                                            result = {"raw_result": obs}
+                                    else:
+                                        result = {"raw_result": obs}
+
+                                    # 创建工具结果数据
+                                    tool_result_data = {
+                                        "tool_name": tool_name,
+                                        "arguments": tool_params,
+                                        "result": result,
+                                        "status": "success" if not obs.startswith("ERROR") else "error"
+                                    }
+
+                                    tool_result_content = json.dumps(tool_result_data, ensure_ascii=False)
+                                    yield [{"role": "tool_result", "content": tool_result_content}]
+
+                                except Exception as e:
+                                    # 错误情况下也返回结构化数据
+                                    error_data = {
+                                        "tool_name": tool_name,
+                                        "arguments": getattr(step.action, 'tool_input', {}),
+                                        "result": {"error": str(e)},
+                                        "status": "error"
+                                    }
+                                    tool_error_content = json.dumps(error_data, ensure_ascii=False)
+                                    yield [{"role": "tool_result", "content": tool_error_content}]
 
                                 # 保存工具结果到数据库
                                 with get_db() as db:

@@ -396,6 +396,42 @@ def create_app():
             opacity: 0.7;
             margin-top: 2px;
         }
+
+        .floating-refresh-btn {
+            position: fixed;
+            top: 120px;
+            right: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            z-index: 9999;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            backdrop-filter: blur(5px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            transition: all 0.3s ease;
+            min-width: 90px;
+        }
+
+        .floating-refresh-btn:hover {
+            background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.4);
+        }
+
+        .floating-refresh-btn:active {
+            transform: translateY(0px);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        /* 隐藏原来的刷新按钮 */
+        .original-refresh-btn {
+            display: none !important;
+        }
         """
     ) as app:
         gr.Markdown(
@@ -432,7 +468,7 @@ def create_app():
                     back_to_list_btn = gr.Button("← 返回列表", size="sm")
 
                     # 刷新按钮
-                    detail_refresh_btn = gr.Button("🔄 刷新数据", size="sm")
+                    detail_refresh_btn = gr.Button("🔄 刷新数据", size="sm", elem_classes=["original-refresh-btn"])
 
                     # 上部：计划概览
                     overview_md = gr.Markdown("")
@@ -2016,8 +2052,27 @@ def create_app():
                     <div class="timezone">UTC+8 (北京时间)</div>
                 `;
 
+                // 创建悬浮刷新按钮
+                const floatingRefreshBtn = document.createElement('button');
+                floatingRefreshBtn.className = 'floating-refresh-btn';
+                floatingRefreshBtn.innerHTML = '🔄 刷新数据';
+                floatingRefreshBtn.title = '刷新计划详情数据';
+
+                // 添加点击事件
+                floatingRefreshBtn.addEventListener('click', function() {
+                    // 触发Gradio的刷新按钮点击事件
+                    const refreshButtons = document.querySelectorAll('button');
+                    for (let btn of refreshButtons) {
+                        if (btn.textContent.includes('刷新数据') && !btn.textContent.includes('刷新对话记录')) {
+                            btn.click();
+                            break;
+                        }
+                    }
+                });
+
                 // 将元素添加到页面
                 document.body.appendChild(timeIndicator);
+                document.body.appendChild(floatingRefreshBtn);
 
                 // 更新时间的函数
                 function updateTime() {

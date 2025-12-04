@@ -232,13 +232,23 @@ class KlineEventService:
         logger.info("K线事件服务已关闭")
 
 
-# 全局单例 - 懒加载
-kline_event_service = None
+# 全局服务实例
+_kline_event_service = None
 
 def get_kline_event_service():
     """获取K线事件服务实例（懒加载）"""
-    global kline_event_service
-    if kline_event_service is None:
-        kline_event_service = KlineEventService()
+    global _kline_event_service
+    if _kline_event_service is None:
+        _kline_event_service = KlineEventService()
         logger.info("K线事件服务已创建并启动")
-    return kline_event_service
+    return _kline_event_service
+
+# 导出服务实例（懒加载）
+class KlineEventServiceProxy:
+    """K线事件服务代理，确保懒加载"""
+    def __getattr__(self, name):
+        service = get_kline_event_service()
+        return getattr(service, name)
+
+# 创建代理实例供外部使用
+kline_event_service = KlineEventServiceProxy()

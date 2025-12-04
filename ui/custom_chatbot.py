@@ -24,26 +24,102 @@ def format_message_for_display(message: Dict[str, Any]) -> Tuple[str, str]:
     content = message.get("content", "")
 
     if role == "system":
-        return "🤖", f"**系统提示**: {content}"
+        # 系统消息在 process_streaming_messages 中已经转换为 assistant 格式
+        # 这里保持兼容性，但正常不会执行到
+        return "💻", content
 
     elif role == "user":
         return "👤", content
 
+    elif role == "think":
+        # 专门的思考角色处理，使用大脑图标
+        return "🧠", _format_thinking_message(content)
+
     elif role == "assistant":
-        # 检查是否是思考过程
-        if content.startswith("💭 **思考过程**"):
+        # 检查是否是思考过程（向后兼容）
+        if content.startswith("💭 **思考过程**") or content.startswith("🧠 **思考过程**"):
             return "🧠", content
         else:
             return "🤖", content
 
+    elif role == "tool_call":
+        # 工具调用
+        return "🔧", _format_tool_call_message(content)
+
+    elif role == "tool_result":
+        # 工具执行结果
+        return "✅", _format_tool_result_message(content)
+
     elif role == "tool":
-        return "🔧", _format_tool_message(content)
+        # 兼容旧格式，尝试自动检测
+        try:
+            tool_data = json.loads(content)
+            if tool_data.get("status") == "calling":
+                return "🔧", _format_tool_call_message(content)
+            else:
+                return "✅", _format_tool_result_message(content)
+        except:
+            return "🔧", f"🔧 **工具消息**:\n{content}"
 
     elif role == "play":
         return "📊", _format_play_message(content)
 
     else:
         return "❓", content
+
+
+def _format_thinking_message(content: str) -> str:
+    """格式化思考过程消息"""
+    # 如果内容已经有格式，保持不变
+    if content.startswith("🧠 **思考过程**") or content.startswith("💭 **思考过程**"):
+        return content
+    # 否则添加格式化标题
+    return f"🧠 **思考过程**:\n{content}"
+
+
+def _format_tool_call_message(content: str) -> str:
+    """格式化工具调用消息"""
+    try:
+        tool_data = json.loads(content)
+        tool_name = tool_data.get("tool_name", "unknown")
+        args = tool_data.get("arguments", {})
+
+        args_str = ", ".join([f"{k}=`{v}`" for k, v in args.items()])
+        return f"🔧 **调用工具**: `{tool_name}`\n\n**参数**: {args_str}"
+    except (json.JSONDecodeError, Exception):
+        return f"🔧 **工具调用**: {content}"
+
+
+def _format_tool_result_message(content: str) -> str:
+    """格式化工具执行结果消息"""
+    try:
+        tool_data = json.loads(content)
+        tool_name = tool_data.get("tool_name", "unknown")
+        args = tool_data.get("arguments", {})
+        result = tool_data.get("result", {})
+        status = tool_data.get("status", "success")
+
+        status_emoji = "✅" if status == "success" else "❌"
+
+        # 格式化参数
+        args_str = ", ".join([f"{k}=`{v}`" for k, v in args.items()])
+
+        # 格式化结果
+        if isinstance(result, dict):
+            result_str = json.dumps(result, indent=2, ensure_ascii=False)
+        else:
+            result_str = str(result)
+
+        return f"""{status_emoji} **工具执行完成**: `{tool_name}`
+
+**参数**: {args_str}
+
+**结果**:
+```json
+{result_str}
+```"""
+    except (json.JSONDecodeError, Exception):
+        return f"✅ **工具结果**: {content}"
 
 
 def _format_tool_message(content: str) -> str:
@@ -174,6 +250,24 @@ def create_custom_chatbot(height: int = 600) -> gr.Chatbot:
     .message.assistant {
         background-color: #f5f5f5;
     }
+    .message.system {
+        background-color: #e8eaf6;
+        border-left: 4px solid #3f51b5;
+        font-weight: 500;
+    }
+    .message.think {
+        background-color: #f3e5f5;
+        border-left: 4px solid #9c27b0;
+        font-style: italic;
+    }
+    .message.tool_call {
+        background-color: #fff3e0;
+        border-left: 4px solid #ff9800;
+    }
+    .message.tool_result {
+        background-color: #e8f5e8;
+        border-left: 4px solid #4caf50;
+    }
     .message.tool {
         background-color: #fff3e0;
         border-left: 4px solid #ff9800;
@@ -182,7 +276,7 @@ def create_custom_chatbot(height: int = 600) -> gr.Chatbot:
         background-color: #e8f5e8;
         border-left: 4px solid #4caf50;
     }
-    .tool-details, .play-details {
+    .tool-details, .play-details, .thinking-details {
         font-family: 'Courier New', monospace;
         font-size: 0.9em;
         white-space: pre-wrap;
@@ -203,12 +297,9 @@ def create_custom_chatbot(height: int = 600) -> gr.Chatbot:
         height=height,
         label="AI Agent 对话",
         show_label=True,
-        avatar_images={
-            "user": "👤",
-            "assistant": "🤖"
-        },
+        avatar_images=["👤", "🤖"],
         bubble_full_width=False,
-        css=custom_css,
+        type="messages",
         latex_delimiters=[
             {"left": "$", "right": "$", "display": False},
             {"left": "$$", "right": "$$", "display": True},
@@ -238,43 +329,63 @@ def process_streaming_messages(messages: List[List[Dict[str, Any]]]) -> List[Dic
 
             # 根据消息类型进行特殊处理
             if role == "system":
-                # 系统提示词 - 显示为系统消息
-                formatted_content = f"🤖 **系统提示**:\n{content}"
+                # 系统提示词 - 使用 assistant role 以确保在 Gradio 中显示，但保持系统格式
+                formatted_content = f"💻 System: {content}"
                 chatbot_messages.append({"role": "assistant", "content": formatted_content})
 
             elif role == "user":
                 # 用户消息 - 直接显示
                 chatbot_messages.append({"role": "user", "content": content})
 
+            elif role == "think":
+                # 思考过程 - 使用专门的思考角色
+                formatted_content = _format_thinking_message(content)
+                chatbot_messages.append({"role": "think", "content": formatted_content})
+
             elif role == "assistant":
-                # 助手消息 - 检查是否是思考过程
-                if content.startswith("💭 **思考过程**"):
-                    # 思考过程 - 特殊格式化
-                    chatbot_messages.append({"role": "assistant", "content": content})
+                # 助手消息 - 检查是否是思考过程（向后兼容）
+                if content.startswith("💭 **思考过程**") or content.startswith("🧠 **思考过程**"):
+                    # 思考过程 - 使用 think 角色
+                    formatted_content = _format_thinking_message(content)
+                    chatbot_messages.append({"role": "think", "content": formatted_content})
                 else:
                     # 普通助手回复
                     chatbot_messages.append({"role": "assistant", "content": content})
 
+            elif role == "tool_call":
+                # 工具调用
+                formatted_content = _format_tool_call_message(content)
+                chatbot_messages.append({"role": "tool_call", "content": formatted_content})
+
+            elif role == "tool_result":
+                # 工具执行结果
+                formatted_content = _format_tool_result_message(content)
+                chatbot_messages.append({"role": "tool_result", "content": formatted_content})
+
             elif role == "tool":
-                # 工具消息 - 格式化工具调用和结果
+                # 兼容旧格式，尝试自动检测
                 try:
                     tool_data = json.loads(content)
-                    formatted_content = _format_tool_message(content)
-                    chatbot_messages.append({"role": "assistant", "content": formatted_content})
+                    if tool_data.get("status") == "calling":
+                        formatted_content = _format_tool_call_message(content)
+                        chatbot_messages.append({"role": "tool_call", "content": formatted_content})
+                    else:
+                        formatted_content = _format_tool_result_message(content)
+                        chatbot_messages.append({"role": "tool_result", "content": formatted_content})
                 except (json.JSONDecodeError, Exception):
                     # 如果不是JSON格式，直接显示
                     formatted_content = f"🔧 **工具消息**:\n{content}"
-                    chatbot_messages.append({"role": "assistant", "content": formatted_content})
+                    chatbot_messages.append({"role": "tool", "content": formatted_content})
 
             elif role == "play":
                 # 投资结果 - 格式化显示
                 try:
                     play_data = json.loads(content)
                     formatted_content = _format_play_message(content)
-                    chatbot_messages.append({"role": "assistant", "content": formatted_content})
+                    chatbot_messages.append({"role": "play", "content": formatted_content})
                 except (json.JSONDecodeError, Exception):
                     formatted_content = f"📊 **投资结果**:\n{content}"
-                    chatbot_messages.append({"role": "assistant", "content": formatted_content})
+                    chatbot_messages.append({"role": "play", "content": formatted_content})
 
             else:
                 # 其他类型的消息

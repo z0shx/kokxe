@@ -292,6 +292,10 @@ class TrainingService:
                         db.commit()
                         logger.info(f"✅ 训练记录更新成功: training_id={training_id}, status={record.status}")
 
+                        # 验证更新结果
+                        db.refresh(record)
+                        logger.info(f"🔍 验证更新结果: training_id={training_id}, 确认状态={record.status}, 持续时间={record.train_duration}秒")
+
                         # 如果成功，更新计划的最新训练记录ID
                         if result['success']:
                             try:
