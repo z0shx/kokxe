@@ -834,7 +834,7 @@ def create_app():
                         agent_chatbot = chat_components['agent_chatbot']
                         agent_user_input = chat_components['agent_user_input']
                         agent_send_btn = chat_components['agent_send_btn']
-                        execute_inference_btn = chat_components['execute_inference_btn']
+                        agent_execute_inference_btn = chat_components['agent_execute_inference_btn']
                         agent_clear_btn = chat_components['agent_clear_btn']
                         agent_status = chat_components['agent_status']
 
@@ -902,7 +902,8 @@ def create_app():
                             "### 💰 账户信息\n\n未加载",  # account_status
                             gr.DataFrame(),  # order_table
                             gr.DataFrame(),  # task_executions_df  # task_executions
-                            gr.Timer(active=False)  # account_timer
+                            gr.Timer(active=False),  # account_timer
+                            None  # inference_record_id
                         )
 
                     def safe_int(value, default=0):
@@ -1112,7 +1113,8 @@ def create_app():
                         account_info,  # account_status
                         orders_df,  # order_table
                         task_executions_df,  # task_executions_df
-                        gr.Timer(active=True)  # account_timer - 启动账户定时器
+                        gr.Timer(active=True),  # account_timer - 启动账户定时器
+                        get_latest_training_id(int(plan_id))  # 自动填充最新的训练记录ID
                     )
 
                 # 保存参数函数
@@ -1353,7 +1355,8 @@ def create_app():
                         inference_df, inference_data_range_info, prediction_data_preview, agent_df,
                         agent_chatbot, agent_user_input, agent_status,  # agent_chatbot, agent_user_input, agent_status
                         account_status, order_table, task_executions_df,  # 账户信息、订单记录和任务记录
-                        account_timer  # 定时器
+                        account_timer,  # 定时器
+                        inference_record_id  # 自动填充训练记录ID
                     ]
                 ).then(
                     fn=lambda: gr.Tabs(selected=2),  # 切换到详情Tab
@@ -1702,13 +1705,33 @@ def create_app():
 
                 # 这个会在计划加载时调用，我们稍后添加到计划选择事件中
 
-                # 执行推理（预测交易数据）
-                async def execute_inference_wrapper(training_id):
+                # 获取最新训练记录ID
+                def get_latest_training_id(pid):
                     from database.db import get_db
                     from database.models import TrainingRecord
 
+                    if not pid:
+                        return None
+
+                    with get_db() as db:
+                        latest_training = db.query(TrainingRecord).filter(
+                            TrainingRecord.plan_id == int(pid),
+                            TrainingRecord.status == 'completed'
+                        ).order_by(TrainingRecord.created_at.desc()).first()
+
+                        return latest_training.id if latest_training else None
+
+                # 执行推理（预测交易数据）
+                async def execute_inference_wrapper(training_id, pid):
+                    from database.db import get_db
+                    from database.models import TrainingRecord
+
+                    # 如果没有提供训练ID，尝试获取最新的已完成训练记录
                     if not training_id:
-                        return "❌ 请输入训练记录ID", "", gr.Plot(), ""
+                        training_id = get_latest_training_id(pid)
+                        if not training_id:
+                            return "❌ 未找到可用的训练记录，请先完成模型训练", "", gr.Plot(), ""
+
                     result = await detail_ui.execute_inference_async(int(training_id))
                     # 更新预测数据预览和K线图
                     prediction_text = detail_ui.get_prediction_text(int(training_id))
@@ -1725,21 +1748,25 @@ def create_app():
 
                 execute_inference_btn.click(
                     fn=execute_inference_wrapper,
-                    inputs=[inference_record_id],
+                    inputs=[inference_record_id, plan_id_input],
                     outputs=[inference_operation_result, prediction_data_preview, kline_chart, probability_indicators_md]
                 ).then(
-                    fn=lambda training_id: detail_ui.load_inference_records(int(training_id)) if training_id else gr.DataFrame(),
-                    inputs=[inference_record_id],
+                    fn=lambda training_id, pid: detail_ui.load_inference_records(int(training_id)) if training_id else detail_ui.load_inference_records(int(pid)) if pid else gr.DataFrame(),
+                    inputs=[inference_record_id, plan_id_input],
                     outputs=[inference_df]
                 )
 
                 # Mock预测数据
-                async def mock_prediction_wrapper(training_id):
+                async def mock_prediction_wrapper(training_id, pid):
                     from database.db import get_db
                     from database.models import TrainingRecord
 
+                    # 如果没有提供训练ID，尝试获取最新的已完成训练记录
                     if not training_id:
-                        return "❌ 请输入训练记录ID", "", gr.Plot(), ""
+                        training_id = get_latest_training_id(pid)
+                        if not training_id:
+                            return "❌ 未找到可用的训练记录，请先完成模型训练", "", gr.Plot(), ""
+
                     result = await detail_ui.mock_predictions_async(int(training_id))
                     # 更新预测数据预览和K线图
                     prediction_text = detail_ui.get_prediction_text(int(training_id))
@@ -1756,7 +1783,7 @@ def create_app():
 
                 mock_prediction_btn.click(
                     fn=mock_prediction_wrapper,
-                    inputs=[inference_record_id],
+                    inputs=[inference_record_id, plan_id_input],
                     outputs=[inference_operation_result, prediction_data_preview, kline_chart, probability_indicators_md]
                 )
 

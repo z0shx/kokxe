@@ -58,7 +58,7 @@ class PlanDetailChatUI:
             with gr.Column(scale=1):
                 with gr.Row():
                     agent_send_btn = gr.Button("📤 发送", variant="primary", size="sm")
-                    execute_inference_btn = gr.Button("🧠 执行推理", variant="secondary", size="sm")
+                    agent_execute_inference_btn = gr.Button("🧠 执行推理", variant="secondary", size="sm")
                 with gr.Row():
                     agent_clear_btn = gr.Button("🗑️ 清除对话", variant="secondary", size="sm")
 
@@ -70,7 +70,7 @@ class PlanDetailChatUI:
             'agent_chatbot': agent_chatbot,
             'agent_user_input': agent_user_input,
             'agent_send_btn': agent_send_btn,
-            'execute_inference_btn': execute_inference_btn,
+            'agent_execute_inference_btn': agent_execute_inference_btn,
             'agent_clear_btn': agent_clear_btn,
             'agent_status': agent_status
         })
@@ -182,7 +182,7 @@ class PlanDetailChatUI:
             show_progress=True
         )
 
-        components['execute_inference_btn'].click(
+        components['agent_execute_inference_btn'].click(
             fn=components['agent_execute_inference_wrapper'],
             inputs=[plan_id_input, components['agent_chatbot']],
             outputs=[components['agent_chatbot'], components['agent_status']],
