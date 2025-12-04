@@ -40,6 +40,36 @@ class LangChainAgentService:
         self._trading_tools = None
         self._llm_clients = {}
 
+    @staticmethod
+    def _parse_extra_params(extra_params):
+        """解析额外参数"""
+        if not extra_params:
+            return {}
+        try:
+            return extra_params if isinstance(extra_params, dict) else json.loads(extra_params)
+        except:
+            return {}
+
+    @staticmethod
+    def _get_llm_base_params(llm_config):
+        """获取LLM基础参数"""
+        return {
+            "model": llm_config.model_name,
+            "temperature": llm_config.temperature or 0.7,
+            "max_tokens": llm_config.max_tokens or 2000
+        }
+
+    @staticmethod
+    def _format_tool_response(success: bool, data=None, error=None, **kwargs):
+        """统一的工具响应格式"""
+        response = {"success": success}
+        if success:
+            response.update(data or {})
+            response["timestamp"] = now_beijing().isoformat()
+        else:
+            response["error"] = error
+        return json.dumps(response, ensure_ascii=False)
+
     @property
     def trading_tools(self):
         """懒加载交易工具"""
@@ -80,40 +110,29 @@ class LangChainAgentService:
         client_key = f"{llm_config.provider}_{llm_config.model_name}"
 
         if client_key not in self._llm_clients:
+            base_params = self._get_llm_base_params(llm_config)
+
             if llm_config.provider == "openai":
                 self._llm_clients[client_key] = ChatOpenAI(
-                    model=llm_config.model_name,
-                    temperature=llm_config.temperature or 0.7,
-                    max_tokens=llm_config.max_tokens or 2000,
+                    **base_params,
                     openai_api_key=llm_config.api_key
                 )
             elif llm_config.provider == "anthropic":
                 self._llm_clients[client_key] = ChatAnthropic(
-                    model=llm_config.model_name,
-                    temperature=llm_config.temperature or 0.7,
-                    max_tokens=llm_config.max_tokens or 2000,
+                    **base_params,
                     anthropic_api_key=llm_config.api_key
                 )
             elif llm_config.provider == "qwen":
                 # Qwen 使用 OpenAI 兼容接口
                 base_url = llm_config.api_base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1"
-
-                # 获取额外参数
-                extra_params = {}
-                if hasattr(llm_config, 'extra_params') and llm_config.extra_params:
-                    try:
-                        extra_params = llm_config.extra_params if isinstance(llm_config.extra_params, dict) else json.loads(llm_config.extra_params)
-                    except:
-                        extra_params = {}
+                extra_params = self._parse_extra_params(getattr(llm_config, 'extra_params', None))
 
                 model_kwargs = {}
                 if extra_params.get('enable_thinking', False):
                     model_kwargs = {"enable_thinking": True}
 
                 self._llm_clients[client_key] = ChatOpenAI(
-                    model=llm_config.model_name,
-                    temperature=llm_config.temperature or 0.7,
-                    max_tokens=llm_config.max_tokens or 2000,
+                    **base_params,
                     openai_api_key=llm_config.api_key,
                     openai_api_base=base_url,
                     model_kwargs=model_kwargs
@@ -498,9 +517,11 @@ class LangChainAgentService:
                             tool_name = getattr(action, 'tool', 'unknown')
                             tool_input = getattr(action, 'tool_input', {})
 
-                            # 生成工具调用ID
+                            # 生成工具调用ID并记录开始时间
                             import uuid
+                            import time
                             tool_call_id = str(uuid.uuid4())[:8]
+                            tool_start_time = time.time()
 
                             # 为交易工具设置上下文信息
                             plan_trading_tools = self.get_plan_trading_tools(plan_id)
@@ -526,7 +547,8 @@ class LangChainAgentService:
                                     db, conversation.id, "tool",
                                     f"调用工具 {tool_name}", "tool_call",
                                     tool_name, tool_input,
-                                    tool_call_id=tool_call_id
+                                    tool_call_id=tool_call_id,
+                                    tool_execution_time=None  # 调用时暂不记录时间
                                 )
 
                     # 处理工具结果
@@ -535,6 +557,9 @@ class LangChainAgentService:
                             if hasattr(step, 'observation') and step.observation:
                                 obs = step.observation
                                 tool_name = getattr(step.action, 'tool', 'unknown') if hasattr(step, 'action') else 'unknown'
+
+                                # 计算工具执行时间
+                                tool_execution_time = time.time() - tool_start_time
 
                                 # 格式化工具结果 - 使用新的 role:tool_result
                                 try:
@@ -573,11 +598,25 @@ class LangChainAgentService:
                                     yield [{"role": "tool_result", "content": tool_error_content}]
 
                                 # 保存工具结果到数据库
+                                related_order_id = None
+                                if tool_name in ['place_order', 'amend_order', 'cancel_order']:
+                                    # 尝试从工具结果中提取订单ID
+                                    try:
+                                        if isinstance(obs, str) and obs.startswith('{'):
+                                            result_data = json.loads(obs)
+                                            if result_data.get('success') and result_data.get('order_id'):
+                                                related_order_id = result_data['order_id']
+                                    except:
+                                        pass
+
                                 with get_db() as db:
                                     await self._save_message(
                                         db, conversation.id, "tool",
                                         f"工具 {tool_name} 执行完成", "tool_result",
-                                        tool_name, getattr(step.action, 'tool_input', {}), obs
+                                        tool_name, getattr(step.action, 'tool_input', {}), obs,
+                                        tool_call_id=tool_call_id,
+                                        tool_execution_time=tool_execution_time,
+                                        related_order_id=related_order_id
                                     )
 
                     # 处理最终输出
@@ -679,7 +718,9 @@ class LangChainAgentService:
         tool_name: str = None,
         tool_args: dict = None,
         tool_result: str = None,
-        tool_call_id: str = None
+        tool_call_id: str = None,
+        tool_execution_time: float = None,
+        related_order_id: str = None
     ):
         """保存消息到数据库"""
         try:
@@ -692,6 +733,8 @@ class LangChainAgentService:
                 tool_arguments=json.dumps(tool_args) if tool_args else None,
                 tool_result=json.dumps(tool_result) if tool_result else None,
                 tool_call_id=tool_call_id,
+                tool_execution_time=tool_execution_time,
+                related_order_id=related_order_id,
                 created_at=now_beijing()
             )
             db.add(message)

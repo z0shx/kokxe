@@ -270,8 +270,7 @@ class OKXTradingTools:
                         is_from_agent=True,  # 标记为Agent操作的订单
                         agent_message_id=None,  # 可以在工具调用时更新
                         conversation_id=final_conversation_id,
-                        tool_call_id=final_tool_call_id,
-                        related_order_id=order_id
+                        tool_call_id=final_tool_call_id
                     )
                     db.add(new_order)
                     logger.info(f"保存新订单到数据库: order_id={order_id}, plan_id={self.plan_id}")
