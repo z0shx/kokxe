@@ -1525,3 +1525,90 @@ class OKXTradingTools:
                 'success': False,
                 'error': str(e)
             }
+
+
+    def cancel_order_with_db_save(self, inst_id: str, order_id: str = None, client_order_id: str = None):
+        """
+        取消订单并保存到数据库
+        """
+        # 执行撤单操作
+        result = self.cancel_order(inst_id, order_id, client_order_id)
+
+        # 保存撤单记录到数据库
+        if result.get('success'):
+            self._save_order_to_database(
+                order_id=result['order_id'],
+                inst_id=inst_id,
+                side="",  # 撤单不需要方向
+                order_type="cancel",
+                size=0,
+                price=0,
+                status="cancelled",
+                tool_call_id=self.current_tool_call_id,
+                conversation_id=self.current_conversation_id
+            )
+
+            logger.info(f"撤单记录已保存到数据库: {result['order_id']}")
+
+        return result
+
+    def amend_order_with_db_save(self, inst_id: str, order_id: str = None,
+                               client_order_id: str = None, new_size: str = None,
+                               new_price: str = None):
+        """
+        修改订单并保存到数据库
+        """
+        # 执行改单操作
+        result = self.amend_order(inst_id, order_id, client_order_id, new_size, new_price)
+
+        # 保存改单记录到数据库
+        if result.get('success'):
+            self._save_order_to_database(
+                order_id=result['order_id'],
+                inst_id=inst_id,
+                side="",  # 改单不需要方向
+                order_type="amend",
+                size=float(new_size) if new_size else 0,
+                price=float(new_price) if new_price else 0,
+                status="amended",
+                tool_call_id=self.current_tool_call_id,
+                conversation_id=self.current_conversation_id
+            )
+
+            logger.info(f"改单记录已保存到数据库: {result['order_id']}")
+
+        return result
+
+    def sync_order_status(self, order_id: str) -> bool:
+        """
+        同步订单状态到数据库
+        """
+        try:
+            # 需要从订单记录中获取inst_id
+            with get_db() as db:
+                from database.models import TradeOrder
+                db_order = db.query(TradeOrder).filter(TradeOrder.order_id == order_id).first()
+                if not db_order:
+                    return False
+
+                # 查询OKX获取最新状态
+                order_info = self.get_order(db_order.inst_id, order_id)
+                if not order_info.get('success'):
+                    return False
+
+                order_data = order_info['order']
+
+                # 更新订单状态
+                db_order.status = order_data.get('state', db_order.status)
+                db_order.filled_size = float(order_data.get('accFillSz', 0))
+                db_order.avg_price = float(order_data.get('avgPx', 0)) if order_data.get('avgPx') else None
+                db_order.updated_at = now_beijing()
+
+                db.commit()
+                logger.info(f"订单状态已同步: {order_id} -> {db_order.status}")
+                return True
+
+        except Exception as e:
+            logger.error(f"同步订单状态失败: {e}")
+            return False
+

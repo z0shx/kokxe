@@ -77,20 +77,47 @@ def _format_thinking_message(content: str) -> str:
 
 
 def _format_tool_call_message(content: str) -> str:
-    """格式化工具调用消息"""
+    """增强的工具调用消息格式化"""
     try:
         tool_data = json.loads(content)
         tool_name = tool_data.get("tool_name", "unknown")
         args = tool_data.get("arguments", {})
+        status = tool_data.get("status", "calling")
 
-        args_str = ", ".join([f"{k}=`{v}`" for k, v in args.items()])
-        return f"🔧 **调用工具**: `{tool_name}`\n\n**参数**: {args_str}"
+        # 增强的参数格式化
+        if args:
+            if isinstance(args, dict):
+                # 智能参数格式化
+                formatted_args = []
+                for k, v in args.items():
+                    if k in ['inst_id', 'side', 'ordType', 'tdMode']:
+                        formatted_args.append(f"{k}=`{v}`")
+                    elif k in ['sz', 'px'] and isinstance(v, (int, float)):
+                        formatted_args.append(f"{k}=`{v}`")
+                    else:
+                        formatted_args.append(f"{k}=`{str(v)[:50]}...`" if len(str(v)) > 50 else f"{k}=`{v}`")
+
+                args_str = ", ".join(formatted_args)
+            else:
+                args_str = str(args)[:200] + "..." if len(str(args)) > 200 else str(args)
+        else:
+            args_str = "无参数"
+
+        # 状态图标
+        status_icon = "🔄" if status == "calling" else "🔧"
+
+        return f"""{status_icon} **调用工具**: `{tool_name}`
+
+**参数**: {args_str}
+
+**状态**: {status}"""
+
     except (json.JSONDecodeError, Exception):
         return f"🔧 **工具调用**: {content}"
 
 
 def _format_tool_result_message(content: str) -> str:
-    """格式化工具执行结果消息"""
+    """增强的工具执行结果消息格式化"""
     try:
         tool_data = json.loads(content)
         tool_name = tool_data.get("tool_name", "unknown")
@@ -98,25 +125,49 @@ def _format_tool_result_message(content: str) -> str:
         result = tool_data.get("result", {})
         status = tool_data.get("status", "success")
 
-        status_emoji = "✅" if status == "success" else "❌"
+        status_icon = "✅" if status == "success" else "❌"
 
-        # 格式化参数
-        args_str = ", ".join([f"{k}=`{v}`" for k, v in args.items()])
-
-        # 格式化结果
+        # 智能结果格式化
         if isinstance(result, dict):
-            result_str = json.dumps(result, indent=2, ensure_ascii=False)
+            # 订单相关结果特殊处理
+            if 'order_id' in result:
+                order_id = result['order_id']
+                result_lines = [
+                    f"{status_icon} **工具执行完成**: `{tool_name}`",
+                    f"**订单ID**: `{order_id}`"
+                ]
+
+                # 添加其他重要字段
+                for key in ['success', 'state', 'filled_sz', 'avg_px', 'created_at']:
+                    if key in result:
+                        result_lines.append(f"**{key}**: `{result[key]}`")
+
+                if len(result_lines) > 5:  # 结果过长时折叠
+                    result_lines.append("**详情**: [点击查看完整结果]")
+
+            else:
+                # 通用字典结果
+                result_str = json.dumps(result, indent=2, ensure_ascii=False)
+                if len(result_str) > 500:
+                    result_str = result_str[:500] + "\n... [结果过长已截断]"
+
+                result_lines = [
+                    f"{status_icon} **工具执行完成**: `{tool_name}`",
+                    f"**结果**:\n```json\n{result_str}\n```"
+                ]
         else:
+            # 非字典结果
             result_str = str(result)
+            if len(result_str) > 500:
+                result_str = result_str[:500] + "..."
 
-        return f"""{status_emoji} **工具执行完成**: `{tool_name}`
+            result_lines = [
+                f"{status_icon} **工具执行完成**: `{tool_name}`",
+                f"**结果**: `{result_str}`"
+            ]
 
-**参数**: {args_str}
+        return "\n\n".join(result_lines)
 
-**结果**:
-```json
-{result_str}
-```"""
     except (json.JSONDecodeError, Exception):
         return f"✅ **工具结果**: {content}"
 

@@ -554,7 +554,8 @@ class LangChainAgentService:
                                 await self._save_message(
                                     db, conversation.id, "tool",
                                     f"调用工具 {tool_name}", "tool_call",
-                                    tool_name, tool_input,
+                                    tool_name=tool_name,
+                                    tool_args=tool_input,
                                     tool_call_id=tool_call_id,
                                     tool_execution_time=None  # 调用时暂不记录时间
                                 )
@@ -623,7 +624,9 @@ class LangChainAgentService:
                                     await self._save_message(
                                         db, conversation.id, "tool",
                                         f"工具 {tool_name} 执行完成", "tool_result",
-                                        tool_name, getattr(step.action, 'tool_input', {}), obs,
+                                        tool_name=tool_name,
+                                    tool_args=getattr(step.action, 'tool_input', {}),
+                                    tool_result=obs,
                                         tool_call_id=tool_call_id,
                                         tool_execution_time=tool_execution_time,
                                         related_order_id=related_order_id
@@ -776,6 +779,45 @@ class LangChainAgentService:
         except Exception as e:
             logger.error(f"连接测试失败: {e}")
             return False
+
+
+    def extract_order_ids_from_tool_results(self, tool_results: List[Dict]) -> List[str]:
+        """
+        从工具结果中提取所有订单ID
+
+        Args:
+            tool_results: 工具执行结果列表
+
+        Returns:
+            List[str]: 提取到的订单ID列表（去重）
+        """
+        order_ids = []
+
+        for result in tool_results:
+            if not isinstance(result, dict):
+                continue
+
+            # 检查不同工具的订单ID位置
+            if result.get('success'):
+                result_data = result.get('result', result)
+
+                # place_order, cancel_order, amend_order 的订单ID
+                if 'order_id' in result_data:
+                    order_ids.append(str(result_data['order_id']))
+
+                # 批量操作的多个订单ID
+                if 'order_ids' in result_data:
+                    order_ids.extend([str(oid) for oid in result_data['order_ids']])
+
+                # OKX API 响应格式
+                if 'data' in result_data and isinstance(result_data['data'], list):
+                    for item in result_data['data']:
+                        if 'ordId' in item:
+                            order_ids.append(str(item['ordId']))
+                        if 'order_id' in item:
+                            order_ids.append(str(item['order_id']))
+
+        return list(set(order_ids))  # 去重
 
 
 # 全局实例

@@ -16,100 +16,106 @@ class PlanDetailChatUI:
         self.plan_detail_ui = plan_detail_ui
 
     def _async_to_sync_stream(self, async_func, initial_history=None, **kwargs):
-        """通用的异步流转同步处理方法"""
+        """
+        重写的异步流转同步处理方法
+        支持真正的实时流式输出
+        """
+        import asyncio
         import sys
+        from ui.streaming_handler import StreamingHandler
 
-        # 检查是否已有运行中的事件循环
+        # 检查是否在Gradio事件循环中
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                # 如果有运行中的循环，创建新的线程来运行异步代码
+                # 在Gradio环境中使用线程处理
                 import threading
                 import queue
 
                 result_queue = queue.Queue()
                 error_queue = queue.Queue()
 
-                def run_in_thread():
+                def run_async_in_thread():
                     try:
+                        # 创建新的事件循环
                         new_loop = asyncio.new_event_loop()
                         asyncio.set_event_loop(new_loop)
 
-                        async def async_stream():
-                            from services.langchain_agent import agent_service
+                        async def stream_processor():
+                            from ui.streaming_handler import StreamingHandler
+                            handler = StreamingHandler()
                             current_history = initial_history.copy() if initial_history else []
 
-                            async for message_batch in async_func(**kwargs):
-                                processed = process_streaming_messages([message_batch])
-                                for message in processed:
+                            async for message_batch in handler.process_agent_stream_realtime(
+                                async_func(**kwargs), "session_" + str(hash(str(kwargs)))
+                            ):
+                                # 立即处理每个消息批次
+                                for message in message_batch:
                                     current_history.append(message)
-                                    result_queue.put(("yield", current_history, gr.update(value="")))
+                                    result_queue.put(("message", current_history.copy(), gr.update(value="")))
 
                             result_queue.put(("done", None, None))
 
-                        new_loop.run_until_complete(async_stream())
+                        new_loop.run_until_complete(stream_processor())
                         new_loop.close()
 
                     except Exception as e:
                         error_queue.put(e)
 
-                thread = threading.Thread(target=run_in_thread)
-                thread.daemon = True
+                # 启动异步处理线程
+                thread = threading.Thread(target=run_async_in_thread, daemon=True)
                 thread.start()
 
-                # 从队列中获取结果
+                # 实时获取结果并yield
                 while True:
                     try:
-                        # 检查是否有错误
+                        # 检查错误
                         if not error_queue.empty():
                             raise error_queue.get()
 
-                        # 获取结果
+                        # 获取消息
                         status, history, update = result_queue.get(timeout=0.1)
-                        if status == "yield":
+                        if status == "message":
                             yield history, update
                         elif status == "done":
                             break
 
                     except queue.Empty:
                         continue
-                return
 
-        except RuntimeError:
-            # 没有运行中的事件循环，使用原来的方法
-            pass
+            else:
+                # 直接运行异步代码（非Gradio环境）
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
 
-        # 原来的实现（适用于没有运行中事件循环的情况）
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+                async def direct_stream():
+                    from ui.streaming_handler import StreamingHandler
+                    handler = StreamingHandler()
+                    current_history = initial_history.copy() if initial_history else []
 
-        async def async_stream():
-            current_history = initial_history.copy() if initial_history else []
+                    async for message_batch in handler.process_agent_stream_realtime(
+                        async_func(**kwargs), "direct_session"
+                    ):
+                        for message in message_batch:
+                            current_history.append(message)
+                            yield current_history, gr.update(value="")
 
-            async for message_batch in async_func(**kwargs):
-                processed = process_streaming_messages([message_batch])
-                for message in processed:
-                    current_history.append(message)
-                    yield current_history, gr.update(value="")
-
-        try:
-            async_gen = async_stream()
-            while True:
                 try:
-                    result = loop.run_until_complete(async_gen.__anext__())
-                    yield result
-                except StopAsyncIteration:
-                    break
-        finally:
-            # 确保所有待处理的任务都被清理
-            pending = asyncio.all_tasks(loop)
-            if pending:
-                for task in pending:
-                    task.cancel()
-                # 等待任务取消完成
-                if pending:
-                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            loop.close()
+                    async for result in direct_stream():
+                        yield result
+                finally:
+                    pending = asyncio.all_tasks(loop)
+                    if pending:
+                        for task in pending:
+                            task.cancel()
+                        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                    loop.close()
+
+        except Exception as e:
+            # 降级处理：使用简单的同步包装
+            current_history = initial_history.copy() if initial_history else []
+            error_message = [{"role": "assistant", "content": f"❌ 流式处理错误: {str(e)}"}]
+            yield current_history + error_message, gr.update(value="")
 
     def _validate_plan_and_message(self, pid, user_message, history):
         """验证计划存在性和消息内容"""
