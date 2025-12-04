@@ -22,6 +22,8 @@ class PlanDetailChatUI:
         """
         import asyncio
         import sys
+        import threading
+        import queue
         from ui.streaming_handler import StreamingHandler
 
         # 检查是否在Gradio事件循环中
@@ -29,9 +31,6 @@ class PlanDetailChatUI:
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 # 在Gradio环境中使用线程处理
-                import threading
-                import queue
-
                 result_queue = queue.Queue()
                 error_queue = queue.Queue()
 
@@ -42,7 +41,6 @@ class PlanDetailChatUI:
                         asyncio.set_event_loop(new_loop)
 
                         async def stream_processor():
-                            from ui.streaming_handler import StreamingHandler
                             handler = StreamingHandler()
                             current_history = initial_history.copy() if initial_history else []
 
@@ -88,8 +86,8 @@ class PlanDetailChatUI:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
 
-                async def direct_stream():
-                    from ui.streaming_handler import StreamingHandler
+                # 直接在事件循环中运行异步代码
+                async def run_direct_stream():
                     handler = StreamingHandler()
                     current_history = initial_history.copy() if initial_history else []
 
@@ -100,9 +98,15 @@ class PlanDetailChatUI:
                             current_history.append(message)
                             yield current_history, gr.update(value="")
 
+                # 使用loop.run_until_complete包装异步生成器
                 try:
-                    async for result in direct_stream():
-                        yield result
+                    async_gen = run_direct_stream()
+                    while True:
+                        try:
+                            result = loop.run_until_complete(async_gen.__anext__())
+                            yield result
+                        except StopAsyncIteration:
+                            break
                 finally:
                     pending = asyncio.all_tasks(loop)
                     if pending:
