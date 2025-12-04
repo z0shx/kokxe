@@ -352,7 +352,7 @@ class OKXTradingTools:
                     size=size,
                     price=price,
                     status="live",
-                    tool_call_id=self._current_tool_call_id,
+                    tool_call_id=self.current_tool_call_id,
                     conversation_id=self._current_conversation_id
                 )
 

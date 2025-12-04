@@ -510,7 +510,13 @@ class LangChainAgentService:
 
                 # 流式执行 Agent
                 response = ""
+                logger.info(f"PLAN {plan_id} - 开始Agent流式执行，LLM: {llm_config.model_name}")
+                logger.debug(f"PLAN {plan_id} - 输入消息长度: {len(user_message)} 字符")
+
+                chunk_count = 0
                 async for chunk in agent_executor.astream({"input": user_message, "chat_history": messages[1:-1]}):
+                    chunk_count += 1
+                    logger.debug(f"PLAN {plan_id} - Agent chunk #{chunk_count}: {type(chunk)} - {list(chunk.keys()) if isinstance(chunk, dict) else str(chunk)[:100]}")
                     # 处理工具调用
                     if "actions" in chunk:
                         for action in chunk["actions"]:
@@ -539,6 +545,8 @@ class LangChainAgentService:
                                 "tool_call_id": tool_call_id
                             }
                             tool_call_content = json.dumps(tool_call_data, ensure_ascii=False)
+                            logger.info(f"PLAN {plan_id} - 工具调用: {tool_name}, ID: {tool_call_id}")
+                            logger.debug(f"PLAN {plan_id} - 工具调用参数: {tool_input}")
                             yield [{"role": "tool_call", "content": tool_call_content}]
 
                             # 保存工具调用到数据库
@@ -584,6 +592,8 @@ class LangChainAgentService:
                                     }
 
                                     tool_result_content = json.dumps(tool_result_data, ensure_ascii=False)
+                                    logger.info(f"PLAN {plan_id} - 工具结果: {tool_name}, 状态: {tool_result_data['status']}")
+                                    logger.debug(f"PLAN {plan_id} - 工具结果长度: {len(tool_result_content)} 字符")
                                     yield [{"role": "tool_result", "content": tool_result_content}]
 
                                 except Exception as e:
