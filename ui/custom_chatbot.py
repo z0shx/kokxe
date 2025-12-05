@@ -77,99 +77,132 @@ def _format_thinking_message(content: str) -> str:
 
 
 def _format_tool_call_message(content: str) -> str:
-    """增强的工具调用消息格式化"""
+    """增强的工具调用消息格式化，使用markdown和代码块模拟tag效果"""
     try:
         tool_data = json.loads(content)
         tool_name = tool_data.get("tool_name", "unknown")
         args = tool_data.get("arguments", {})
         status = tool_data.get("status", "calling")
-
-        # 增强的参数格式化
-        if args:
-            if isinstance(args, dict):
-                # 智能参数格式化
-                formatted_args = []
-                for k, v in args.items():
-                    if k in ['inst_id', 'side', 'ordType', 'tdMode']:
-                        formatted_args.append(f"{k}=`{v}`")
-                    elif k in ['sz', 'px'] and isinstance(v, (int, float)):
-                        formatted_args.append(f"{k}=`{v}`")
-                    else:
-                        formatted_args.append(f"{k}=`{str(v)[:50]}...`" if len(str(v)) > 50 else f"{k}=`{v}`")
-
-                args_str = ", ".join(formatted_args)
-            else:
-                args_str = str(args)[:200] + "..." if len(str(args)) > 200 else str(args)
-        else:
-            args_str = "无参数"
+        tool_call_id = tool_data.get("tool_call_id", "")
 
         # 状态图标
         status_icon = "🔄" if status == "calling" else "🔧"
 
-        return f"""{status_icon} **调用工具**: `{tool_name}`
+        # 提取关键参数用于简洁显示
+        key_params = []
+        if isinstance(args, dict):
+            for key in ['inst_id', 'side', 'order_type', 'size']:
+                if key in args:
+                    key_params.append(f"{key}: `{args[key]}`")
 
-**参数**: {args_str}
+        params_summary = " | ".join(key_params) if key_params else "无参数"
 
-**状态**: {status}"""
+        # 创建markdown格式的工具调用标签
+        tool_tag = f"""
+### {status_icon} 调用工具: `{tool_name}`
+
+**状态**: `{status}` {f'| **ID**: `{tool_call_id[:8]}`' if tool_call_id else ''}
+
+**参数**: {params_summary}
+
+<details>
+<summary>📋 点击查看详细参数和API数据</summary>
+
+**参数详情**:
+```json
+{json.dumps(args, indent=2, ensure_ascii=False)}
+```
+
+**完整数据**:
+```json
+{json.dumps(tool_data, indent=2, ensure_ascii=False)}
+```
+
+</details>
+
+---
+
+"""
+
+        return tool_tag.strip()
 
     except (json.JSONDecodeError, Exception):
-        return f"🔧 **工具调用**: {content}"
+        # 降级显示
+        return f"""
+### 🔧 工具调用
+
+**状态**: 格式错误
+
+**原始数据**: `{content[:100]}...`
+
+---
+
+"""
 
 
 def _format_tool_result_message(content: str) -> str:
-    """增强的工具执行结果消息格式化"""
+    """增强的工具执行结果消息格式化，使用markdown和可折叠的详情"""
     try:
         tool_data = json.loads(content)
         tool_name = tool_data.get("tool_name", "unknown")
         args = tool_data.get("arguments", {})
         result = tool_data.get("result", {})
         status = tool_data.get("status", "success")
+        tool_call_id = tool_data.get("tool_call_id", "")
 
         status_icon = "✅" if status == "success" else "❌"
 
-        # 智能结果格式化
-        if isinstance(result, dict):
-            # 订单相关结果特殊处理
-            if 'order_id' in result:
-                order_id = result['order_id']
-                result_lines = [
-                    f"{status_icon} **工具执行完成**: `{tool_name}`",
-                    f"**订单ID**: `{order_id}`"
-                ]
+        # 提取关键信息用于简洁显示
+        key_info = ""
+        if isinstance(result, dict) and 'order_id' in result:
+            key_info = f"| **订单ID**: `{result['order_id']}`"
+        elif isinstance(result, dict) and 'success' in result:
+            key_info = f"| **结果**: `{result['success']}`"
 
-                # 添加其他重要字段
-                for key in ['success', 'state', 'filled_sz', 'avg_px', 'created_at']:
-                    if key in result:
-                        result_lines.append(f"**{key}**: `{result[key]}`")
+        # 创建markdown格式的工具结果标签
+        result_tag = f"""
+### {status_icon} 工具执行: `{tool_name}`
 
-                if len(result_lines) > 5:  # 结果过长时折叠
-                    result_lines.append("**详情**: [点击查看完整结果]")
+**状态**: `{status}` {f'| **ID**: `{tool_call_id[:8]}`' if tool_call_id else ''} {key_info}
 
-            else:
-                # 通用字典结果
-                result_str = json.dumps(result, indent=2, ensure_ascii=False)
-                if len(result_str) > 500:
-                    result_str = result_str[:500] + "\n... [结果过长已截断]"
+<details>
+<summary>📊 点击查看执行结果和参数详情</summary>
 
-                result_lines = [
-                    f"{status_icon} **工具执行完成**: `{tool_name}`",
-                    f"**结果**:\n```json\n{result_str}\n```"
-                ]
-        else:
-            # 非字典结果
-            result_str = str(result)
-            if len(result_str) > 500:
-                result_str = result_str[:500] + "..."
+**执行结果**:
+```json
+{json.dumps(result, indent=2, ensure_ascii=False)}
+```
 
-            result_lines = [
-                f"{status_icon} **工具执行完成**: `{tool_name}`",
-                f"**结果**: `{result_str}`"
-            ]
+**调用参数**:
+```json
+{json.dumps(args, indent=2, ensure_ascii=False)}
+```
 
-        return "\n\n".join(result_lines)
+**完整数据**:
+```json
+{json.dumps(tool_data, indent=2, ensure_ascii=False)}
+```
+
+</details>
+
+---
+
+"""
+
+        return result_tag.strip()
 
     except (json.JSONDecodeError, Exception):
-        return f"✅ **工具结果**: {content}"
+        # 降级显示
+        return f"""
+### ❌ 工具结果
+
+**状态**: 格式错误
+
+**原始数据**: `{content[:100]}...`
+
+---
+
+"""
 
 
 def _format_tool_message(content: str) -> str:

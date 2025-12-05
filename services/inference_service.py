@@ -186,6 +186,51 @@ class InferenceService:
         return amplified_count / len(all_predictions)
 
     @classmethod
+    async def run_inference_async(
+        cls,
+        training_record_id: int,
+        temperature: float = None,
+        top_p: float = None,
+        sample_count: int = None,
+        lookback_window: int = None,
+        predict_window: int = None,
+        data_offset: int = None
+    ) -> Dict:
+        """
+        异步执行推理，支持自定义参数
+
+        Args:
+            training_record_id: 训练记录ID
+            temperature: 温度参数（可选，覆盖计划配置）
+            top_p: Top-p参数（可选，覆盖计划配置）
+            sample_count: 采样数量（可选，覆盖计划配置）
+            lookback_window: 回溯窗口（可选，覆盖计划配置）
+            predict_window: 预测窗口（可选，覆盖计划配置）
+            data_offset: 数据偏移（可选，覆盖计划配置）
+
+        Returns:
+            推理结果字典
+        """
+        try:
+            # 在线程池中执行推理
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                cls._inference_sync_with_params,
+                training_record_id,
+                temperature,
+                top_p,
+                sample_count,
+                lookback_window,
+                predict_window,
+                data_offset
+            )
+            return result
+        except Exception as e:
+            logger.error(f"异步推理失败: training_record_id={training_record_id}, error={e}")
+            return {'success': False, 'error': str(e)}
+
+    @classmethod
     async def start_inference(cls, training_id: int) -> bool:
         """
         启动推理任务
@@ -232,6 +277,226 @@ class InferenceService:
             import traceback
             traceback.print_exc()
             return False
+
+    @classmethod
+    def _inference_sync_with_params(
+        cls,
+        training_id: int,
+        temperature: float = None,
+        top_p: float = None,
+        sample_count: int = None,
+        lookback_window: int = None,
+        predict_window: int = None,
+        data_offset: int = None
+    ) -> Dict:
+        """
+        同步推理（在线程池中执行），支持自定义参数
+
+        Args:
+            training_id: 训练记录ID
+            temperature: 温度参数（可选，覆盖计划配置）
+            top_p: Top-p参数（可选，覆盖计划配置）
+            sample_count: 采样数量（可选，覆盖计划配置）
+            lookback_window: 回溯窗口（可选，覆盖计划配置）
+            predict_window: 预测窗口（可选，覆盖计划配置）
+            data_offset: 数据偏移（可选，覆盖计划配置）
+
+        Returns:
+            结果字典: {
+                'success': bool,
+                'predictions_count': int,
+                'error': str  # 错误信息（如有）
+            }
+        """
+        try:
+            import pandas as pd
+            from services.kronos_trainer import KronosInferencer
+
+            with get_db() as db:
+                # 获取训练记录
+                training_record = db.query(TrainingRecord).filter(
+                    TrainingRecord.id == training_id
+                ).first()
+
+                if not training_record or training_record.status != 'completed':
+                    return {'success': False, 'error': '训练记录不存在或未完成'}
+
+                # 获取计划信息
+                plan = db.query(TradingPlan).filter(
+                    TradingPlan.id == training_record.plan_id
+                ).first()
+
+                if not plan:
+                    return {'success': False, 'error': '计划不存在'}
+
+                # 获取推理参数 - 优先使用传入参数，然后使用计划配置
+                finetune_params = plan.finetune_params or {}
+
+                # 确保参数结构正确，处理可能的结构不匹配问题
+                if 'data' not in finetune_params:
+                    finetune_params['data'] = {}
+                if 'inference' not in finetune_params:
+                    finetune_params['inference'] = {}
+
+                # 处理扁平结构参数（兼容性）
+                # 如果参数在顶层，移动到对应的嵌套结构中
+                if 'lookback_window' in finetune_params and 'lookback_window' not in finetune_params['data']:
+                    finetune_params['data']['lookback_window'] = finetune_params['lookback_window']
+                if 'predict_window' in finetune_params and 'predict_window' not in finetune_params['data']:
+                    finetune_params['data']['predict_window'] = finetune_params['predict_window']
+
+                # 使用传入的参数覆盖计划配置（如果提供）
+                final_lookback_window = lookback_window if lookback_window is not None else finetune_params['data'].get('lookback_window', 512)
+                final_predict_window = predict_window if predict_window is not None else finetune_params['data'].get('predict_window', 48)
+                final_T = temperature if temperature is not None else finetune_params['inference'].get('temperature', 1.0)
+                final_top_p = top_p if top_p is not None else finetune_params['inference'].get('top_p', 0.9)
+                final_sample_count = sample_count if sample_count is not None else finetune_params['inference'].get('sample_count', 30)
+                final_data_offset = data_offset if data_offset is not None else finetune_params['inference'].get('data_offset', 0)
+
+                logger.info(
+                    f"开始推理: training_id={training_id}, "
+                    f"lookback={final_lookback_window}, predict={final_predict_window}, data_offset={final_data_offset}, "
+                    f"temperature={final_T}, top_p={final_top_p}, sample_count={final_sample_count}"
+                )
+
+                # 获取最新的历史数据作为输入
+                # 如果有数据偏移，则需要获取更多数据以便向前偏移
+                data_end_time = datetime.now()
+                data_start_time = data_end_time - timedelta(days=365)  # 最多取一年数据
+
+                # 计算实际需要的数据量：final_lookback_window + final_data_offset
+                total_data_needed = final_lookback_window + final_data_offset
+
+                historical_klines = db.query(KlineData).filter(
+                    and_(
+                        KlineData.inst_id == plan.inst_id,
+                        KlineData.interval == plan.interval,
+                        KlineData.timestamp >= data_start_time,
+                        KlineData.timestamp <= data_end_time
+                    )
+                ).order_by(KlineData.timestamp.desc()).limit(total_data_needed).all()
+
+                if len(historical_klines) < total_data_needed:
+                    return {
+                        'success': False,
+                        'error': f'历史数据不足: 需要{total_data_needed}条（lookback={final_lookback_window} + offset={final_data_offset}），实际{len(historical_klines)}条'
+                    }
+
+                # 反转数据（从旧到新）
+                historical_klines = list(reversed(historical_klines))
+
+                # 如果有偏移，跳过最后 final_data_offset 条数据（最新的数据）
+                # 这样可以使用更早的历史数据进行预测
+                if final_data_offset > 0:
+                    historical_klines = historical_klines[:-final_data_offset]
+                    logger.info(f"应用数据偏移: 跳过最新的{final_data_offset}条数据，使用更早的历史数据")
+
+                df_data = []
+                for kline in historical_klines:
+                    df_data.append({
+                        'timestamps': kline.timestamp,
+                        'open': kline.open,
+                        'high': kline.high,
+                        'low': kline.low,
+                        'close': kline.close,
+                        'volume': kline.volume,
+                        'amount': kline.amount
+                    })
+
+                historical_df = pd.DataFrame(df_data)
+                historical_df['timestamps'] = pd.to_datetime(historical_df['timestamps'])
+                historical_df.set_index('timestamps', inplace=True)
+
+                logger.info(f"历史数据: {len(historical_df)} 条，时间范围: {historical_df.index[0]} 到 {historical_df.index[-1]}")
+
+                # 执行推理
+                inferencer = KronosInferencer(
+                    tokenizer_path=training_record.tokenizer_path,
+                    predictor_path=training_record.predictor_path,
+                    lookback_window=final_lookback_window,
+                    predict_window=final_predict_window
+                )
+
+                # 生成推理批次ID
+                import uuid
+                inference_batch_id = datetime.now().strftime('%Y%m%d%H%M%S') + '_' + uuid.uuid4().hex[:8]
+
+                # 执行蒙特卡罗多路径采样
+                all_predictions = []
+                for i in range(final_sample_count):
+                    try:
+                        prediction_df = inferencer.predict(historical_df, temperature=final_T, top_p=final_top_p)
+                        all_predictions.append(prediction_df)
+                        logger.debug(f"完成第 {i+1}/{final_sample_count} 条路径采样")
+                    except Exception as e:
+                        logger.warning(f"第 {i+1} 条路径采样失败: {e}")
+                        continue
+
+                if not all_predictions:
+                    return {'success': False, 'error': '所有采样路径都失败'}
+
+                logger.info(f"成功生成 {len(all_predictions)} 条预测路径")
+
+                # 计算统计量
+                result_df = cls._compute_multi_path_statistics(
+                    all_predictions,
+                    historical_df,
+                    final_predict_window
+                )
+
+                # 保存预测数据到数据库
+                predictions_count = 0
+                for timestamp, row in result_df.iterrows():
+                    prediction = PredictionData(
+                        plan_id=plan.id,
+                        training_record_id=training_record.id,
+                        inference_batch_id=inference_batch_id,
+                        timestamp=timestamp,
+                        open=float(row['open']),
+                        high=float(row['high']),
+                        low=float(row['low']),
+                        close=float(row['close']),
+                        volume=float(row['volume']) if 'volume' in row else None,
+                        amount=float(row['amount']) if 'amount' in row else None,
+                        close_min=float(row['close_min']),
+                        close_max=float(row['close_max']),
+                        close_std=float(row['close_std']),
+                        open_min=float(row['open_min']),
+                        open_max=float(row['open_max']),
+                        high_min=float(row['high_min']),
+                        high_max=float(row['high_max']),
+                        low_min=float(row['low_min']),
+                        low_max=float(row['low_max']),
+                        upward_probability=float(row.get('upward_probability', None)) if pd.notna(row.get('upward_probability')) else None,
+                        volatility_amplification_probability=float(row.get('volatility_amplification_probability', None)) if pd.notna(row.get('volatility_amplification_probability')) else None,
+                        # 推理参数 - 保存实际使用的参数
+                        inference_params=_convert_numpy_to_python({
+                            'lookback_window': final_lookback_window,
+                            'predict_window': final_predict_window,
+                            'temperature': final_T,
+                            'top_p': final_top_p,
+                            'sample_count': final_sample_count,
+                            'data_offset': final_data_offset
+                        })
+                    )
+
+                    db.add(prediction)
+                    predictions_count += 1
+
+                db.commit()
+                logger.info(f"推理成功: training_id={training_id}, 保存 {predictions_count} 条预测记录")
+
+                return {
+                    'success': True,
+                    'predictions_count': predictions_count,
+                    'inference_batch_id': inference_batch_id
+                }
+
+        except Exception as e:
+            logger.error(f"推理失败: training_id={training_id}, error={e}")
+            import traceback
+            traceback.print_exc()
+            return {'success': False, 'error': str(e)}
 
     @classmethod
     def _inference_sync(cls, training_id: int) -> Dict:

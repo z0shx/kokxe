@@ -353,7 +353,7 @@ class OKXTradingTools:
                     price=price,
                     status="live",
                     tool_call_id=self.current_tool_call_id,
-                    conversation_id=self._current_conversation_id
+                    conversation_id=self.current_conversation_id
                 )
 
                 return {

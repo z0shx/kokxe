@@ -260,14 +260,18 @@ class AutomationService:
 
                 # 获取推理参数
                 finetune_params = plan.finetune_params or {}
+                data_params = finetune_params.get('data', {})
                 inference_params = finetune_params.get('inference', {})
 
-                # 执行推理
+                # 执行推理 - 传递所有相关参数
                 inference_result = await InferenceService.run_inference_async(
                     training_record_id=training_record_id,
+                    lookback_window=data_params.get('lookback_window'),
+                    predict_window=data_params.get('predict_window'),
                     temperature=inference_params.get('temperature', 1.0),
                     top_p=inference_params.get('top_p', 0.9),
-                    sample_count=inference_params.get('sample_count', 30)
+                    sample_count=inference_params.get('sample_count', 30),
+                    data_offset=inference_params.get('data_offset', 0)
                 )
 
                 if inference_result.get('success'):
