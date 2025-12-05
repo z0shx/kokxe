@@ -47,9 +47,9 @@ class PlanDetailChatUI:
                         # 立即处理每个消息批次
                         for message in message_batch:
                             current_history.append(message)
-                            result_queue.put(("message", current_history.copy(), gr.update(value="")))
+                            result_queue.put(("message", current_history.copy(), gr.update(value=""), gr.update(visible=False, value="")))
 
-                    result_queue.put(("done", None, None))
+                    result_queue.put(("done", None, None, None))
 
                 new_loop.run_until_complete(stream_processor())
                 new_loop.close()
@@ -69,9 +69,9 @@ class PlanDetailChatUI:
                     raise error_queue.get()
 
                 # 获取消息
-                status, history, update = result_queue.get(timeout=0.1)
+                status, history, user_input_update, status_update = result_queue.get(timeout=0.1)
                 if status == "message":
-                    yield history, update
+                    yield history, user_input_update, status_update
                 elif status == "done":
                     break
 
@@ -82,7 +82,7 @@ class PlanDetailChatUI:
                 # 降级处理：使用简单的同步包装
                 current_history = initial_history.copy() if initial_history else []
                 error_message = [{"role": "assistant", "content": f"❌ 流式处理错误: {str(e)}"}]
-                yield current_history + error_message, gr.update(value="")
+                yield current_history + error_message, gr.update(value=""), gr.update(visible=True, value=f"❌ 流式处理错误: {str(e)}")
                 break
 
     def _validate_plan_and_message(self, pid, user_message, history):
@@ -283,14 +283,15 @@ class PlanDetailChatUI:
 
                 # 使用通用异步流转同步处理（推理版本，重置历史）
                 from services.langchain_agent import agent_service
-                for result in self._async_to_sync_stream(
+                for history, user_input_update, status_update in self._async_to_sync_stream(
                     agent_service.stream_conversation,
                     initial_history=empty_history,  # 重置历史
                     plan_id=plan_id,
                     user_message=inference_request,
                     conversation_type="inference_session"
                 ):
-                    yield result
+                    # 推理函数只需要返回 chatbot 和 status，忽略 user_input_update
+                    yield history, status_update
 
             except Exception as e:
                 logger.error(f"执行推理失败: {e}")

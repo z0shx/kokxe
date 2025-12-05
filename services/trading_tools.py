@@ -995,23 +995,27 @@ class OKXTradingTools:
 
     def get_current_utc_time(self) -> Dict:
         """
-        获取当前UTC+0时间
+        获取当前北京时间 (UTC+8)
 
         Returns:
             当前时间信息
         """
         try:
             from datetime import datetime
+            import pytz
 
-            now = datetime.utcnow()
+            # 获取北京时间
+            beijing_tz = pytz.timezone('Asia/Shanghai')
+            now = datetime.now(beijing_tz)
+            utc_now = datetime.utcnow()
 
             return {
                 'success': True,
-                'timestamp': int(now.timestamp() * 1000),  # 毫秒时间戳
+                'timestamp': int(utc_now.timestamp() * 1000),  # 毫秒时间戳
                 'formatted_time': now.strftime('%Y-%m-%d %H:%M:%S'),
                 'iso_time': now.isoformat(),
-                'timezone': 'UTC+0',
-                'message': f"当前UTC+0时间: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+                'timezone': 'UTC+8',
+                'message': f"当前北京时间: {now.strftime('%Y-%m-%d %H:%M:%S')}"
             }
 
         except Exception as e:

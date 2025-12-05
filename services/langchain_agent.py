@@ -11,6 +11,7 @@ LangChain Agent 服务
 import json
 import asyncio
 import traceback
+import pytz
 from typing import Dict, List, AsyncGenerator, Optional, Any
 from datetime import datetime
 from sqlalchemy import and_, desc
@@ -178,14 +179,17 @@ class LangChainAgentService:
 
             available_tools["get_current_price"] = get_current_price
 
-        # 2. 获取当前 UTC 时间
+        # 2. 获取当前北京时间 (UTC+8)
         if "get_current_utc_time" in enabled_tools:
             @tool
             def get_current_utc_time() -> str:
-                """获取当前 UTC 时间"""
+                """获取当前北京时间 (UTC+8)"""
+                # 获取北京时间
+                beijing_tz = pytz.timezone('Asia/Shanghai')
+                beijing_time = datetime.now(beijing_tz)
                 return json.dumps({
                     "success": True,
-                    "current_time": datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
+                    "current_time": beijing_time.strftime('%Y-%m-%d %H:%M:%S'),
                     "timezone": "UTC+8"
                 }, ensure_ascii=False)
 
@@ -330,7 +334,7 @@ class LangChainAgentService:
 
         tool_descriptions = {
             "get_current_price": "获取交易对的当前价格",
-            "get_current_utc_time": "获取当前UTC时间",
+            "get_current_utc_time": "获取当前北京时间 (UTC+8)",
             "get_positions": "查询当前持仓信息",
             "place_order": "下单交易（买入或卖出）",
             "cancel_order": "取消订单",
@@ -450,6 +454,7 @@ class LangChainAgentService:
         system_prompt = self._build_system_prompt(plan, tools_config)
 
         # 输出系统消息 - 使用用户要求的 "System:" 格式
+        logger.info(f"PLAN {plan_id} - 发送系统提示词，长度: {len(system_prompt)}")
         yield [{"role": "system", "content": system_prompt}]
 
         # 保存系统消息到数据库
