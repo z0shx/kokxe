@@ -357,25 +357,25 @@ class ScheduleService:
                 plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
                 if not plan:
                     logger.error(f"计划不存在: plan_id={plan_id}")
-                    return
+                    return {'success': False, 'error': '计划不存在'}
 
                 logger.info(f"计划状态检查: plan_id={plan_id}, status={plan.status}, auto_finetune_enabled={plan.auto_finetune_enabled}")
 
                 # 检查计划是否运行中
                 if plan.status != 'running':
                     logger.warning(f"计划未运行，跳过微调: plan_id={plan_id}, status={plan.status}")
-                    return
+                    return {'success': False, 'error': f'计划未运行: {plan.status}'}
 
                 # 再次检查是否启用自动微调
                 if not plan.auto_finetune_enabled:
                     logger.warning(f"计划未启用自动微调，跳过: plan_id={plan_id}")
-                    return
+                    return {'success': False, 'error': '自动微调未启用'}
 
                 # 检查是否有时间表配置
                 schedule_times = plan.auto_finetune_schedule or []
                 if not schedule_times:
                     logger.warning(f"计划未配置微调时间表，跳过: plan_id={plan_id}")
-                    return
+                    return {'success': False, 'error': '未配置微调时间表'}
 
                 logger.info(f"计划配置检查通过: plan_id={plan_id}, schedule_times={schedule_times}")
 
@@ -421,13 +421,56 @@ class ScheduleService:
                 if training_id:
                     logger.info(f"✅ 定时微调已启动: plan_id={plan_id}, training_id={training_id}")
 
-                    # 记录成功结果
+                    # 等待训练完成（这是关键改进：等待训练完全完成）
+                    logger.info(f"等待训练完全完成: plan_id={plan_id}, training_id={training_id}")
+                    max_wait_time = 3600  # 最大等待1小时
+                    wait_interval = 10   # 每10秒检查一次
+                    waited_time = 0
+
+                    while waited_time < max_wait_time:
+                        await asyncio.sleep(wait_interval)
+                        waited_time += wait_interval
+
+                        # 检查训练状态
+                        training_status = TrainingService.get_training_status(training_id)
+                        if training_status:
+                            logger.info(f"训练状态检查: plan_id={plan_id}, training_id={training_id}, status={training_status['status']}, elapsed={waited_time}s")
+
+                            if training_status['status'] in ['completed', 'failed', 'cancelled']:
+                                logger.info(f"✅ 训练已完成: plan_id={plan_id}, training_id={training_id}, final_status={training_status['status']}")
+
+                                # 记录成功结果
+                                if task_execution:
+                                    TaskExecutionService.complete_task_execution(
+                                        task_id=task_execution.id,
+                                        success=training_status['status'] == 'completed',
+                                        output_data={
+                                            'training_id': training_id,
+                                            'final_status': training_status['status'],
+                                            'duration': training_status.get('train_duration', 0)
+                                        }
+                                    )
+
+                                return {
+                                    'success': training_status['status'] == 'completed',
+                                    'training_id': training_id,
+                                    'final_status': training_status['status'],
+                                    'duration': training_status.get('train_duration', 0)
+                                }
+                        else:
+                            logger.warning(f"无法获取训练状态: plan_id={plan_id}, training_id={training_id}")
+
+                    # 超时处理
+                    logger.error(f"训练等待超时: plan_id={plan_id}, training_id={training_id}, waited={waited_time}s")
                     if task_execution:
                         TaskExecutionService.complete_task_execution(
                             task_id=task_execution.id,
-                            success=True,
-                            output_data={'training_id': training_id}
+                            success=False,
+                            error_message='训练等待超时'
                         )
+
+                    return {'success': False, 'error': '训练等待超时', 'training_id': training_id}
+
                 else:
                     logger.error(f"❌ 定时微调启动失败: plan_id={plan_id}")
 
@@ -438,6 +481,8 @@ class ScheduleService:
                             success=False,
                             error_message='训练服务启动失败'
                         )
+
+                    return {'success': False, 'error': '训练服务启动失败'}
 
             except Exception as training_error:
                 logger.error(f"训练服务调用失败: plan_id={plan_id}, error={training_error}")
@@ -452,31 +497,59 @@ class ScheduleService:
                         error_message=f'训练服务异常: {str(training_error)}'
                     )
 
+                return {'success': False, 'error': f'训练服务异常: {str(training_error)}'}
+
         except Exception as e:
             logger.error(f"触发微调失败: plan_id={plan_id}, error={e}")
             import traceback
             traceback.print_exc()
+            return {'success': False, 'error': f'触发微调异常: {str(e)}'}
 
     @classmethod
     def _trigger_finetune_wrapper(cls, plan_id: int):
         """
         包装器方法，用于在APScheduler中调用async函数
+        改进版本：确保异步任务完全完成后再返回
 
         Args:
             plan_id: 计划ID
         """
         try:
+            logger.info(f"触发器包装器开始: plan_id={plan_id}")
+
             # 检查是否已有事件循环
             try:
                 loop = asyncio.get_running_loop()
+                logger.info(f"检测到运行中的事件循环，使用新线程执行: plan_id={plan_id}")
+
                 # 如果有运行中的循环，在新线程中运行
                 import concurrent.futures
+                def run_training_complete():
+                    """确保训练完全完成（包括状态更新）的包装函数"""
+                    try:
+                        logger.info(f"新线程中开始执行训练: plan_id={plan_id}")
+                        result = cls._run_async_in_new_loop(plan_id)
+                        logger.info(f"新线程中训练完成: plan_id={plan_id}, result={result}")
+                        return result
+                    except Exception as e:
+                        logger.error(f"新线程中训练执行失败: plan_id={plan_id}, error={e}")
+                        import traceback
+                        traceback.print_exc()
+                        raise
+
                 with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(cls._run_async_in_new_loop, plan_id)
-                    future.result()
+                    future = executor.submit(run_training_complete)
+                    # 等待训练完全完成，包括状态更新，设置较长的超时时间
+                    logger.info(f"等待训练完全完成: plan_id={plan_id}")
+                    result = future.result(timeout=3600)  # 1小时超时，确保训练有足够时间完成
+                    logger.info(f"✅ 自动训练完全完成: plan_id={plan_id}, result={result}")
+
             except RuntimeError:
                 # 没有运行中的循环，直接运行
-                asyncio.run(cls._trigger_finetune(plan_id))
+                logger.info(f"没有运行中的事件循环，直接执行: plan_id={plan_id}")
+                result = asyncio.run(cls._trigger_finetune(plan_id))
+                logger.info(f"✅ 自动训练完全完成: plan_id={plan_id}, result={result}")
+
         except Exception as e:
             logger.error(f"包装器调用失败: plan_id={plan_id}, error={e}")
             import traceback
@@ -711,9 +784,18 @@ class ScheduleService:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(cls._trigger_finetune(plan_id))
+            logger.info(f"新事件循环开始: plan_id={plan_id}")
+            result = loop.run_until_complete(cls._trigger_finetune(plan_id))
+            logger.info(f"新事件循环完成: plan_id={plan_id}, result={result}")
+            return result
+        except Exception as e:
+            logger.error(f"新事件循环执行失败: plan_id={plan_id}, error={e}")
+            import traceback
+            traceback.print_exc()
+            raise
         finally:
             loop.close()
+            logger.info(f"新事件循环已关闭: plan_id={plan_id}")
 
     @classmethod
     def _run_async_in_new_loop_for_inference(cls, plan_id: int, manual_trigger: bool = False):
