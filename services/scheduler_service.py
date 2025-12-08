@@ -53,9 +53,18 @@ class SchedulerService:
 
     async def _scheduler_loop(self):
         """调度器主循环"""
+        last_cleanup_date = None  # 记录上次清理日期
+
         while self.running:
             try:
                 await self._check_and_execute_scheduled_tasks()
+
+                # 检查是否需要执行模型清理（每天执行一次）
+                current_date = now_beijing().date()
+                if last_cleanup_date != current_date:
+                    await self._daily_model_cleanup()
+                    last_cleanup_date = current_date
+
                 # 每分钟检查一次
                 await asyncio.sleep(60)
             except asyncio.CancelledError:
@@ -518,6 +527,41 @@ class SchedulerService:
         except Exception as e:
             logger.error(f"获取任务历史失败: {e}")
             return []
+
+    async def _daily_model_cleanup(self):
+        """每日模型清理任务"""
+        try:
+            logger.info("开始执行每日模型清理任务")
+
+            from services.model_cleanup_service import cleanup_all_plans_models
+            cleanup_stats = cleanup_all_plans_models(keep_count=7)
+
+            if cleanup_stats:
+                total_models_deleted = sum(stats['models_deleted'] for stats in cleanup_stats.values())
+                total_predictions_deleted = sum(stats['predictions_deleted'] for stats in cleanup_stats.values())
+                total_errors = sum(stats['errors'] for stats in cleanup_stats.values())
+
+                if total_models_deleted > 0 or total_predictions_deleted > 0:
+                    logger.info(f"✅ 每日模型清理完成: 删除 {total_models_deleted} 个旧模型, "
+                              f"清理 {total_predictions_deleted} 条预测数据")
+
+                    # 详细记录每个计划的清理情况
+                    for plan_id, stats in cleanup_stats.items():
+                        if stats['models_deleted'] > 0:
+                            logger.info(f"  计划 {plan_id}: 删除 {stats['models_deleted']} 个模型, "
+                                      f"清理 {stats['predictions_deleted']} 条预测数据")
+                else:
+                    logger.info("ℹ️  每日模型清理完成: 无需删除任何模型")
+
+                if total_errors > 0:
+                    logger.warning(f"⚠️  模型清理过程中发生 {total_errors} 个错误")
+            else:
+                logger.info("ℹ️  无需执行模型清理（没有找到模型）")
+
+        except Exception as e:
+            logger.error(f"❌ 每日模型清理任务失败: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 # 全局调度器实例
