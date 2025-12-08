@@ -264,6 +264,20 @@ class LangChainAgentService:
                     order_id: 订单ID
                 """
                 try:
+                    # 检查订单是否存在于本地数据表
+                    from database.models import TradeOrder
+                    with get_db() as db:
+                        local_order = db.query(TradeOrder).filter(
+                            TradeOrder.plan_id == plan_id,
+                            TradeOrder.order_id == order_id
+                        ).first()
+
+                        if not local_order:
+                            return json.dumps({
+                                "success": False,
+                                "error": f"订单 {order_id} 不存在于本地记录中，只能取消本系统创建的订单"
+                            }, ensure_ascii=False)
+
                     result = plan_trading_tools.cancel_order(inst_id, order_id)
                     return json.dumps({
                         "success": True,
@@ -336,6 +350,20 @@ class LangChainAgentService:
             def amend_order(inst_id: str, order_id: str, new_size: str = None, new_price: str = None) -> str:
                 """修改订单"""
                 try:
+                    # 检查订单是否存在于本地数据表
+                    from database.models import TradeOrder
+                    with get_db() as db:
+                        local_order = db.query(TradeOrder).filter(
+                            TradeOrder.plan_id == plan_id,
+                            TradeOrder.order_id == order_id
+                        ).first()
+
+                        if not local_order:
+                            return json.dumps({
+                                "success": False,
+                                "error": f"订单 {order_id} 不存在于本地记录中，只能修改本系统创建的订单"
+                            }, ensure_ascii=False)
+
                     result = plan_trading_tools.amend_order_with_db_save(
                         inst_id=inst_id,
                         order_id=order_id,
@@ -432,17 +460,28 @@ class LangChainAgentService:
         # 12. 查询预测数据
         if "query_prediction_data" in enabled_tools:
             @tool
-            def query_prediction_data(limit: int = 50) -> str:
-                """查询AI模型预测数据"""
+            def query_prediction_data(limit: int = 50, hours: int = 24) -> str:
+                """查询AI模型预测数据（默认最近24小时）"""
                 try:
                     # 参数验证
                     if not isinstance(limit, int) or limit <= 0 or limit > 500:
                         return json.dumps({"success": False, "error": "limit必须是1-500之间的整数"}, ensure_ascii=False)
+                    if not isinstance(hours, int) or hours <= 0 or hours > 168:  # 最大7天
+                        return json.dumps({"success": False, "error": "hours必须是1-168之间的整数（7天）"}, ensure_ascii=False)
 
                     from database.models import PredictionData
+                    from database.models import now_beijing
+                    from datetime import timedelta
+
                     with get_db() as db:
+                        # 计算时间范围
+                        end_time = now_beijing()
+                        start_time = end_time - timedelta(hours=hours)
+
                         predictions = db.query(PredictionData).filter(
-                            PredictionData.plan_id == plan_id
+                            PredictionData.plan_id == plan_id,
+                            PredictionData.timestamp >= start_time,
+                            PredictionData.timestamp <= end_time
                         ).order_by(PredictionData.timestamp.desc()).limit(limit).all()
 
                         data = []
@@ -459,6 +498,11 @@ class LangChainAgentService:
                         "success": True,
                         "data": data,
                         "count": len(data),
+                        "time_range": {
+                            "start_time": start_time.isoformat(),
+                            "end_time": end_time.isoformat(),
+                            "hours": hours
+                        },
                         "timestamp": now_beijing().isoformat()
                     }, ensure_ascii=False)
                 except Exception as e:
@@ -750,7 +794,10 @@ class LangChainAgentService:
                     tools=tools,
                     verbose=False,
                     handle_parsing_errors=True,
-                    return_intermediate_steps=True
+                    return_intermediate_steps=True,
+                    max_iterations=15,  # 限制最大迭代次数防止无限循环
+                    max_execution_time=300,  # 限制最大执行时间为5分钟
+                    early_stopping_method="generate",  # 超时时生成响应
                 )
 
                 # 流式执行 Agent
@@ -938,14 +985,57 @@ class LangChainAgentService:
         except Exception as e:
             logger.error(f"Agent 执行失败: {e}")
             logger.debug(f"Agent 执行失败详情: {traceback.format_exc()}")
-            yield [{"role": "assistant", "content": f"❌ Agent 执行失败: {str(e)}"}]
 
-            # 保存错误信息
+            # 分析异常类型并提供相应的用户友好消息
+            error_message = str(e)
+            user_message = ""
+
+            if "Agent stopped due to max iterations" in error_message:
+                logger.warning(f"PLAN {plan_id} - Agent 达到最大迭代次数限制")
+                user_message = "⚠️ Agent 达到最大迭代次数限制，可能需要简化请求或分步骤处理。当前操作已停止，请重新提交更简洁的请求。"
+            elif "Agent stopped due to max execution time" in error_message or "timeout" in error_message.lower():
+                logger.warning(f"PLAN {plan_id} - Agent 执行超时")
+                user_message = "⏱️ Agent 执行超时（超过5分钟），可能网络延迟或任务复杂度过高。请稍后重试或简化请求。"
+            elif "Rate limit" in error_message or "rate limit" in error_message.lower():
+                logger.warning(f"PLAN {plan_id} - API 速率限制")
+                user_message = "🚦 API 调用频率超限，请稍后重试。"
+            elif "Connection" in error_message or "network" in error_message.lower():
+                logger.warning(f"PLAN {plan_id} - 网络连接错误")
+                user_message = "🌐 网络连接问题，请检查网络连接后重试。"
+            else:
+                user_message = f"❌ Agent 执行出现异常: {error_message}"
+
+            # 向用户输出错误信息
+            yield [{"role": "assistant", "content": user_message}]
+
+            # 保存详细的错误信息到数据库
             with get_db() as db:
                 await self._save_message(
                     db, conversation.id, "assistant",
-                    f"Agent 执行失败: {str(e)}", "text"
+                    f"Agent 执行失败: {error_message}", "text"
                 )
+
+                # 如果是严重的异常，同时记录到系统日志表
+                if "max iterations" in error_message or "timeout" in error_message.lower():
+                    try:
+                        from database.models import SystemLog
+                        error_log = SystemLog(
+                            level="WARNING",
+                            category="agent_error",
+                            message=f"Agent执行异常 - Plan {plan_id}",
+                            details={
+                                "error_type": "max_iterations_or_timeout",
+                                "error_message": error_message,
+                                "conversation_id": conversation.id,
+                                "plan_id": plan_id,
+                                "llm_model": llm_config.model_name if llm_config else None
+                            }
+                        )
+                        db.add(error_log)
+                        db.commit()
+                        logger.info(f"PLAN {plan_id} - Agent 异常已记录到系统日志")
+                    except Exception as log_error:
+                        logger.error(f"保存系统日志失败: {log_error}")
 
     def _extract_content_from_chunk(self, chunk) -> Optional[str]:
         """从 chunk 中提取内容，支持多种格式"""
@@ -1198,9 +1288,49 @@ class LangChainAgentService:
 
         except Exception as e:
             logger.error(f"自动决策失败: {e}")
-            import traceback
-            traceback.print_exc()
-            yield [{"role": "assistant", "content": f"❌ 自动决策失败: {str(e)}"}]
+            logger.debug(f"自动决策失败详情: {traceback.format_exc()}")
+
+            # 分析异常类型并提供相应的用户友好消息
+            error_message = str(e)
+            user_message = ""
+
+            if "Agent stopped due to max iterations" in error_message:
+                logger.warning(f"PLAN {plan_id} - 自动决策达到最大迭代次数限制")
+                user_message = "⚠️ 自动决策达到最大迭代次数限制，可能需要简化分析请求。"
+            elif "Agent stopped due to max execution time" in error_message or "timeout" in error_message.lower():
+                logger.warning(f"PLAN {plan_id} - 自动决策执行超时")
+                user_message = "⏱️ 自动决策执行超时（超过5分钟），可能网络延迟或分析复杂度过高。"
+            elif "Rate limit" in error_message or "rate limit" in error_message.lower():
+                logger.warning(f"PLAN {plan_id} - API 速率限制")
+                user_message = "🚦 API 调用频率超限，请稍后重试。"
+            elif "Connection" in error_message or "network" in error_message.lower():
+                logger.warning(f"PLAN {plan_id} - 网络连接错误")
+                user_message = "🌐 网络连接问题，请检查网络连接后重试。"
+            else:
+                user_message = f"❌ 自动决策出现异常: {error_message}"
+
+            yield [{"role": "assistant", "content": user_message}]
+
+            # 记录到系统日志
+            try:
+                from database.models import SystemLog
+                with get_db() as db:
+                    error_log = SystemLog(
+                        level="WARNING",
+                        category="agent_auto_decision_error",
+                        message=f"自动决策异常 - Plan {plan_id}",
+                        details={
+                            "error_type": "auto_decision_failure",
+                            "error_message": error_message,
+                            "training_id": training_id,
+                            "plan_id": plan_id
+                        }
+                    )
+                    db.add(error_log)
+                    db.commit()
+                    logger.info(f"PLAN {plan_id} - 自动决策异常已记录到系统日志")
+            except Exception as log_error:
+                logger.error(f"保存自动决策系统日志失败: {log_error}")
 
     async def manual_inference(self, plan_id: int) -> AsyncGenerator[List[Dict[str, str]], None]:
         """
@@ -1247,9 +1377,48 @@ class LangChainAgentService:
 
         except Exception as e:
             logger.error(f"手动推理失败: {e}")
-            import traceback
-            traceback.print_exc()
-            yield [{"role": "assistant", "content": f"❌ 手动推理失败: {str(e)}"}]
+            logger.debug(f"手动推理失败详情: {traceback.format_exc()}")
+
+            # 分析异常类型并提供相应的用户友好消息
+            error_message = str(e)
+            user_message = ""
+
+            if "Agent stopped due to max iterations" in error_message:
+                logger.warning(f"PLAN {plan_id} - 手动推理达到最大迭代次数限制")
+                user_message = "⚠️ 手动推理达到最大迭代次数限制，可能需要简化分析请求。"
+            elif "Agent stopped due to max execution time" in error_message or "timeout" in error_message.lower():
+                logger.warning(f"PLAN {plan_id} - 手动推理执行超时")
+                user_message = "⏱️ 手动推理执行超时（超过5分钟），可能网络延迟或分析复杂度过高。"
+            elif "Rate limit" in error_message or "rate limit" in error_message.lower():
+                logger.warning(f"PLAN {plan_id} - API 速率限制")
+                user_message = "🚦 API 调用频率超限，请稍后重试。"
+            elif "Connection" in error_message or "network" in error_message.lower():
+                logger.warning(f"PLAN {plan_id} - 网络连接错误")
+                user_message = "🌐 网络连接问题，请检查网络连接后重试。"
+            else:
+                user_message = f"❌ 手动推理出现异常: {error_message}"
+
+            yield [{"role": "assistant", "content": user_message}]
+
+            # 记录到系统日志
+            try:
+                from database.models import SystemLog
+                with get_db() as db:
+                    error_log = SystemLog(
+                        level="WARNING",
+                        category="agent_manual_inference_error",
+                        message=f"手动推理异常 - Plan {plan_id}",
+                        details={
+                            "error_type": "manual_inference_failure",
+                            "error_message": error_message,
+                            "plan_id": plan_id
+                        }
+                    )
+                    db.add(error_log)
+                    db.commit()
+                    logger.info(f"PLAN {plan_id} - 手动推理异常已记录到系统日志")
+            except Exception as log_error:
+                logger.error(f"保存手动推理系统日志失败: {log_error}")
 
     async def scheduled_decision(self, plan_id: int, training_id: int) -> AsyncGenerator[List[Dict[str, str]], None]:
         """

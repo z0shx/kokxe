@@ -5,6 +5,7 @@ import asyncio
 import gradio as gr
 from utils.logger import setup_logger
 from ui.custom_chatbot import create_custom_chatbot, process_streaming_messages
+from ui.enhanced_chatbot import enhanced_chatbot
 
 logger = setup_logger(__name__, "plan_detail_chat_ui.log")
 
@@ -14,6 +15,7 @@ class PlanDetailChatUI:
 
     def __init__(self, plan_detail_ui):
         self.plan_detail_ui = plan_detail_ui
+        self.current_session_id = None
 
     def _async_to_sync_stream(self, async_func, initial_history=None, **kwargs):
         """
@@ -202,11 +204,12 @@ class PlanDetailChatUI:
                     max_lines=5
                 )
             with gr.Column(scale=1):
-                with gr.Row():
-                    agent_send_btn = gr.Button("📤 发送", variant="primary", size="sm")
-                    agent_execute_inference_btn = gr.Button("🧠 执行推理", variant="secondary", size="sm")
-                with gr.Row():
-                    agent_clear_btn = gr.Button("🗑️ 清除对话", variant="secondary", size="sm")
+                # 创建按钮组件
+                agent_send_btn = gr.Button("📤 发送", variant="primary", size="sm")
+                agent_cancel_btn = gr.Button("❌ 取消推理", variant="stop", size="sm", interactive=False, visible=False)
+                agent_execute_inference_btn = gr.Button("🧠 执行推理", variant="secondary", size="sm")
+            with gr.Row():
+                agent_clear_btn = gr.Button("🗑️ 清除对话", variant="secondary", size="sm")
 
         # 对话状态显示
         agent_status = gr.Markdown("", visible=False)
@@ -216,25 +219,35 @@ class PlanDetailChatUI:
             'agent_chatbot': agent_chatbot,
             'agent_user_input': agent_user_input,
             'agent_send_btn': agent_send_btn,
+            'agent_cancel_btn': agent_cancel_btn,
             'agent_execute_inference_btn': agent_execute_inference_btn,
             'agent_clear_btn': agent_clear_btn,
             'agent_status': agent_status
         })
 
         # 定义简化的同步事件处理函数
+        def update_button_state_on_input(pid, user_input, history):
+            """输入变化时更新按钮状态"""
+            has_input = bool(user_input and user_input.strip())
+            has_context = bool(history and len(history) > 0)
+            return enhanced_chatbot.update_button_states(False, has_context=has_context, has_input=has_input)
         def agent_send_message_wrapper(pid, user_message, history):
-            """发送消息给AI Agent（流式版本）"""
+            """发送消息给AI Agent（支持取消的流式版本）"""
             # 验证输入
             is_valid, plan_id, clean_message, current_history, error_msg = self._validate_plan_and_message(pid, user_message, history)
             if not is_valid:
-                yield history + [{"role": "assistant", "content": error_msg}], gr.update(value=""), gr.update(visible=True, value=error_msg)
+                yield history + [{"role": "assistant", "content": error_msg}], gr.update(value=""), gr.update(visible=True, value=error_msg), enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
                 return
 
             try:
-                # 使用通用异步流转同步处理
+                # 生成会话ID
+                self.current_session_id = enhanced_chatbot.generate_session_id(str(plan_id), clean_message)
+
+                # 使用带取消功能的异步流转同步处理
                 from services.langchain_agent import agent_service
-                for result in self._async_to_sync_stream(
+                for result in enhanced_chatbot.async_to_sync_stream_with_cancel(
                     agent_service.stream_conversation,
+                    session_id=self.current_session_id,
                     initial_history=current_history,
                     plan_id=plan_id,
                     user_message=clean_message,
@@ -245,7 +258,21 @@ class PlanDetailChatUI:
             except Exception as e:
                 logger.error(f"发送消息失败: {e}")
                 error_message = [{"role": "assistant", "content": f"❌ 发送失败: {str(e)}"}]
-                yield current_history + error_message, gr.update(value=""), gr.update(visible=False, value="")
+                yield current_history + error_message, gr.update(value=""), gr.update(visible=True, value=str(e)), enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(current_history) > 0)
+
+        def agent_cancel_inference_wrapper(pid, history):
+            """取消推理"""
+            if self.current_session_id:
+                success = enhanced_chatbot.cancel_task(self.current_session_id)
+                if success:
+                    logger.info(f"推理已取消: {self.current_session_id}")
+                    # 保留当前对话上下文
+                    return history, gr.update(visible=True, value="推理已取消，保留当前上下文"), enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                else:
+                    logger.warning(f"取消推理失败: {self.current_session_id}")
+                    return history, gr.update(visible=True, value="取消推理失败"), enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+            else:
+                return history, gr.update(visible=True, value="没有正在进行的推理"), enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
 
         def agent_execute_inference_wrapper(pid, history):
             """执行AI Agent推理（重置上下文 - 流式版本）"""
@@ -301,10 +328,13 @@ class PlanDetailChatUI:
         # 保存事件处理函数
         components.update({
             'agent_send_message_wrapper': agent_send_message_wrapper,
+            'agent_cancel_inference_wrapper': agent_cancel_inference_wrapper,
             'agent_execute_inference_wrapper': agent_execute_inference_wrapper,
-            'agent_clear_conversation_wrapper': self.agent_clear_conversation_wrapper
+            'agent_clear_conversation_wrapper': self.agent_clear_conversation_wrapper,
+            'update_button_state_on_input': update_button_state_on_input
         })
 
+        
         return components
 
     async def _collect_all_messages_async(self, plan_id: int, user_message: str):
@@ -352,27 +382,46 @@ class PlanDetailChatUI:
         components['agent_send_btn'].click(
             fn=components['agent_send_message_wrapper'],
             inputs=[plan_id_input, components['agent_user_input'], components['agent_chatbot']],
-            outputs=[components['agent_chatbot'], components['agent_user_input'], components['agent_status']],
+            outputs=[components['agent_chatbot'], components['agent_user_input'], components['agent_status'], components['agent_send_btn'], components['agent_cancel_btn'], components['agent_execute_inference_btn']],
             show_progress=True
+        )
+
+        components['agent_cancel_btn'].click(
+            fn=components['agent_cancel_inference_wrapper'],
+            inputs=[plan_id_input, components['agent_chatbot']],
+            outputs=[components['agent_chatbot'], components['agent_status'], components['agent_send_btn'], components['agent_cancel_btn'], components['agent_execute_inference_btn']]
         )
 
         components['agent_execute_inference_btn'].click(
             fn=components['agent_execute_inference_wrapper'],
             inputs=[plan_id_input, components['agent_chatbot']],
-            outputs=[components['agent_chatbot'], components['agent_status']],
+            outputs=[components['agent_chatbot'], components['agent_status'], components['agent_send_btn'], components['agent_cancel_btn'], components['agent_execute_inference_btn']],
             show_progress=True
         )
 
         components['agent_clear_btn'].click(
             fn=components['agent_clear_conversation_wrapper'],
             inputs=[plan_id_input, components['agent_chatbot']],
-            outputs=[components['agent_chatbot'], components['agent_user_input'], components['agent_status']]
+            outputs=[components['agent_chatbot'], components['agent_user_input'], components['agent_status'], components['agent_send_btn'], components['agent_cancel_btn'], components['agent_execute_inference_btn']]
         )
 
         # 支持回车发送消息
         components['agent_user_input'].submit(
             fn=components['agent_send_message_wrapper'],
             inputs=[plan_id_input, components['agent_user_input'], components['agent_chatbot']],
-            outputs=[components['agent_chatbot'], components['agent_user_input'], components['agent_status']],
+            outputs=[components['agent_chatbot'], components['agent_user_input'], components['agent_status'], components['agent_send_btn'], components['agent_cancel_btn'], components['agent_execute_inference_btn']],
             show_progress=True
+        )
+
+        # 添加输入变化监听，动态更新按钮状态
+        def update_button_state_on_input(pid, user_input, history):
+            """输入变化时更新按钮状态"""
+            has_input = bool(user_input and user_input.strip())
+            has_context = bool(history and len(history) > 0)
+            return enhanced_chatbot.update_button_states(False, has_context=has_context, has_input=has_input)
+
+        components['agent_user_input'].change(
+            fn=update_button_state_on_input,
+            inputs=[plan_id_input, components['agent_user_input'], components['agent_chatbot']],
+            outputs=[components['agent_send_btn'], components['agent_cancel_btn'], components['agent_execute_inference_btn']]
         )
