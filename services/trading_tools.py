@@ -1144,14 +1144,14 @@ class OKXTradingTools:
                 'error': str(e)
             }
 
-    def get_pending_orders(self, inst_id: str = None, state: str = "live", limit: int = 300) -> Dict:
+    def get_pending_orders(self, inst_id: str = None, state: str = "live", limit: int = 100) -> Dict:
         """
         查询当前未成交订单
 
         Args:
             inst_id: 交易对，如 BTC-USDT。不填则返回所有交易对的挂单
             state: 订单状态，'live': 等待成交, 'partially_filled': 部分成交，默认'live'
-            limit: 返回数量限制，默认300
+            limit: 返回数量限制，默认100，最大100（OKX API限制）
 
         Returns:
             未成交订单信息
@@ -1172,7 +1172,8 @@ class OKXTradingTools:
                 params.append(f"state={state}")
 
             if limit:
-                params.append(f"limit={limit}")
+                # OKX API限制，pending orders的limit最大值为100
+                params.append(f"limit={min(limit, 100)}")
 
             if params:
                 request_path += "?" + "&".join(params)

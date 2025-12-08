@@ -279,7 +279,7 @@ class PlanDetailChatUI:
 【最新预测交易数据（最新批次）】
 {prediction_data}
 
-请基于以上数据进行AI交易决策分析。"""
+请基于以上数据进行交易决策。"""
 
                 # 使用通用异步流转同步处理（推理版本，重置历史）
                 from services.langchain_agent import agent_service
