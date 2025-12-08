@@ -1026,7 +1026,7 @@ def create_app():
 
                     # ReAct 配置已移除，使用默认值
                     max_iterations = 3
-                    enable_thinking = True
+                    enable_thinking = False
                     thinking_style = "详细"
 
                     # 获取推理参数配置

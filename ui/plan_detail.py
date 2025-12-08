@@ -3707,7 +3707,7 @@ class PlanDetailUI:
             return f"### 💰 账户信息\n\n❌ 获取失败: {str(e)}"
 
     def get_orders_info(self, plan_id: int) -> pd.DataFrame:
-        """获取订单记录（仅显示Agent操作的订单）"""
+        """获取订单记录（刷新时同步OKX订单状态）"""
         try:
             with get_db() as db:
                 # 从数据库获取仅Agent操作的订单
@@ -3721,9 +3721,51 @@ class PlanDetailUI:
                 if not orders:
                     return pd.DataFrame()
 
-                # 构建DataFrame
+                # 获取计划的交易工具，用于同步订单状态
+                plan_trading_tools = self._get_plan_trading_tools(plan_id)
+
+                # 构建DataFrame，同步订单状态
                 df_data = []
                 for order in orders:
+                    # 对于非最终状态的订单，尝试从OKX同步状态
+                    current_status = order.status
+                    synced = False
+                    sync_info = ""
+
+                    if (order.order_id and
+                        order.status in ['live', 'partially_filled'] and
+                        plan_trading_tools):
+                        try:
+                            # 查询OKX订单详情
+                            order_result = plan_trading_tools.get_order(
+                                inst_id=order.inst_id,
+                                order_id=order.order_id
+                            )
+
+                            if order_result.get('success') and order_result.get('order'):
+                                okx_order = order_result['order']
+                                okx_status = okx_order.get('state', order.status)
+                                okx_filled_size = float(okx_order.get('fillSz', '0'))
+
+                                # 如果状态有变化，更新数据库
+                                if okx_status != order.status or okx_filled_size != float(order.filled_size):
+                                    order.status = okx_status
+                                    order.filled_size = okx_filled_size
+                                    order.updated_at = now_beijing()
+                                    db.commit()
+                                    logger.info(f"同步订单状态: {order.order_id} {order.status} -> {okx_status}")
+                                    sync_info = "状态已更新"
+                                else:
+                                    sync_info = "状态已确认"
+
+                                current_status = okx_status
+                                synced = True
+                            else:
+                                sync_info = "查询失败"
+                        except Exception as sync_error:
+                            logger.error(f"同步订单状态失败: {order.order_id}, {sync_error}")
+                            sync_info = "同步失败"
+
                     side_emoji = '🟢' if order.side == 'buy' else '🔴'
                     state_map = {
                         'live': '⏳ 未成交',
@@ -3733,7 +3775,7 @@ class PlanDetailUI:
                         'mmp_canceled': '❌ MMP取消',
                         'failed': '❌ 失败'
                     }
-                    state_emoji = state_map.get(order.status, f"❓ {order.status}")
+                    state_emoji = state_map.get(current_status, f"❓ {current_status}")
 
                     # 转换时间戳
                     create_time = format_datetime_beijing(order.created_at, '%m-%d %H:%M:%S')
@@ -3749,7 +3791,8 @@ class PlanDetailUI:
                         '已成交': f"{float(order.filled_size):.4f}",
                         '状态': state_emoji,
                         '创建时间': create_time,
-                        '更新时间': update_time
+                        '更新时间': update_time,
+                        '同步状态': f'🔄 {sync_info}' if synced else '📋 数据库'
                     })
 
                 return safe_dataframe_from_data(df_data)
@@ -3759,6 +3802,51 @@ class PlanDetailUI:
             import traceback
             traceback.print_exc()
             return pd.DataFrame()
+
+    def _get_plan_trading_tools(self, plan_id: int):
+        """获取计划的交易工具"""
+        try:
+            from services.trading_tools import OKXTradingTools
+            with get_db() as db:
+                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                if not plan:
+                    return None
+
+                # 获取API配置
+                api_config = self._get_plan_api_config(plan)
+                if not api_config:
+                    return None
+
+                # 创建交易工具实例
+                trading_tools = OKXTradingTools(
+                    api_key=api_config['api_key'],
+                    secret_key=api_config['secret_key'],
+                    passphrase=api_config['passphrase'],
+                    is_demo=api_config['is_demo']
+                )
+
+                return trading_tools
+
+        except Exception as e:
+            logger.error(f"获取计划交易工具失败: {e}")
+            return None
+
+    def _get_plan_api_config(self, plan) -> Dict:
+        """获取计划的API配置"""
+        try:
+            # API配置直接存储在TradingPlan表中
+            if not plan.okx_api_key or not plan.okx_secret_key or not plan.okx_passphrase:
+                return None
+
+            return {
+                'api_key': plan.okx_api_key,
+                'secret_key': plan.okx_secret_key,
+                'passphrase': plan.okx_passphrase,
+                'is_demo': plan.is_demo
+            }
+        except Exception as e:
+            logger.error(f"获取API配置失败: {e}")
+            return None
 
     def clear_agent_records(self, plan_id: int) -> str:
         """清除AI Agent对话记录"""

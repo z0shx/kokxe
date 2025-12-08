@@ -294,6 +294,223 @@ class LangChainAgentService:
 
             available_tools["get_trading_limits"] = get_trading_limits
 
+        # 7. 查询账户余额
+        if "get_account_balance" in enabled_tools:
+            @tool
+            def get_account_balance(ccy: str = None) -> str:
+                """查询账户余额"""
+                try:
+                    balance = plan_trading_tools.get_account_balance(ccy)
+                    return json.dumps({
+                        "success": True,
+                        "balance": balance,
+                        "timestamp": now_beijing().isoformat()
+                    }, ensure_ascii=False)
+                except Exception as e:
+                    logger.error(f"查询账户余额失败: {e}")
+                    return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+            available_tools["get_account_balance"] = get_account_balance
+
+        # 8. 查询待成交订单
+        if "get_pending_orders" in enabled_tools:
+            @tool
+            def get_pending_orders(inst_id: str = None, state: str = "live") -> str:
+                """查询待成交订单"""
+                try:
+                    orders = plan_trading_tools.get_pending_orders(inst_id, state)
+                    return json.dumps({
+                        "success": True,
+                        "orders": orders,
+                        "timestamp": now_beijing().isoformat()
+                    }, ensure_ascii=False)
+                except Exception as e:
+                    logger.error(f"查询待成交订单失败: {e}")
+                    return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+            available_tools["get_pending_orders"] = get_pending_orders
+
+        # 9. 修改订单
+        if "amend_order" in enabled_tools:
+            @tool
+            def amend_order(inst_id: str, order_id: str, new_size: str = None, new_price: str = None) -> str:
+                """修改订单"""
+                try:
+                    result = plan_trading_tools.amend_order_with_db_save(
+                        inst_id=inst_id,
+                        order_id=order_id,
+                        new_size=new_size,
+                        new_price=new_price
+                    )
+                    return json.dumps({
+                        "success": True,
+                        "result": result,
+                        "timestamp": now_beijing().isoformat()
+                    }, ensure_ascii=False)
+                except Exception as e:
+                    logger.error(f"修改订单失败: {e}")
+                    return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+            available_tools["amend_order"] = amend_order
+
+        # 10. 查询历史K线数据
+        if "query_historical_kline_data" in enabled_tools:
+            @tool
+            def query_historical_kline_data(
+                inst_id: str,
+                interval: str = '1H',
+                start_time: str = None,
+                end_time: str = None,
+                limit: int = 100
+            ) -> str:
+                """查询历史K线数据
+
+                Args:
+                    inst_id: 交易对标识符，如 'ETH-USDT'
+                    interval: K线周期，支持 '1m', '5m', '15m', '30m', '1H', '2H', '4H', '6H', '12H', '1D', '1W', '1M', '3M', '6M', '1Y'
+                    start_time: 开始时间，ISO格式字符串，如 '2024-01-01T00:00:00Z'
+                    end_time: 结束时间，ISO格式字符串，如 '2024-12-31T23:59:59Z'
+                    limit: 返回数据条数，默认100，最大1000
+                """
+                try:
+                    # 参数验证
+                    if not inst_id or not isinstance(inst_id, str):
+                        return json.dumps({"success": False, "error": "inst_id必须是非空字符串"}, ensure_ascii=False)
+
+                    valid_intervals = ['1m', '5m', '15m', '30m', '1H', '2H', '4H', '6H', '12H', '1D', '1W', '1M', '3M', '6M', '1Y']
+                    if interval not in valid_intervals:
+                        return json.dumps({"success": False, "error": f"interval必须是以下值之一: {valid_intervals}"}, ensure_ascii=False)
+
+                    if limit and (not isinstance(limit, int) or limit <= 0 or limit > 1000):
+                        return json.dumps({"success": False, "error": "limit必须是1-1000之间的整数"}, ensure_ascii=False)
+
+                    from services.trading_tools import OKXTradingTools
+                    kline_data = plan_trading_tools.query_historical_kline_data(
+                        inst_id=inst_id,
+                        interval=interval,
+                        start_time=start_time,
+                        end_time=end_time,
+                        limit=limit
+                    )
+                    return json.dumps({
+                        "success": True,
+                        "data": kline_data,
+                        "timestamp": now_beijing().isoformat()
+                    }, ensure_ascii=False)
+                except Exception as e:
+                    logger.error(f"查询历史K线数据失败: {e}")
+                    return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+            available_tools["query_historical_kline_data"] = query_historical_kline_data
+
+        # 11. 执行模型推理
+        if "run_latest_model_inference" in enabled_tools:
+            @tool
+            def run_latest_model_inference() -> str:
+                """执行最新的AI模型推理"""
+                try:
+                    from services.inference_service import InferenceService
+                    inference_service = InferenceService()
+                    # 使用同步方法避免异步调用问题
+                    result = inference_service.run_inference_async(plan_id)
+                    import asyncio
+                    # 如果返回的是协程，需要等待
+                    if asyncio.iscoroutine(result):
+                        result = asyncio.run(result)
+                    return json.dumps({
+                        "success": True,
+                        "message": "模型推理已启动",
+                        "result": str(result),
+                        "timestamp": now_beijing().isoformat()
+                    }, ensure_ascii=False)
+                except Exception as e:
+                    logger.error(f"执行模型推理失败: {e}")
+                    return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+            available_tools["run_latest_model_inference"] = run_latest_model_inference
+
+        # 12. 查询预测数据
+        if "query_prediction_data" in enabled_tools:
+            @tool
+            def query_prediction_data(limit: int = 50) -> str:
+                """查询AI模型预测数据"""
+                try:
+                    # 参数验证
+                    if not isinstance(limit, int) or limit <= 0 or limit > 500:
+                        return json.dumps({"success": False, "error": "limit必须是1-500之间的整数"}, ensure_ascii=False)
+
+                    from database.models import PredictionData
+                    with get_db() as db:
+                        predictions = db.query(PredictionData).filter(
+                            PredictionData.plan_id == plan_id
+                        ).order_by(PredictionData.timestamp.desc()).limit(limit).all()
+
+                        data = []
+                        for pred in predictions:
+                            data.append({
+                                "timestamp": pred.timestamp.isoformat(),
+                                "close": pred.close,
+                                "close_min": pred.close_min,
+                                "close_max": pred.close_max,
+                                "upward_probability": pred.upward_probability
+                            })
+
+                    return json.dumps({
+                        "success": True,
+                        "data": data,
+                        "count": len(data),
+                        "timestamp": now_beijing().isoformat()
+                    }, ensure_ascii=False)
+                except Exception as e:
+                    logger.error(f"查询预测数据失败: {e}")
+                    return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+            available_tools["query_prediction_data"] = query_prediction_data
+
+        # 13. 获取预测历史
+        if "get_prediction_history" in enabled_tools:
+            @tool
+            def get_prediction_history(limit: int = 20) -> str:
+                """获取历史预测记录"""
+                try:
+                    # 参数验证
+                    if not isinstance(limit, int) or limit <= 0 or limit > 100:
+                        return json.dumps({"success": False, "error": "limit必须是1-100之间的整数"}, ensure_ascii=False)
+
+                    from database.models import TrainingRecord, PredictionData
+                    with get_db() as db:
+                        records = db.query(TrainingRecord).filter(
+                            TrainingRecord.plan_id == plan_id,
+                            TrainingRecord.status == 'completed'
+                        ).order_by(TrainingRecord.created_at.desc()).limit(limit).all()
+
+                        data = []
+                        for record in records:
+                            # 获取该训练记录的预测数据数量
+                            pred_count = db.query(PredictionData).filter(
+                                PredictionData.training_record_id == record.id
+                            ).count()
+
+                            data.append({
+                                "training_id": record.id,
+                                "model_version": record.version,
+                                "created_at": record.created_at.isoformat(),
+                                "prediction_count": pred_count,
+                                "status": record.status
+                            })
+
+                    return json.dumps({
+                        "success": True,
+                        "data": data,
+                        "count": len(data),
+                        "timestamp": now_beijing().isoformat()
+                    }, ensure_ascii=False)
+                except Exception as e:
+                    logger.error(f"获取预测历史失败: {e}")
+                    return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+            available_tools["get_prediction_history"] = get_prediction_history
+
         return list(available_tools.values())
 
     def _detect_qwen_thinking(self, content: str, llm_config: LLMConfig = None) -> bool:
@@ -338,7 +555,15 @@ class LangChainAgentService:
             "get_positions": "查询当前持仓信息",
             "place_order": "下单交易（买入或卖出）",
             "cancel_order": "取消订单",
-            "get_trading_limits": "查询交易限制"
+            "get_trading_limits": "查询交易限制",
+            "amend_order": "修改订单（调整价格或数量）",
+            "query_historical_kline_data": "查询历史K线数据（支持多种时间周期和自定义时间范围）",
+            "get_pending_orders": "查询待成交订单列表",
+            "get_account_balance": "查询账户余额信息",
+            "query_prediction_data": "查询AI模型预测数据",
+            "get_prediction_history": "获取历史预测记录",
+            "run_latest_model_inference": "执行最新的AI模型推理",
+            "query_historical_kline_data": "查询历史K线数据"
         }
 
         for tool_name in enabled_tools:
@@ -369,7 +594,7 @@ class LangChainAgentService:
 - 初始本金: {plan.initial_capital} USDT
 {limits_desc}
 
-请根据当前市场情况、交易计划和技术分析，为用户提供专业的交易建议。如果需要执行交易操作，请使用相应的工具。所有交易操作都会在模拟环境中进行。"""
+请根据以上要求，并使用相应的工具来完成交易决策操作。"""
 
         return system_prompt
 
@@ -437,6 +662,7 @@ class LangChainAgentService:
                     AgentConversation.conversation_type == conversation_type
                 ).first()
 
+            # 如果没有现有对话，创建新对话
             if not conversation:
                 conversation = AgentConversation(
                     plan_id=plan_id,
@@ -449,26 +675,39 @@ class LangChainAgentService:
                 db.commit()
                 db.refresh(conversation)
 
+        # 检查是否为新创建的对话
+        is_new_conversation = (conversation.created_at == conversation.last_message_at)
+
         # 构建系统提示词
         tools_config = plan.agent_tools_config or {}
         system_prompt = self._build_system_prompt(plan, tools_config)
 
-        # 输出系统消息 - 使用用户要求的 "System:" 格式
-        logger.info(f"PLAN {plan_id} - 发送系统提示词，长度: {len(system_prompt)}")
-        yield [{"role": "system", "content": system_prompt}]
+        # 如果是新对话，输出系统提示词
+        if is_new_conversation:
+            # 输出系统消息 - 使用用户要求的 "System:" 格式
+            yield [{"role": "system", "content": system_prompt}]
 
-        # 保存系统消息到数据库
-        with get_db() as db:
-            await self._save_message(
-                db, conversation.id, "system", system_prompt, "text"
-            )
+            # 保存系统消息到数据库
+            try:
+                with get_db() as db:
+                    await self._save_message(
+                        db, conversation.id, "system", system_prompt, "text"
+                    )
+            except Exception as e:
+                logger.error(f"保存系统消息失败: {e}")
+        else:
+            # 加载历史消息
+            yield await self._load_conversation_history(conversation.id)
 
         # 输出用户消息
         yield [{"role": "user", "content": user_message}]
-        with get_db() as db:
-            await self._save_message(
-                db, conversation.id, "user", user_message, "text"
-            )
+        try:
+            with get_db() as db:
+                await self._save_message(
+                    db, conversation.id, "user", user_message, "text"
+                )
+        except Exception as e:
+            logger.error(f"保存用户消息失败: {e}")
 
         try:
             # 获取 LLM 和工具
@@ -772,9 +1011,66 @@ class LangChainAgentService:
                 created_at=now_beijing()
             )
             db.add(message)
+
+            # 更新对话的最后消息时间
+            conversation = db.query(AgentConversation).filter(AgentConversation.id == conversation_id).first()
+            if conversation:
+                conversation.last_message_at = now_beijing()
+
             db.commit()
+            logger.debug(f"成功保存消息: role={role}, conversation_id={conversation_id}")
         except Exception as e:
-            logger.error(f"保存消息失败: {e}")
+            logger.error(f"保存消息失败: conversation_id={conversation_id}, role={role}, error={e}")
+            # 不重新抛出异常，避免中断agent执行
+
+    async def _load_conversation_history(self, conversation_id: int) -> List[Dict[str, str]]:
+        """加载对话历史消息"""
+        try:
+            from database.models import AgentMessage
+            with get_db() as db:
+                messages = db.query(AgentMessage).filter(
+                    AgentMessage.conversation_id == conversation_id
+                ).order_by(AgentMessage.created_at.asc()).all()
+
+                # 转换为流式消息格式
+                history_messages = []
+                for message in messages:
+                    role = message.role
+                    content = message.content
+
+                    # 根据消息类型转换格式
+                    if message.message_type == "thinking":
+                        formatted_content = f"💭 **思考过程**:\\n{content}"
+                        history_messages.append({"role": "assistant", "content": formatted_content})
+                    elif message.message_type in ["tool_call", "tool_result"]:
+                        # 工具消息 - 构造JSON格式
+                        tool_data = {
+                            "tool_name": message.tool_name or "",
+                            "arguments": message.tool_arguments or {},
+                            "result": message.tool_result or {},
+                            "status": "success" if message.message_type == "tool_result" else "calling",
+                            "tool_call_id": message.tool_call_id or ""
+                        }
+                        tool_content = json.dumps(tool_data, ensure_ascii=False)
+
+                        if message.message_type == "tool_call":
+                            formatted_content = f"🔧 **工具调用**: `{tool_data['tool_name']}`\\n\\n参数: {json.dumps(tool_data.get('arguments', {}), indent=2, ensure_ascii=False)}"
+                        else:
+                            formatted_content = f"✅ **工具完成**: `{tool_data['tool_name']}`\\n\\n结果: {json.dumps(tool_data.get('result', {}), indent=2, ensure_ascii=False)}"
+
+                        history_messages.append({"role": "assistant", "content": formatted_content})
+                    elif message.message_type == "play_result":
+                        # 投资结果
+                        history_messages.append({"role": "assistant", "content": content})
+                    else:
+                        # 普通消息
+                        history_messages.append({"role": role, "content": content})
+
+                return history_messages
+
+        except Exception as e:
+            logger.error(f"加载对话历史失败: {e}")
+            return []
 
     async def test_connection(self, plan_id: int) -> bool:
         """测试连接"""

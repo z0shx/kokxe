@@ -415,7 +415,6 @@ def process_streaming_messages(messages: List[List[Dict[str, Any]]]) -> List[Dic
                 # 系统提示词 - 转换为assistant角色以便在Gradio中显示
                 formatted_content = f"💻 **系统提示词**:\n{content}"
                 chatbot_messages.append({"role": "assistant", "content": formatted_content})
-                print(f"🔍 处理系统消息: {len(content)} 字符")  # 调试日志
 
             elif role == "user":
                 # 用户消息 - 直接显示
