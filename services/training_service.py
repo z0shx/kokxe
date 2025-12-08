@@ -46,8 +46,29 @@ def _convert_numpy_to_python(obj):
         return {key: _convert_numpy_to_python(value) for key, value in obj.items()}
     elif isinstance(obj, (list, tuple)):
         return [_convert_numpy_to_python(item) for item in obj]
-    else:
-        return obj
+
+
+def _safe_datetime_difference(end_time, start_time):
+    """安全计算datetime差值，处理时区问题"""
+    try:
+        if start_time is None:
+            return 0
+
+        # 确保两个datetime都是时区感知的
+        if start_time.tzinfo is None:
+            start_time = BEIJING_TZ.localize(start_time)
+        else:
+            start_time = start_time.astimezone(BEIJING_TZ)
+
+        if end_time.tzinfo is None:
+            end_time = BEIJING_TZ.localize(end_time)
+        else:
+            end_time = end_time.astimezone(BEIJING_TZ)
+
+        return int((end_time - start_time).total_seconds())
+    except Exception as e:
+        logger.warning(f"DateTime计算错误: {e}")
+        return 0
 
 
 class TrainingService:
@@ -183,12 +204,30 @@ class TrainingService:
                     logger.error(f"训练数据不足: plan_id={plan_id}, count={data_count}")
                     return None
 
+                # 确保训练记录使用一致格式的参数
+                train_params = plan.finetune_params or {}
+
+                # 标准化参数格式为扁平结构（便于存储和查询）
+                flat_train_params = {}
+
+                # 从嵌套结构中提取参数
+                if 'data' in train_params:
+                    flat_train_params.update({
+                        'lookback_window': train_params['data'].get('lookback_window', 512),
+                        'predict_window': train_params['data'].get('predict_window', 48)
+                    })
+
+                # 提取其他顶层参数
+                for key, value in train_params.items():
+                    if key not in ['data', 'inference']:  # 跳过嵌套结构
+                        flat_train_params[key] = value
+
                 # 创建训练记录
                 training_record = TrainingRecord(
                     plan_id=plan_id,
                     version=new_version,
                     status='waiting',
-                    train_params=plan.finetune_params,
+                    train_params=flat_train_params,
                     data_start_time=data_start_time,
                     data_end_time=data_end_time,
                     data_count=data_count
@@ -275,10 +314,8 @@ class TrainingService:
                         old_status = record.status
                         record.status = 'completed' if result['success'] else 'failed'
                         record.train_end_time = train_end_time
-                        if record.train_start_time:
-                            record.train_duration = int((train_end_time - record.train_start_time).total_seconds())
-                        else:
-                            record.train_duration = 0
+                        record.train_duration = _safe_datetime_difference(train_end_time, record.train_start_time)
+                        if record.train_start_time is None:
                             logger.warning(f"训练开始时间为空，设置持续时间为0: training_id={training_id}")
 
                         record.train_metrics = _convert_numpy_to_python(result.get('metrics', {}))
@@ -307,6 +344,35 @@ class TrainingService:
                                 })
                                 db.commit()
                                 logger.info(f"✅ 计划信息更新成功: plan_id={plan_id}, 更新行数={update_result}")
+
+                                # 训练成功后，使用线程执行模型清理（保留最近7个模型）
+                                # 使用线程避免阻塞主要的状态更新流程
+                                try:
+                                    import threading
+                                    from services.model_cleanup_service import cleanup_old_models
+
+                                    def cleanup_worker():
+                                        try:
+                                            cleanup_stats = cleanup_old_models(plan_id, keep_count=7)
+                                            if cleanup_stats.get('models_deleted', 0) > 0:
+                                                logger.info(f"✅ 模型清理完成: plan_id={plan_id}, "
+                                                          f"删除 {cleanup_stats['models_deleted']} 个旧模型, "
+                                                          f"清理 {cleanup_stats['predictions_deleted']} 条预测数据")
+                                            else:
+                                                logger.info(f"ℹ️  模型清理完成: plan_id={plan_id}, "
+                                                          f"保留 {cleanup_stats.get('kept_models', 0)} 个模型，无需删除")
+                                        except Exception as cleanup_error:
+                                            logger.error(f"❌ 线程模型清理失败: plan_id={plan_id}, error={cleanup_error}")
+
+                                    # 启动清理线程，不等待完成
+                                    cleanup_thread = threading.Thread(target=cleanup_worker, daemon=True)
+                                    cleanup_thread.start()
+                                    logger.info(f"🔄 已启动模型清理线程: plan_id={plan_id}")
+
+                                except Exception as cleanup_setup_error:
+                                    logger.error(f"❌ 启动模型清理线程失败: plan_id={plan_id}, error={cleanup_setup_error}")
+                                    # 不影响主要流程，继续执行
+
                             except Exception as plan_error:
                                 logger.error(f"❌ 更新计划信息失败: {plan_error}")
                                 db.rollback()
@@ -328,9 +394,7 @@ class TrainingService:
 
                                 if record:
                                     train_end_time = now_beijing()
-                                    duration = 0
-                                    if record.train_start_time:
-                                        duration = int((train_end_time - record.train_start_time).total_seconds())
+                                    duration = _safe_datetime_difference(train_end_time, record.train_start_time)
 
                                     # 根据训练结果更新状态，但确保时长被正确记录
                                     if result['success']:
@@ -401,9 +465,7 @@ class TrainingService:
 
                     if record:
                         train_end_time = now_beijing()
-                        train_duration = 0
-                        if record.train_start_time:
-                            train_duration = int((train_end_time - record.train_start_time).total_seconds())
+                        train_duration = _safe_datetime_difference(train_end_time, record.train_start_time)
 
                         record.status = 'failed'
                         record.train_end_time = train_end_time
@@ -452,6 +514,41 @@ class TrainingService:
                 if not plan or not training_record:
                     return {'success': False, 'error': '计划或训练记录不存在'}
 
+            # 确保参数格式兼容性
+            finetune_params = plan.finetune_params or {}
+
+            # 处理参数格式，确保嵌套结构正确
+            if 'data' not in finetune_params:
+                finetune_params['data'] = {}
+            if 'inference' not in finetune_params:
+                finetune_params['inference'] = {}
+
+            # 处理扁平结构参数（兼容性）
+            # 如果参数在顶层，确保嵌套结构中也存在这些参数
+            if 'lookback_window' in finetune_params:
+                # 确保嵌套结构中的参数优先级最高
+                if 'lookback_window' not in finetune_params['data']:
+                    finetune_params['data']['lookback_window'] = finetune_params['lookback_window']
+            if 'predict_window' in finetune_params:
+                if 'predict_window' not in finetune_params['data']:
+                    finetune_params['data']['predict_window'] = finetune_params['predict_window']
+
+            # 确保必要的默认值存在（如果都没有设置的话）
+            if 'lookback_window' not in finetune_params['data']:
+                finetune_params['data']['lookback_window'] = 400  # 使用更合理的默认值
+            if 'predict_window' not in finetune_params['data']:
+                finetune_params['data']['predict_window'] = 18   # 使用更合理的默认值
+
+            # 确保推理参数的默认值
+            if 'temperature' not in finetune_params['inference']:
+                finetune_params['inference']['temperature'] = 1.0
+            if 'top_p' not in finetune_params['inference']:
+                finetune_params['inference']['top_p'] = 0.9
+            if 'sample_count' not in finetune_params['inference']:
+                finetune_params['inference']['sample_count'] = 30
+            if 'data_offset' not in finetune_params['inference']:
+                finetune_params['inference']['data_offset'] = 0
+
             # 构建训练配置
             training_config = {
                 'plan_id': plan_id,
@@ -459,7 +556,7 @@ class TrainingService:
                 'interval': plan.interval,
                 'data_start_time': training_record.data_start_time,
                 'data_end_time': training_record.data_end_time,
-                'finetune_params': plan.finetune_params,
+                'finetune_params': finetune_params,
                 'save_path': str(Path(f"./models/plan_{plan_id}/v{training_record.version}"))
             }
 

@@ -1,7 +1,7 @@
 """
 通用工具函数
 """
-from typing import Optional, Union, Any, Tuple
+from typing import Optional, Union, Any, Tuple, Dict
 from database.models import now_beijing
 
 
@@ -175,3 +175,30 @@ def safe_json_dumps(obj: Any, default: str = "{}") -> str:
         return json.dumps(obj, ensure_ascii=False)
     except (TypeError, ValueError):
         return default
+
+
+def extract_finetune_param(params: Dict[str, Any], param_name: str, default: Any = None) -> Any:
+    """
+    从微调参数中提取参数值，支持新旧格式兼容
+
+    Args:
+        params: 微调参数字典
+        param_name: 参数名称
+        default: 默认值
+
+    Returns:
+        参数值或默认值
+    """
+    if not isinstance(params, dict):
+        return default
+
+    # 优先尝试新格式：params['data'][param_name]
+    data_section = params.get('data', {})
+    if isinstance(data_section, dict) and param_name in data_section:
+        return data_section[param_name]
+
+    # 回退到旧格式：params[param_name]
+    if param_name in params:
+        return params[param_name]
+
+    return default

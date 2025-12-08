@@ -82,6 +82,22 @@ class ScheduleService:
 
             logger.info("调度器已初始化，时区: Asia/Shanghai")
 
+            # 添加每日模型清理任务 (北京时间凌晨2点执行)
+            try:
+                from apscheduler.triggers.cron import CronTrigger
+                cleanup_trigger = CronTrigger(hour=2, minute=0, timezone='Asia/Shanghai')
+                _scheduler.add_job(
+                    func=cls._daily_model_cleanup_wrapper,
+                    trigger=cleanup_trigger,
+                    id='daily_model_cleanup',
+                    name='Daily Model Cleanup',
+                    replace_existing=True,
+                    misfire_grace_time=3600  # 允许1小时延迟
+                )
+                logger.info("✅ 已添加每日模型清理任务 (02:00 Beijing)")
+            except Exception as e:
+                logger.error(f"❌ 添加每日模型清理任务失败: {e}")
+
         if not _scheduler_started:
             _scheduler.start()
             _scheduler_started = True
@@ -973,3 +989,27 @@ class ScheduleService:
             logger.error(f"调度器测试失败: {e}")
             import traceback
             traceback.print_exc()
+
+    @classmethod
+    def _daily_model_cleanup_wrapper(cls):
+        """每日模型清理包装器"""
+        import concurrent.futures
+        try:
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(cls._daily_model_cleanup)
+                future.result(timeout=300)  # 5分钟超时
+        except Exception as e:
+            logger.error(f"每日模型清理包装器执行失败: {e}")
+
+    @classmethod
+    def _daily_model_cleanup(cls):
+        """执行每日模型清理"""
+        try:
+            from services.model_cleanup_service import cleanup_all_plans_models
+            logger.info("🕰️ 开始每日模型清理")
+            cleanup_stats = cleanup_all_plans_models(keep_count=7)
+            total_deleted = sum(stats['models_deleted'] for stats in cleanup_stats.values())
+            logger.info(f"✅ 每日模型清理完成: 删除{total_deleted}个模型")
+            return cleanup_stats
+        except Exception as e:
+            logger.error(f"❌ 每日模型清理失败: {e}")

@@ -20,7 +20,7 @@ from ui.plan_create import create_plan_ui
 from ui.plan_list import create_plan_list_ui
 from ui.config_center import create_config_center_ui
 from utils.logger import setup_logger
-from utils.common import safe_plan_id, validate_plan_exists
+from utils.common import safe_plan_id, validate_plan_exists, extract_finetune_param
 from services.langchain_agent import agent_service
 
 logger = setup_logger(__name__, "app.log")
@@ -1103,12 +1103,12 @@ def create_app():
                         "",  # schedule_operation_result
                         inference_schedule_text,  # inference_schedule_display
                         "",  # inference_schedule_operation_result
-                        safe_int(params.get('lookback_window'), 512),
-                        safe_int(params.get('predict_window'), 48),
-                        safe_int(params.get('batch_size'), 16),
-                        safe_int(params.get('tokenizer_epochs'), 25),
-                        safe_int(params.get('predictor_epochs'), 50),
-                        safe_float(params.get('learning_rate'), 1e-4),
+                        safe_int(extract_finetune_param(params, 'lookback_window'), 400),
+                        safe_int(extract_finetune_param(params, 'predict_window'), 18),
+                        safe_int(extract_finetune_param(params, 'batch_size'), 16),
+                        safe_int(extract_finetune_param(params, 'tokenizer_epochs'), 5),
+                        safe_int(extract_finetune_param(params, 'predictor_epochs'), 10),
+                        safe_float(extract_finetune_param(params, 'learning_rate'), 1e-4),
                         "",  # params_status
                         range_info,  # train_data_range_info
                         start_date,  # train_start_date
@@ -1157,14 +1157,42 @@ def create_app():
                 def save_params(plan_id, lw, pw, bs, te, pe, lr):
                     if not plan_id:
                         return "❌ 请先选择计划"
+
+                    # 构建嵌套格式的参数
                     params = {
-                        'lookback_window': int(lw) if lw else 512,
-                        'predict_window': int(pw) if pw else 48,
-                        'batch_size': int(bs) if bs else 16,
-                        'tokenizer_epochs': int(te) if te else 25,
-                        'predictor_epochs': int(pe) if pe else 50,
-                        'learning_rate': float(lr) if lr else 1e-4
+                        'data': {
+                            'lookback_window': int(lw) if lw else 400,
+                            'predict_window': int(pw) if pw else 18
+                        },
+                        'batch_size': int(bs) if bs else 32,
+                        'tokenizer_epochs': int(te) if te else 5,
+                        'predictor_epochs': int(pe) if pe else 10,
+                        'learning_rate': float(lr) if lr else 0.0001
                     }
+
+                    # 获取现有配置以保留其他字段（如inference配置）
+                    try:
+                        from database.db import get_db
+                        from database.models import TradingPlan
+                        import json
+
+                        with get_db() as db:
+                            plan = db.query(TradingPlan).filter(TradingPlan.id == int(plan_id)).first()
+                            if plan and plan.finetune_params:
+                                if isinstance(plan.finetune_params, str):
+                                    existing_params = json.loads(plan.finetune_params)
+                                else:
+                                    existing_params = plan.finetune_params
+
+                                # 保留inference配置和其他字段
+                                if 'inference' in existing_params:
+                                    params['inference'] = existing_params['inference']
+                                if 'auto_finetune_schedule' in existing_params:
+                                    params['auto_finetune_schedule'] = existing_params['auto_finetune_schedule']
+                    except Exception as e:
+                        logger.error(f"获取现有配置失败: {e}")
+                        # 继续执行，不阻止保存
+
                     return detail_ui.save_finetune_params(int(plan_id), params)
 
                 # 自动化配置保存函数
