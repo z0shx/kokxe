@@ -181,10 +181,96 @@ class PlanDetailChatUI:
 
         return "\n".join(csv_lines)
 
+    def _format_prediction_with_monte_carlo_stats(self, predictions) -> str:
+        """
+        格式化预测数据为CSV格式，保持精确时间戳并显示所有蒙特卡罗路径信息
+
+        Args:
+            predictions: 预测数据列表
+
+        Returns:
+            str: 包含精确时间戳的详细预测数据文本
+        """
+        if not predictions:
+            return "无预测数据可用"
+
+        # 生成输出文本
+        output_lines = []
+        output_lines.append("【蒙特卡罗路径预测数据（保持精确时间）】")
+        output_lines.append(f"总预测数据点: {len(predictions)}")
+        output_lines.append("")
+
+        # 按时间戳排序，保持时间顺序
+        predictions_sorted = sorted(predictions, key=lambda x: x.timestamp)
+
+        # 添加所有预测数据（保持精确时间戳）
+        output_lines.append("timestamp,path_id,open,high,low,close,volume,amount,upward_probability,volatility_amplification_probability")
+
+        # 为每个预测数据添加路径ID
+        path_groups = {}
+        for i, pred in enumerate(predictions_sorted):
+            timestamp_str = pred.timestamp.strftime('%Y-%m-%d %H:%M:%S')
+
+            # 按时间戳分组，为每个时间点的路径分配ID
+            if timestamp_str not in path_groups:
+                path_groups[timestamp_str] = 0
+            else:
+                path_groups[timestamp_str] += 1
+
+            path_id = f"path_{path_groups[timestamp_str]}"
+            upward_prob = (pred.upward_probability or 0) * 100
+            vol_prob = (pred.volatility_amplification_probability or 0) * 100
+
+            output_lines.append(
+                f"{timestamp_str},{path_id},{pred.open:.2f},{pred.high:.2f},"
+                f"{pred.low:.2f},{pred.close:.2f},"
+                f"{pred.volume or 0:.2f},{pred.amount or 0:.2f},"
+                f"{upward_prob:.2f}%,{vol_prob:.2f}%"
+            )
+
+        # 添加每个时间点的统计信息（用于快速概览）
+        output_lines.append("")
+        output_lines.append("【时间点统计概览】")
+        output_lines.append("timestamp,path_count,open_min,open_max,high_min,high_max,low_min,low_max,close_min,close_max")
+
+        # 计算每个时间点的统计信息
+        time_stats = {}
+        for pred in predictions_sorted:
+            timestamp_str = pred.timestamp.strftime('%Y-%m-%d %H:%M:%S')
+            if timestamp_str not in time_stats:
+                time_stats[timestamp_str] = {
+                    'count': 0,
+                    'opens': [],
+                    'highs': [],
+                    'lows': [],
+                    'closes': []
+                }
+
+            time_stats[timestamp_str]['count'] += 1
+            time_stats[timestamp_str]['opens'].append(pred.open)
+            time_stats[timestamp_str]['highs'].append(pred.high)
+            time_stats[timestamp_str]['lows'].append(pred.low)
+            time_stats[timestamp_str]['closes'].append(pred.close)
+
+        # 添加统计信息（显示前15个时间点）
+        for i, (timestamp_str, stats) in enumerate(sorted(time_stats.items())[:15]):
+            output_lines.append(
+                f"{timestamp_str},{stats['count']},"
+                f"{min(stats['opens']):.2f},{max(stats['opens']):.2f},"
+                f"{min(stats['highs']):.2f},{max(stats['highs']):.2f},"
+                f"{min(stats['lows']):.2f},{max(stats['lows']):.2f},"
+                f"{min(stats['closes']):.2f},{max(stats['closes']):.2f}"
+            )
+
+        if len(time_stats) > 15:
+            output_lines.append(f"... （还有 {len(time_stats) - 15} 个时间点的统计）")
+
+        return "\n".join(output_lines)
+
     def _get_latest_prediction_csv_data(self, plan_id: int) -> str:
-        """获取最新预测数据的CSV格式文本"""
+        """获取最新预测数据的CSV格式文本（包含蒙特卡罗路径统计）"""
         predictions = self._get_latest_prediction_data(plan_id)
-        return self._format_prediction_as_csv(predictions)
+        return self._format_prediction_with_monte_carlo_stats(predictions)
 
     def build_ui(self):
         """构建 AI Agent 对话界面"""
@@ -214,6 +300,29 @@ class PlanDetailChatUI:
         # 对话状态显示
         agent_status = gr.Markdown("", visible=False)
 
+        # 对话记录选择区域
+        with gr.Row():
+            conversation_selector = gr.Dropdown(
+                label="📝 对话记录",
+                choices=[("无对话记录", None)],
+                value=None,
+                interactive=True,
+                scale=4
+            )
+            restore_conversation_btn = gr.Button(
+                "🔄 恢复对话",
+                variant="secondary",
+                size="sm",
+                scale=1,
+                interactive=False
+            )
+            refresh_conversations_btn = gr.Button(
+                "🔃 刷新列表",
+                variant="secondary",
+                size="sm",
+                scale=1
+            )
+
         # 保存组件引用
         components.update({
             'agent_chatbot': agent_chatbot,
@@ -222,7 +331,10 @@ class PlanDetailChatUI:
             'agent_cancel_btn': agent_cancel_btn,
             'agent_execute_inference_btn': agent_execute_inference_btn,
             'agent_clear_btn': agent_clear_btn,
-            'agent_status': agent_status
+            'agent_status': agent_status,
+            'conversation_selector': conversation_selector,
+            'restore_conversation_btn': restore_conversation_btn,
+            'refresh_conversations_btn': refresh_conversations_btn
         })
 
         # 定义简化的同步事件处理函数
@@ -236,7 +348,8 @@ class PlanDetailChatUI:
             # 验证输入
             is_valid, plan_id, clean_message, current_history, error_msg = self._validate_plan_and_message(pid, user_message, history)
             if not is_valid:
-                yield history + [{"role": "assistant", "content": error_msg}], gr.update(value=""), gr.update(visible=True, value=error_msg), enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                yield history + [{"role": "assistant", "content": error_msg}], gr.update(value=""), gr.update(visible=True, value=error_msg), button_states[0], button_states[1], button_states[2]
                 return
 
             try:
@@ -245,6 +358,7 @@ class PlanDetailChatUI:
 
                 # 使用带取消功能的异步流转同步处理
                 from services.langchain_agent import agent_service
+                final_result = None
                 for result in enhanced_chatbot.async_to_sync_stream_with_cancel(
                     agent_service.stream_conversation,
                     session_id=self.current_session_id,
@@ -253,12 +367,27 @@ class PlanDetailChatUI:
                     user_message=clean_message,
                     conversation_type="user_chat"
                 ):
+                    final_result = result
                     yield result
+
+                # 对话完成后，自动刷新对话列表
+                if final_result:
+                    try:
+                        # 获取最新的对话列表
+                        choices = self.get_conversation_list_for_selection(plan_id)
+                        # 添加对话列表刷新到yield结果中
+                        history, _, _, button_updates = final_result
+                        yield history, _, _, button_updates, gr.update(choices=choices), gr.update(interactive=True)
+                    except Exception as refresh_error:
+                        logger.error(f"自动刷新对话列表失败: {refresh_error}")
+                        # 即使刷新失败，也要返回原始结果
+                        yield final_result
 
             except Exception as e:
                 logger.error(f"发送消息失败: {e}")
                 error_message = [{"role": "assistant", "content": f"❌ 发送失败: {str(e)}"}]
-                yield current_history + error_message, gr.update(value=""), gr.update(visible=True, value=str(e)), enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(current_history) > 0)
+                button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(current_history) > 0)
+                yield current_history + error_message, gr.update(value=""), gr.update(visible=True, value=str(e)), button_states[0], button_states[1], button_states[2]
 
         def agent_cancel_inference_wrapper(pid, history):
             """取消推理"""
@@ -267,19 +396,23 @@ class PlanDetailChatUI:
                 if success:
                     logger.info(f"推理已取消: {self.current_session_id}")
                     # 保留当前对话上下文
-                    return history, gr.update(visible=True, value="推理已取消，保留当前上下文"), enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                    return history, gr.update(value=""), gr.update(visible=True, value="推理已取消，保留当前上下文"), button_states[0], button_states[1], button_states[2]
                 else:
                     logger.warning(f"取消推理失败: {self.current_session_id}")
-                    return history, gr.update(visible=True, value="取消推理失败"), enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                    return history, gr.update(value=""), gr.update(visible=True, value="取消推理失败"), button_states[0], button_states[1], button_states[2]
             else:
-                return history, gr.update(visible=True, value="没有正在进行的推理"), enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                return history, gr.update(value=""), gr.update(visible=True, value="没有正在进行的推理"), button_states[0], button_states[1], button_states[2]
 
         def agent_execute_inference_wrapper(pid, history):
             """执行AI Agent推理（重置上下文 - 流式版本）"""
             # 验证计划存在性（重用验证方法，但传入空消息以跳过消息验证）
             _, plan_id, _, _, error_msg = self._validate_plan_and_message(pid, "dummy", [])
             if error_msg and "计划不存在" in error_msg:
-                yield history + [{"role": "assistant", "content": error_msg}], gr.update(visible=True, value=error_msg)
+                button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                yield history + [{"role": "assistant", "content": error_msg}], gr.update(visible=True, value=error_msg), button_states[0], button_states[1], button_states[2]
                 return
 
             try:
@@ -290,13 +423,15 @@ class PlanDetailChatUI:
                 from services.historical_data_service import historical_data_service
                 historical_data = historical_data_service.get_optimal_historical_data(plan_id)
                 if not historical_data:
-                    yield empty_history + [{"role": "assistant", "content": "❌ 未找到可用的历史K线数据"}], gr.update(visible=False, value="")
+                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(empty_history) > 0)
+                    yield empty_history + [{"role": "assistant", "content": "❌ 未找到可用的历史K线数据"}], gr.update(visible=True, value="未找到可用的历史K线数据"), button_states[0], button_states[1], button_states[2]
                     return
 
                 # 获取最新预测交易数据
                 prediction_data = self._get_latest_prediction_csv_data(plan_id)
                 if not prediction_data:
-                    yield empty_history + [{"role": "assistant", "content": "❌ 未找到可用的预测数据，请先执行模型推理"}], gr.update(visible=False, value="")
+                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(empty_history) > 0)
+                    yield empty_history + [{"role": "assistant", "content": "❌ 未找到可用的预测数据，请先执行模型推理"}], gr.update(visible=True, value="未找到可用的预测数据，请先执行模型推理"), button_states[0], button_states[1], button_states[2]
                     return
 
                 # 构建推理请求
@@ -310,6 +445,7 @@ class PlanDetailChatUI:
 
                 # 使用通用异步流转同步处理（推理版本，重置历史）
                 from services.langchain_agent import agent_service
+                final_result = None
                 for history, user_input_update, status_update in self._async_to_sync_stream(
                     agent_service.stream_conversation,
                     initial_history=empty_history,  # 重置历史
@@ -317,21 +453,61 @@ class PlanDetailChatUI:
                     user_message=inference_request,
                     conversation_type="inference_session"
                 ):
-                    # 推理函数只需要返回 chatbot 和 status，忽略 user_input_update
-                    yield history, status_update
+                    # 推理函数需要返回完整的5个值：chatbot, status, send_btn, cancel_btn, inference_btn
+                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                    final_result = (history, status_update, button_states[0], button_states[1], button_states[2])
+                    yield final_result
+
+                # 推理完成后，自动刷新对话列表
+                if final_result:
+                    try:
+                        choices = self.get_conversation_list_for_selection(plan_id)
+                        # 发送刷新信号，但界面需要处理额外的输出参数
+                        yield (*final_result, gr.update(choices=choices), gr.update(interactive=True))
+                    except Exception as refresh_error:
+                        logger.error(f"推理完成后自动刷新对话列表失败: {refresh_error}")
+                        # 即使刷新失败，也要返回原始结果
+                        yield final_result
 
             except Exception as e:
                 logger.error(f"执行推理失败: {e}")
                 error_message = [{"role": "assistant", "content": f"❌ 执行推理失败: {str(e)}"}]
-                yield history + error_message, gr.update(visible=False, value="")
+                button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                yield history + error_message, gr.update(visible=True, value=f"执行推理失败: {str(e)}"), button_states[0], button_states[1], button_states[2]
 
         # 保存事件处理函数
+        # 对话记录相关处理函数
+        def load_conversation_choices(pid):
+            """加载对话选择列表"""
+            return self.get_conversation_list_for_selection(pid)
+
+        def update_restore_button_state(selected_conversation):
+            """更新恢复按钮状态"""
+            return gr.update(interactive=bool(selected_conversation))
+
+        def restore_conversation_handler(pid, selected_conversation):
+            """恢复对话处理函数"""
+            restored_history = self.restore_selected_conversation(pid, selected_conversation)
+            button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(restored_history) > 0)
+            return restored_history, button_states[0], button_states[1], button_states[2]
+
+        def refresh_conversations_and_state(pid, current_history):
+            """刷新对话列表并更新状态"""
+            choices = self.get_conversation_list_for_selection(pid)
+            has_context = bool(current_history and len(current_history) > 0)
+            button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=has_context)
+            return gr.update(choices=choices), button_states[0], button_states[1], button_states[2]
+
         components.update({
             'agent_send_message_wrapper': agent_send_message_wrapper,
             'agent_cancel_inference_wrapper': agent_cancel_inference_wrapper,
             'agent_execute_inference_wrapper': agent_execute_inference_wrapper,
             'agent_clear_conversation_wrapper': self.agent_clear_conversation_wrapper,
-            'update_button_state_on_input': update_button_state_on_input
+            'update_button_state_on_input': update_button_state_on_input,
+            'load_conversation_choices': load_conversation_choices,
+            'update_restore_button_state': update_restore_button_state,
+            'restore_conversation_handler': restore_conversation_handler,
+            'refresh_conversations_and_state': refresh_conversations_and_state
         })
 
         
@@ -363,18 +539,21 @@ class PlanDetailChatUI:
         is_valid, plan_id, error_msg = validate_plan_exists(pid)
 
         if not is_valid:
-            return history, gr.update(value=""), gr.update(visible=False, value=f"❌ {error_msg}")
+            button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=False)
+            return history, gr.update(value=""), gr.update(visible=True, value=f"❌ {error_msg}"), button_states[0], button_states[1], button_states[2]
 
         try:
             result = self.plan_detail_ui.clear_agent_records(plan_id)
             # 清空聊天历史
             empty_history = []
             status_message = f"✅ {result}"
-            return empty_history, gr.update(value=""), gr.update(visible=True, value=status_message)
+            button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=False)
+            return empty_history, gr.update(value=""), gr.update(visible=True, value=status_message), button_states[0], button_states[1], button_states[2]
 
         except Exception as e:
             logger.error(f"清除对话失败: {e}")
-            return history, gr.update(value=""), gr.update(visible=False, value=f"❌ 清除失败: {str(e)}")
+            button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+            return history, gr.update(value=""), gr.update(visible=True, value=f"❌ 清除失败: {str(e)}"), button_states[0], button_states[1], button_states[2]
 
     def bind_events(self, components, plan_id_input):
         """绑定事件处理器"""
@@ -425,3 +604,155 @@ class PlanDetailChatUI:
             inputs=[plan_id_input, components['agent_user_input'], components['agent_chatbot']],
             outputs=[components['agent_send_btn'], components['agent_cancel_btn'], components['agent_execute_inference_btn']]
         )
+
+        # 对话记录相关事件绑定
+        components['conversation_selector'].change(
+            fn=components['update_restore_button_state'],
+            inputs=[components['conversation_selector']],
+            outputs=[components['restore_conversation_btn']]
+        )
+
+        components['restore_conversation_btn'].click(
+            fn=components['restore_conversation_handler'],
+            inputs=[plan_id_input, components['conversation_selector']],
+            outputs=[components['agent_chatbot'], components['agent_send_btn'], components['agent_cancel_btn'], components['agent_execute_inference_btn']]
+        )
+
+        components['refresh_conversations_btn'].click(
+            fn=components['refresh_conversations_and_state'],
+            inputs=[plan_id_input, components['agent_chatbot']],
+            outputs=[components['conversation_selector'], components['agent_send_btn'], components['agent_cancel_btn'], components['agent_execute_inference_btn']]
+        )
+
+    def setup_auto_refresh_and_initial_load(self, plan_id_input, components):
+        """设置自动刷新和初始加载"""
+
+        def initialize_conversation_ui(pid):
+            """初始化对话UI，加载对话列表"""
+            choices = self.get_conversation_list_for_selection(pid)
+            return gr.update(choices=choices), gr.update(interactive=False)
+
+        # 绑定初始化函数 - 当页面加载或plan_id变化时调用
+        if hasattr(plan_id_input, 'change'):
+            plan_id_input.change(
+                fn=initialize_conversation_ui,
+                inputs=[plan_id_input],
+                outputs=[components['conversation_selector'], components['restore_conversation_btn']]
+            )
+
+        return components
+
+    def restore_conversation_from_records(self, plan_id: int, conversation_id: int = None):
+        """
+        从对话记录恢复完整对话到chatbot
+
+        Args:
+            plan_id: 计划ID
+            conversation_id: 指定对话ID，如果为None则恢复最新对话
+        """
+        try:
+            from database.models import AgentConversation, AgentMessage
+            from database.db import get_db
+            from ui.custom_chatbot import format_conversation_history
+
+            with get_db() as db:
+                # 如果没有指定对话ID，获取最新的对话
+                if conversation_id is None:
+                    conversation = db.query(AgentConversation).filter(
+                        AgentConversation.plan_id == plan_id
+                    ).order_by(desc(AgentConversation.last_message_at)).first()
+                else:
+                    conversation = db.query(AgentConversation).filter(
+                        AgentConversation.id == conversation_id,
+                        AgentConversation.plan_id == plan_id
+                    ).first()
+
+                if not conversation:
+                    return []  # 返回空历史，表示没有对话记录
+
+                # 获取该对话的所有消息，按时间顺序排列
+                messages = db.query(AgentMessage).filter(
+                    AgentMessage.conversation_id == conversation.id
+                ).order_by(AgentMessage.created_at).all()
+
+                if messages:
+                    # 格式化消息为chatbot格式
+                    formatted_history = format_conversation_history(messages)
+                    logger.info(f"恢复了对话 {conversation.id} 的 {len(messages)} 条消息")
+                    return formatted_history
+                else:
+                    return []
+
+        except Exception as e:
+            logger.error(f"恢复对话记录失败: {e}")
+            return []
+
+    def get_conversation_list_for_selection(self, plan_id: int):
+        """
+        获取对话列表用于选择恢复
+
+        Returns:
+            gr.Dropdown choices 格式的对话列表
+        """
+        try:
+            from database.models import AgentConversation, AgentMessage
+            from database.db import get_db
+            from database.models import now_beijing
+
+            with get_db() as db:
+                conversations = db.query(AgentConversation).filter(
+                    AgentConversation.plan_id == plan_id
+                ).order_by(desc(AgentConversation.last_message_at)).limit(10).all()
+
+                choices = []
+                for conv in conversations:
+                    # 统计消息数量
+                    message_count = db.query(func.count(AgentMessage.id)).filter(
+                        AgentMessage.conversation_id == conv.id
+                    ).scalar()
+
+                    # 获取最新消息预览
+                    latest_message = db.query(AgentMessage).filter(
+                        AgentMessage.conversation_id == conv.id
+                    ).order_by(desc(AgentMessage.created_at)).first()
+
+                    preview = ""
+                    if latest_message:
+                        content = latest_message.content or ""
+                        preview = content[:30] + "..." if len(content) > 30 else content
+
+                    # 格式化选择项
+                    status_emoji = {
+                        'active': '💬',
+                        'completed': '✅',
+                        'error': '❌',
+                        'paused': '⏸️'
+                    }.get(conv.status, '💬')
+
+                    time_str = conv.last_message_at.strftime("%m-%d %H:%M") if conv.last_message_at else "N/A"
+                    label = f"{status_emoji} {time_str} | {message_count}条消息 | {preview}"
+
+                    choices.append((label, conv.id))
+
+                # 添加默认选项
+                if not choices:
+                    choices = [("无对话记录", None)]
+
+                return choices
+
+        except Exception as e:
+            logger.error(f"获取对话列表失败: {e}")
+            return [("无对话记录", None)]
+
+    def restore_selected_conversation(self, plan_id: int, selected_conversation_id):
+        """
+        恢复选择的对话
+
+        Args:
+            plan_id: 计划ID
+            selected_conversation_id: 选择的对话ID
+        """
+        if not selected_conversation_id:
+            return []  # 返回空历史
+
+        return self.restore_conversation_from_records(plan_id, selected_conversation_id)

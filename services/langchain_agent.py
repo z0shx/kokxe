@@ -55,11 +55,22 @@ class LangChainAgentService:
     @staticmethod
     def _get_llm_base_params(llm_config):
         """获取LLM基础参数"""
-        return {
+        # 基础参数
+        base_params = {
             "model": llm_config.model_name,
             "temperature": llm_config.temperature or 0.7,
-            "max_tokens": llm_config.max_tokens or 2000
         }
+
+        # 根据 LLM 提供商设置不同的参数
+        if llm_config.provider == "qwen":
+            # Qwen API 可能对 max_tokens 有特殊要求或使用不同参数名
+            # 这里设置一个合理的默认值
+            base_params["max_tokens"] = min(llm_config.max_tokens or 2000, 8000)  # 限制最大 tokens
+        else:
+            # 其他 LLM 提供商使用标准参数
+            base_params["max_tokens"] = llm_config.max_tokens or 2000
+
+        return base_params
 
     @staticmethod
     def _format_tool_response(success: bool, data=None, error=None, **kwargs):
@@ -129,9 +140,14 @@ class LangChainAgentService:
                 base_url = llm_config.api_base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1"
                 extra_params = self._parse_extra_params(getattr(llm_config, 'extra_params', None))
 
+                # 确保不会传递任何不支持的参数
+                # 移除 enable_thinking 等不支持的参数
+                if extra_params and 'enable_thinking' in extra_params:
+                    logger.info(f"移除不支持的 enable_thinking 参数，保持思考功能通过内容处理实现")
+                    extra_params = {k: v for k, v in extra_params.items() if k != 'enable_thinking'}
+
                 model_kwargs = {}
-                if extra_params.get('enable_thinking', False):
-                    model_kwargs = {"enable_thinking": True}
+                # 不设置任何 Qwen API 不支持的参数
 
                 # 为 Qwen 启用流式输出，支持 think 模式
                 self._llm_clients[client_key] = ChatOpenAI(
@@ -139,8 +155,7 @@ class LangChainAgentService:
                     openai_api_key=llm_config.api_key,
                     openai_api_base=base_url,
                     model_kwargs=model_kwargs,
-                    streaming=True,
-                    temperature=base_params.get("temperature", 0.7)
+                    streaming=True
                 )
             else:
                 raise ValueError(f"不支持的 LLM 提供商: {llm_config.provider}")
@@ -158,9 +173,18 @@ class LangChainAgentService:
             logger.error(f"无法获取计划 {plan_id} 的交易工具")
             return list(available_tools.values())
 
-        # 获取计划信息
+        # 获取计划信息（缓存到闭包中）
         with get_db() as db:
             plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+
+        if not plan:
+            logger.error(f"计划不存在: plan_id={plan_id}")
+            return list(available_tools.values())
+
+        # 缓存计划信息到闭包变量中
+        plan_inst_id = plan.inst_id
+        plan_trading_limits = plan.trading_limits
+        plan_is_demo = plan.is_demo
 
         # 1. 获取当前价格工具
         if "get_current_price" in enabled_tools:
@@ -168,7 +192,7 @@ class LangChainAgentService:
             def get_current_price(inst_id: str = None) -> str:
                 """获取交易对当前价格"""
                 try:
-                    inst_id = inst_id or plan.inst_id
+                    inst_id = inst_id or plan_inst_id
                     price = plan_trading_tools.get_current_price(inst_id)
                     return json.dumps({
                         "success": True,
@@ -269,6 +293,7 @@ class LangChainAgentService:
                 try:
                     # 检查订单是否存在于本地数据表
                     from database.models import TradeOrder
+                    # 使用预获取的 plan_id 变量，避免嵌套数据库连接
                     with get_db() as db:
                         local_order = db.query(TradeOrder).filter(
                             TradeOrder.plan_id == plan_id,
@@ -463,53 +488,235 @@ class LangChainAgentService:
         # 12. 查询预测数据
         if "query_prediction_data" in enabled_tools:
             @tool
-            def query_prediction_data(limit: int = 50, hours: int = 24) -> str:
-                """查询AI模型预测数据（默认最近24小时）"""
+            def query_prediction_data(
+                limit: int = 20,
+                hours: int = 24,
+                include_monte_carlo: bool = True,
+                monte_carlo_sample_count: int = 5,
+                include_path_statistics: bool = True
+            ) -> str:
+                """查询AI模型预测数据（默认最近24小时），包含蒙特卡罗路径信息和统计数据
+
+                Args:
+                    limit: 返回预测数据条数限制（建议20条以内）
+                    hours: 查询时间范围（小时，最大168小时=7天）
+                    include_monte_carlo: 是否包含蒙特卡罗路径样本
+                    monte_carlo_sample_count: 显示蒙特卡罗路径样本数量（最多10条）
+                    include_path_statistics: 是否包含路径统计分析
+                """
                 try:
                     # 参数验证
-                    if not isinstance(limit, int) or limit <= 0 or limit > 500:
-                        return json.dumps({"success": False, "error": "limit必须是1-500之间的整数"}, ensure_ascii=False)
+                    if not isinstance(limit, int) or limit <= 0 or limit > 100:
+                        return json.dumps({"success": False, "error": "limit必须是1-100之间的整数"}, ensure_ascii=False)
                     if not isinstance(hours, int) or hours <= 0 or hours > 168:  # 最大7天
                         return json.dumps({"success": False, "error": "hours必须是1-168之间的整数（7天）"}, ensure_ascii=False)
+                    if not isinstance(monte_carlo_sample_count, int) or monte_carlo_sample_count <= 0 or monte_carlo_sample_count > 10:
+                        return json.dumps({"success": False, "error": "monte_carlo_sample_count必须是1-10之间的整数"}, ensure_ascii=False)
 
                     from database.models import PredictionData
                     from database.models import now_beijing
                     from datetime import timedelta
+                    import numpy as np
 
                     with get_db() as db:
                         # 计算时间范围
                         end_time = now_beijing()
                         start_time = end_time - timedelta(hours=hours)
 
+                        # 获取预测数据，按批次分组
                         predictions = db.query(PredictionData).filter(
                             PredictionData.plan_id == plan_id,
                             PredictionData.timestamp >= start_time,
                             PredictionData.timestamp <= end_time
-                        ).order_by(PredictionData.timestamp.desc()).limit(limit).all()
+                        ).order_by(PredictionData.inference_batch_id.desc(), PredictionData.timestamp.asc()).limit(limit).all()
 
-                        data = []
+                        # 按批次组织数据
+                        batch_data = {}
                         for pred in predictions:
-                            data.append({
-                                "timestamp": pred.timestamp.isoformat(),
-                                "close": pred.close,
-                                "close_min": pred.close_min,
-                                "close_max": pred.close_max,
-                                "upward_probability": pred.upward_probability
-                            })
+                            batch_id = pred.inference_batch_id
+                            if batch_id not in batch_data:
+                                batch_data[batch_id] = {
+                                    "batch_id": batch_id,
+                                    "training_record_id": pred.training_record_id,
+                                    "prediction_time": pred.prediction_time.isoformat() if pred.prediction_time else None,
+                                    "inference_params": pred.inference_params,
+                                    "predictions": []
+                                }
 
-                    return json.dumps({
-                        "success": True,
-                        "data": data,
-                        "count": len(data),
-                        "time_range": {
-                            "start_time": start_time.isoformat(),
-                            "end_time": end_time.isoformat(),
-                            "hours": hours
-                        },
-                        "timestamp": now_beijing().isoformat()
-                    }, ensure_ascii=False)
+                            prediction_info = {
+                                "id": pred.id,
+                                "timestamp": pred.timestamp.isoformat(),
+                                "target_time": pred.target_time.isoformat() if pred.target_time else None,
+                                "ohlc": {
+                                    "open": pred.open,
+                                    "high": pred.high,
+                                    "low": pred.low,
+                                    "close": pred.close
+                                },
+                                "uncertainty_range": {
+                                    "close_min": pred.close_min,
+                                    "close_max": pred.close_max,
+                                    "close_std": pred.close_std
+                                },
+                                "probabilities": {
+                                    "upward_probability": pred.upward_probability,
+                                    "volatility_amplification_probability": pred.volatility_amplification_probability
+                                },
+                                "predicted_price": float(pred.predicted_price) if pred.predicted_price else None,
+                                "current_price": float(pred.current_price) if pred.current_price else None,
+                                "price_change": float(pred.price_change) if pred.price_change else None,
+                                "price_change_pct": float(pred.price_change_pct) if pred.price_change_pct else None,
+                                "upward_prob": float(pred.upward_prob) if pred.upward_prob else None,
+                                "volatility_prob": float(pred.volatility_prob) if pred.volatility_prob else None,
+                                "confidence": float(pred.confidence) if pred.confidence else None,
+                                "samples_used": pred.samples_used,
+                                "temperature": pred.temperature
+                            }
+
+                            # 处理新的多路径Monte Carlo格式
+                            if include_monte_carlo and pred.prediction_data:
+                                try:
+                                    pred_json = json.loads(pred.prediction_data)
+
+                                    # 如果是新的多路径格式
+                                    if "monte_carlo_paths" in pred_json and len(pred_json["monte_carlo_paths"]) > 0:
+                                        paths = pred_json["monte_carlo_paths"]
+                                        prediction_steps = pred_json.get("prediction_steps", len(paths[0]) if paths else 0)
+
+                                        # 限制显示的路径数量
+                                        if len(paths) > monte_carlo_sample_count:
+                                            selected_paths = paths[:monte_carlo_sample_count]
+                                        else:
+                                            selected_paths = paths
+
+                                        prediction_info["monte_carlo_paths"] = selected_paths
+                                        prediction_info["monte_carlo_metadata"] = {
+                                            "total_paths": len(paths),
+                                            "prediction_steps": prediction_steps,
+                                            "selected_paths": len(selected_paths)
+                                        }
+
+                                        # 如果需要路径统计分析
+                                        if include_path_statistics:
+                                            path_stats = []
+                                            for step_idx in range(prediction_steps):
+                                                step_prices = []
+                                                for path in paths:
+                                                    if step_idx < len(path):
+                                                        if isinstance(path[step_idx], dict):
+                                                            step_prices.append(float(path[step_idx]["price"]))
+                                                        else:
+                                                            step_prices.append(float(path[step_idx]))
+
+                                                if step_prices:
+                                                    step_array = np.array(step_prices)
+                                                    stats = {
+                                                        "step": step_idx,
+                                                        "mean": float(np.mean(step_array)),
+                                                        "std": float(np.std(step_array)),
+                                                        "min": float(np.min(step_array)),
+                                                        "max": float(np.max(step_array)),
+                                                        "median": float(np.median(step_array)),
+                                                        "q25": float(np.percentile(step_array, 25)),
+                                                        "q75": float(np.percentile(step_array, 75)),
+                                                        "count": len(step_prices)
+                                                    }
+                                                    path_stats.append(stats)
+
+                                            prediction_info["path_statistics"] = path_stats
+
+                                            # 添加最终步骤统计摘要
+                                            if path_stats:
+                                                final_stats = path_stats[-1]
+                                                prediction_info["final_step_summary"] = {
+                                                    "mean_price": final_stats["mean"],
+                                                    "price_std": final_stats["std"],
+                                                    "price_range": final_stats["max"] - final_stats["min"],
+                                                    "confidence_interval_90": [
+                                                        final_stats["q25"],
+                                                        final_stats["q75"]
+                                                    ]
+                                                }
+
+                                    # 兼容旧格式
+                                    elif "sample_trajectories" in pred_json:
+                                        trajectories = pred_json["sample_trajectories"]
+                                        if len(trajectories) > monte_carlo_sample_count:
+                                            selected_trajectories = trajectories[:monte_carlo_sample_count]
+                                        else:
+                                            selected_trajectories = trajectories
+
+                                        prediction_info["sample_trajectories"] = selected_trajectories
+                                        prediction_info["trajectory_metadata"] = {
+                                            "total_trajectories": len(trajectories),
+                                            "selected_trajectories": len(selected_trajectories)
+                                        }
+
+                                except (json.JSONDecodeError, KeyError, TypeError, IndexError) as e:
+                                    logger.debug(f"解析预测数据失败: {e}")
+                                    prediction_info["parse_error"] = str(e)
+
+                            # 保留原有的推理参数解析作为备用
+                            elif include_monte_carlo and pred.inference_params:
+                                try:
+                                    inference_params = pred.inference_params if isinstance(pred.inference_params, dict) else json.loads(pred.inference_params)
+
+                                    # 查找蒙特卡罗路径数据
+                                    if "monte_carlo_paths" in inference_params:
+                                        mc_paths = inference_params["monte_carlo_paths"]
+                                        if len(mc_paths) > monte_carlo_sample_count:
+                                            selected_paths = mc_paths[:monte_carlo_sample_count]
+                                        else:
+                                            selected_paths = mc_paths
+
+                                        prediction_info["legacy_monte_carlo_paths"] = selected_paths
+                                        prediction_info["legacy_total_count"] = len(mc_paths)
+
+                                    # 添加推理配置信息
+                                    prediction_info["inference_config"] = {
+                                        "temperature": inference_params.get("temperature"),
+                                        "sample_count": inference_params.get("sample_count"),
+                                        "top_p": inference_params.get("top_p")
+                                    }
+
+                                except Exception as parse_error:
+                                    logger.debug(f"解析推理参数失败: {parse_error}")
+                                    prediction_info["inference_config_error"] = str(parse_error)
+
+                            batch_data[batch_id]["predictions"].append(prediction_info)
+
+                        # 转换为列表格式
+                        result_data = list(batch_data.values())
+
+                        # 统计信息
+                        total_predictions_with_paths = sum(
+                            1 for batch in result_data
+                            for pred in batch["predictions"]
+                            if "monte_carlo_paths" in pred or "legacy_monte_carlo_paths" in pred
+                        )
+
+                        return json.dumps({
+                            "success": True,
+                            "data": result_data,
+                            "summary": {
+                                "total_batches": len(result_data),
+                                "total_predictions": len(predictions),
+                                "predictions_with_paths": total_predictions_with_paths,
+                                "include_monte_carlo": include_monte_carlo,
+                                "monte_carlo_sample_count": monte_carlo_sample_count,
+                                "include_path_statistics": include_path_statistics
+                            },
+                            "time_range": {
+                                "start_time": start_time.isoformat(),
+                                "end_time": end_time.isoformat(),
+                                "hours": hours
+                            },
+                            "timestamp": now_beijing().isoformat()
+                        }, ensure_ascii=False, indent=2)
                 except Exception as e:
                     logger.error(f"查询预测数据失败: {e}")
+                    import traceback
+                    traceback.print_exc()
                     return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
             available_tools["query_prediction_data"] = query_prediction_data
@@ -518,7 +725,7 @@ class LangChainAgentService:
         if "get_prediction_history" in enabled_tools:
             @tool
             def get_prediction_history(limit: int = 20) -> str:
-                """获取历史预测记录"""
+                """获取历史预测记录 - 支持多路径Monte Carlo格式"""
                 try:
                     # 参数验证
                     if not isinstance(limit, int) or limit <= 0 or limit > 100:
@@ -533,18 +740,47 @@ class LangChainAgentService:
 
                         data = []
                         for record in records:
-                            # 获取该训练记录的预测数据数量
-                            pred_count = db.query(PredictionData).filter(
+                            # 获取该训练记录的预测数据
+                            predictions = db.query(PredictionData).filter(
                                 PredictionData.training_record_id == record.id
-                            ).count()
+                            ).order_by(PredictionData.created_at.desc()).all()
 
-                            data.append({
+                            # 统计Monte Carlo路径信息
+                            total_paths = 0
+                            path_stats_available = 0
+                            latest_with_paths = None
+
+                            for pred in predictions:
+                                if pred.prediction_data:
+                                    try:
+                                        pred_json = json.loads(pred.prediction_data)
+                                        if "monte_carlo_paths" in pred_json and len(pred_json["monte_carlo_paths"]) > 0:
+                                            total_paths = max(total_paths, len(pred_json["monte_carlo_paths"]))
+                                            path_stats_available += 1
+                                            if not latest_with_paths:
+                                                latest_with_paths = {
+                                                    "prediction_id": pred.id,
+                                                    "created_at": pred.created_at.isoformat(),
+                                                    "num_paths": len(pred_json["monte_carlo_paths"]),
+                                                    "prediction_steps": pred_json.get("prediction_steps", len(pred_json["monte_carlo_paths"][0]) if pred_json["monte_carlo_paths"] else 0)
+                                                }
+                                    except (json.JSONDecodeError, KeyError):
+                                        pass
+
+                            record_info = {
                                 "training_id": record.id,
                                 "model_version": record.version,
                                 "created_at": record.created_at.isoformat(),
-                                "prediction_count": pred_count,
-                                "status": record.status
-                            })
+                                "prediction_count": len(predictions),
+                                "status": record.status,
+                                "monte_carlo_info": {
+                                    "total_paths": total_paths,
+                                    "predictions_with_paths": path_stats_available,
+                                    "latest_with_paths": latest_with_paths
+                                }
+                            }
+
+                            data.append(record_info)
 
                     return json.dumps({
                         "success": True,
@@ -631,7 +867,7 @@ class LangChainAgentService:
             "query_historical_kline_data": "查询历史K线数据（支持多种时间周期和自定义时间范围）",
             "get_pending_orders": "查询待成交订单列表",
             "get_account_balance": "查询账户余额信息",
-            "query_prediction_data": "查询AI模型预测数据",
+            "query_prediction_data": "查询AI模型预测数据（包含蒙特卡罗路径和不确定性范围）",
             "get_prediction_history": "获取历史预测记录",
             "run_latest_model_inference": "执行最新的AI模型推理",
             "query_historical_kline_data": "查询历史K线数据"
@@ -816,16 +1052,23 @@ class LangChainAgentService:
                 ])
 
                 agent = create_openai_tools_agent(llm, tools, prompt)
-                agent_executor = AgentExecutor(
-                    agent=agent,
-                    tools=tools,
-                    verbose=False,
-                    handle_parsing_errors=True,
-                    return_intermediate_steps=True,
-                    max_iterations=15,  # 限制最大迭代次数防止无限循环
-                    max_execution_time=300,  # 限制最大执行时间为5分钟
-                    early_stopping_method="generate",  # 超时时生成响应
-                )
+                # 根据 LLM 类型设置不同的参数
+                agent_kwargs = {
+                    "agent": agent,
+                    "tools": tools,
+                    "verbose": False,
+                    "handle_parsing_errors": True,
+                    "return_intermediate_steps": True,
+                    "max_iterations": 25,  # 增加最大迭代次数以支持复杂的多工具调用场景
+                    "max_execution_time": 600,  # 增加最大执行时间为10分钟，给复杂分析更多时间
+                }
+
+                # 只有非 Qwen 模型才使用 early_stopping_method
+                if llm_config.provider != "qwen":
+                    agent_kwargs["early_stopping_method"] = "generate"  # 超时时生成响应
+
+                # 创建 AgentExecutor
+                agent_executor = AgentExecutor(**agent_kwargs)
 
                 # 流式执行 Agent
                 response = ""
@@ -963,7 +1206,7 @@ class LangChainAgentService:
                                         db, conversation.id, "tool",
                                         f"工具 {tool_name} 执行完成", "tool_result",
                                         tool_name=tool_name,
-                                    tool_args=getattr(step.action, 'tool_input', {}),
+                                    tool_args=json.dumps(getattr(step.action, 'tool_input', {})),
                                     tool_result=obs,
                                         tool_call_id=tool_call_id,
                                         tool_execution_time=tool_execution_time,
@@ -980,8 +1223,8 @@ class LangChainAgentService:
                                 formatted_output = f"🧠 **思考过程**:\n\n{output}"
                             else:
                                 formatted_output = f"🤖 **AI助手回复**:\n\n{output}"
-                            # 实现流式输出
-                            chunk_size = 15
+                            # 优化流式输出 - 使用更大的chunk减少频繁调用
+                            chunk_size = 100
                             for i in range(0, len(output), chunk_size):
                                 chunk_text = output[i:i+chunk_size]
                                 if i == 0:
@@ -995,7 +1238,7 @@ class LangChainAgentService:
 
                                 yield [{"role": "assistant", "content": formatted_chunk}]
                                 import asyncio
-                                await asyncio.sleep(0.03)
+                                await asyncio.sleep(0.01)  # 减少延迟提高响应性
 
                             # 保存助手回复到数据库
                             with get_db() as db:
@@ -1039,10 +1282,10 @@ class LangChainAgentService:
 
             if "Agent stopped due to max iterations" in error_message:
                 logger.warning(f"PLAN {plan_id} - Agent 达到最大迭代次数限制")
-                user_message = "⚠️ Agent 达到最大迭代次数限制，可能需要简化请求或分步骤处理。当前操作已停止，请重新提交更简洁的请求。"
+                user_message = "⚠️ Agent 达到最大迭代次数限制（已提升至25次）。建议：\n1. 将复杂任务分解为多个简单步骤\n2. 一次只使用一个工具进行单一操作\n3. 避免一次性查询过多数据\n4. 重新提交更简洁的请求"
             elif "Agent stopped due to max execution time" in error_message or "timeout" in error_message.lower():
                 logger.warning(f"PLAN {plan_id} - Agent 执行超时")
-                user_message = "⏱️ Agent 执行超时（超过5分钟），可能网络延迟或任务复杂度过高。请稍后重试或简化请求。"
+                user_message = "⏱️ Agent 执行超时（已提升至10分钟）。建议：\n1. 检查网络连接状况\n2. 简化查询范围（如减少时间范围或数据条数）\n3. 分步骤执行复杂操作\n4. 稍后重试"
             elif "Rate limit" in error_message or "rate limit" in error_message.lower():
                 logger.warning(f"PLAN {plan_id} - API 速率限制")
                 user_message = "🚦 API 调用频率超限，请稍后重试。"
@@ -1429,10 +1672,10 @@ class LangChainAgentService:
 
             if "Agent stopped due to max iterations" in error_message:
                 logger.warning(f"PLAN {plan_id} - 自动决策达到最大迭代次数限制")
-                user_message = "⚠️ 自动决策达到最大迭代次数限制，可能需要简化分析请求。"
+                user_message = "⚠️ 自动决策达到最大迭代次数限制（已提升至25次）。建议：\n1. 简化分析请求\n2. 分步骤进行决策\n3. 减少同时使用的工具数量\n4. 重新提交更具体的分析请求"
             elif "Agent stopped due to max execution time" in error_message or "timeout" in error_message.lower():
                 logger.warning(f"PLAN {plan_id} - 自动决策执行超时")
-                user_message = "⏱️ 自动决策执行超时（超过5分钟），可能网络延迟或分析复杂度过高。"
+                user_message = "⏱️ 自动决策执行超时（已提升至10分钟）。建议：\n1. 检查网络连接\n2. 减少分析数据范围\n3. 分步骤执行复杂分析\n4. 稍后重试"
             elif "Rate limit" in error_message or "rate limit" in error_message.lower():
                 logger.warning(f"PLAN {plan_id} - API 速率限制")
                 user_message = "🚦 API 调用频率超限，请稍后重试。"
@@ -1518,10 +1761,10 @@ class LangChainAgentService:
 
             if "Agent stopped due to max iterations" in error_message:
                 logger.warning(f"PLAN {plan_id} - 手动推理达到最大迭代次数限制")
-                user_message = "⚠️ 手动推理达到最大迭代次数限制，可能需要简化分析请求。"
+                user_message = "⚠️ 手动推理达到最大迭代次数限制（已提升至25次）。建议：\n1. 简化推理请求\n2. 分步骤进行分析\n3. 一次专注于单一问题\n4. 重新提交更具体的推理请求"
             elif "Agent stopped due to max execution time" in error_message or "timeout" in error_message.lower():
                 logger.warning(f"PLAN {plan_id} - 手动推理执行超时")
-                user_message = "⏱️ 手动推理执行超时（超过5分钟），可能网络延迟或分析复杂度过高。"
+                user_message = "⏱️ 手动推理执行超时（已提升至10分钟）。建议：\n1. 检查网络连接状态\n2. 减少数据查询范围\n3. 避免同时执行多个复杂操作\n4. 稍后重试或简化问题"
             elif "Rate limit" in error_message or "rate limit" in error_message.lower():
                 logger.warning(f"PLAN {plan_id} - API 速率限制")
                 user_message = "🚦 API 调用频率超限，请稍后重试。"

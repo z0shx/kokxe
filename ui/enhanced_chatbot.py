@@ -65,10 +65,11 @@ class EnhancedChatbot:
             )
         else:
             send_interactive = has_input or has_context
+            # 执行推理按钮应该始终可用，无论是否有对话上下文
             return (
                 gr.update(interactive=send_interactive, visible=True),  # 发送按钮
                 gr.update(interactive=False, visible=False),            # 取消按钮
-                gr.update(interactive=has_context, visible=True)         # 执行推理按钮
+                gr.update(interactive=True, visible=True)               # 执行推理按钮 - 始终可用
             )
 
     def generate_session_id(self, plan_id: str, input_text: str = "") -> str:

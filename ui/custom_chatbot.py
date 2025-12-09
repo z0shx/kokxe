@@ -508,6 +508,9 @@ def format_conversation_history(messages: List[Dict]) -> List[Dict]:
             chatbot_messages.append({"role": "tool", "content": tool_content})
         elif msg.message_type == "play_result":
             chatbot_messages.append({"role": "play", "content": content})
+        elif role == "system":
+            # 确保系统消息显示为系统提示词格式
+            chatbot_messages.append({"role": "system", "content": content})
         else:
             # 普通消息
             chatbot_messages.append({"role": role, "content": content})

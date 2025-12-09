@@ -256,6 +256,19 @@ class OKXTradingTools:
                     final_conversation_id = conversation_id or self.current_conversation_id
                     final_tool_call_id = tool_call_id or self.current_tool_call_id
 
+                    # 尝试查找对应的Agent消息ID
+                    agent_message_id = None
+                    if final_tool_call_id and final_conversation_id:
+                        from database.models import AgentMessage
+                        agent_message = db.query(AgentMessage).filter(
+                            AgentMessage.conversation_id == final_conversation_id,
+                            AgentMessage.tool_call_id == final_tool_call_id,
+                            AgentMessage.message_type == 'tool_call',
+                            AgentMessage.tool_name.in_(['place_order', 'amend_order', 'cancel_order'])
+                        ).first()
+                        if agent_message:
+                            agent_message_id = agent_message.id
+
                     # 创建新订单记录
                     new_order = TradeOrder(
                         plan_id=self.plan_id,
@@ -268,7 +281,7 @@ class OKXTradingTools:
                         status=status,
                         is_demo=self.is_demo,
                         is_from_agent=True,  # 标记为Agent操作的订单
-                        agent_message_id=None,  # 可以在工具调用时更新
+                        agent_message_id=agent_message_id,
                         conversation_id=final_conversation_id,
                         tool_call_id=final_tool_call_id
                     )
