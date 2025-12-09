@@ -133,11 +133,14 @@ class LangChainAgentService:
                 if extra_params.get('enable_thinking', False):
                     model_kwargs = {"enable_thinking": True}
 
+                # 为 Qwen 启用流式输出，支持 think 模式
                 self._llm_clients[client_key] = ChatOpenAI(
                     **base_params,
                     openai_api_key=llm_config.api_key,
                     openai_api_base=base_url,
-                    model_kwargs=model_kwargs
+                    model_kwargs=model_kwargs,
+                    streaming=True,
+                    temperature=base_params.get("temperature", 0.7)
                 )
             else:
                 raise ValueError(f"不支持的 LLM 提供商: {llm_config.provider}")
@@ -558,19 +561,43 @@ class LangChainAgentService:
         return list(available_tools.values())
 
     def _detect_qwen_thinking(self, content: str, llm_config: LLMConfig = None) -> bool:
-        """检测 Qwen 思考模式的双重策略"""
+        """检测 Qwen 思考模式的多重策略"""
         if not content or not content.strip():
             return False
 
-        # 策略1: 内容检测
-        thinking_indicators = [
-            "思考:", "让我分析", "首先", "接下来", "综合考虑",
-            "分析结果", "判断", "决策", "建议", "根据",
-            "思考：", "考虑到", "从市场角度看", "技术分析"
+        # 策略1: 强力的思考内容检测
+        thinking_patterns = [
+            r'思考[:：]',  # 思考: 或 思考：
+            r'让我分析',   # 让我分析
+            r'首先',       # 首先
+            r'接下来',     # 接下来
+            r'综合考虑',   # 综合考虑
+            r'分析结果',   # 分析结果
+            r'判断',       # 判断
+            r'决策',       # 决策
+            r'建议',       # 建议
+            r'根据',       # 根据
+            r'考虑到',     # 考虑到
+            r'从市场角度看', # 从市场角度看
+            r'技术分析',   # 技术分析
+            r'推理过程',   # 推理过程
+            r'逻辑分析',   # 逻辑分析
+            r'评估',       # 评估
+            r'权衡',       # 权衡
+            r'检查',       # 检查
+            r'观察',       # 观察
+            r'推断',       # 推断
+            r'结论',       # 结论
+            r'步骤',       # 步骤
+            r'第一步',     # 第一步
+            r'第二',       # 第二
+            r'第三',       # 第三
         ]
 
-        if any(indicator in content for indicator in thinking_indicators):
-            return True
+        import re
+        for pattern in thinking_patterns:
+            if re.search(pattern, content):
+                return True
 
         # 策略2: Agent层级配置检测
         if llm_config and llm_config.provider == "qwen":
@@ -908,9 +935,28 @@ class LangChainAgentService:
                                         if isinstance(obs, str) and obs.startswith('{'):
                                             result_data = json.loads(obs)
                                             if result_data.get('success') and result_data.get('order_id'):
-                                                related_order_id = result_data['order_id']
+                                                related_order_id = str(result_data['order_id'])
+                                            elif result_data.get('success') and result_data.get('result') and isinstance(result_data['result'], dict):
+                                                # 检查 result 字段中是否有 order_id
+                                                if result_data['result'].get('order_id'):
+                                                    related_order_id = str(result_data['result']['order_id'])
                                     except:
-                                        pass
+                                        # 如果 JSON 解析失败，尝试使用正则表达式提取订单ID
+                                        try:
+                                            import re
+                                            # 匹配常见的订单ID格式（数字或字母数字组合）
+                                            order_id_patterns = [
+                                                r'"order_id":\s*["\']?([a-zA-Z0-9]+)["\']?',
+                                                r'"ordId":\s*["\']?([a-zA-Z0-9]+)["\']?',
+                                                r'order_id["\']?\s*:\s*["\']?([a-zA-Z0-9]+)["\']?'
+                                            ]
+                                            for pattern in order_id_patterns:
+                                                match = re.search(pattern, obs)
+                                                if match:
+                                                    related_order_id = match.group(1)
+                                                    break
+                                        except:
+                                            pass
 
                                 with get_db() as db:
                                     await self._save_message(
@@ -961,7 +1007,8 @@ class LangChainAgentService:
                 # 没有工具，直接使用 LLM
                 response = ""
                 async for chunk in llm.astream(messages):
-                    content = self._extract_content_from_chunk(chunk)
+                    # 传递 llm_config 以便处理 Qwen think 模式
+                    content = self._extract_content_from_chunk(chunk, llm_config)
                     if content and content.strip():
                         response += content
                         yield [{"role": "assistant", "content": content}]
@@ -1037,8 +1084,8 @@ class LangChainAgentService:
                     except Exception as log_error:
                         logger.error(f"保存系统日志失败: {log_error}")
 
-    def _extract_content_from_chunk(self, chunk) -> Optional[str]:
-        """从 chunk 中提取内容，支持多种格式"""
+    def _extract_content_from_chunk(self, chunk, llm_config=None) -> Optional[str]:
+        """从 chunk 中提取内容，支持多种格式，特别处理 Qwen think 模式"""
         if not chunk:
             return None
 
@@ -1046,12 +1093,18 @@ class LangChainAgentService:
         if hasattr(chunk, 'content'):
             content = chunk.content
             if content and isinstance(content, str) and content.strip():
+                # 对于 Qwen think 模式的特殊处理
+                if llm_config and llm_config.provider == "qwen":
+                    content = self._process_qwen_thinking_content(content)
                 return content
 
         # 方法2: text 属性
         if hasattr(chunk, 'text'):
             text = chunk.text
             if text and isinstance(text, str) and text.strip():
+                # 对于 Qwen think 模式的特殊处理
+                if llm_config and llm_config.provider == "qwen":
+                    text = self._process_qwen_thinking_content(text)
                 return text
 
         # 方法3: 尝试转换为字符串，排除对象表示
@@ -1065,11 +1118,68 @@ class LangChainAgentService:
                 not 'additional_kwargs=' in chunk_str and
                 not 'response_metadata=' in chunk_str and
                 chunk_str.strip()):
+
+                # 对于 Qwen think 模式的特殊处理
+                if llm_config and llm_config.provider == "qwen":
+                    chunk_str = self._process_qwen_thinking_content(chunk_str)
                 return chunk_str
         except:
             pass
 
         return None
+
+    def _process_qwen_thinking_content(self, content: str) -> str:
+        """
+        处理 Qwen think 模式的内容，确保思考过程正确格式化
+
+        Args:
+            content: 原始内容
+
+        Returns:
+            str: 处理后的内容
+        """
+        if not content or not content.strip():
+            return content
+
+        # 检查是否包含思考标记
+        if '<think>' in content or '</think>' in content:
+            # 移除 HTML 标记，保留思考内容
+            import re
+            # 匹配 <think>...</think> 标签内的内容
+            think_pattern = r'<think>(.*?)</think>'
+            think_matches = re.findall(think_pattern, content, re.DOTALL)
+
+            if think_matches:
+                # 提取思考内容
+                thinking_content = think_matches[0].strip()
+                # 移除 <think> 标签，保留其他内容
+                cleaned_content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+
+                # 格式化输出
+                if thinking_content and cleaned_content:
+                    # 如果既有思考又有回答
+                    return f"🧠 **思考过程**:\n{thinking_content}\n\n🤖 **AI助手回复**:\n{cleaned_content}"
+                elif thinking_content:
+                    # 只有思考内容
+                    return f"🧠 **思考过程**:\n{thinking_content}"
+                else:
+                    # 只有回答内容
+                    return f"🤖 **AI助手回复**:\n{cleaned_content}"
+
+        # 检查是否是中文思考标记
+        if content.startswith('思考:') or content.startswith('思考：') or '思考过程' in content:
+            # 处理中文思考标记
+            if content.startswith(('思考:', '思考：')):
+                parts = content.split('\n', 1)
+                if len(parts) > 1:
+                    thinking_part = parts[0].replace('思考:', '').replace('思考：', '').strip()
+                    answer_part = parts[1].strip()
+                    return f"🧠 **思考过程**:\n{thinking_part}\n\n🤖 **AI助手回复**:\n{answer_part}"
+                else:
+                    thinking_content = content.replace('思考:', '').replace('思考：', '').strip()
+                    return f"🧠 **思考过程**:\n{thinking_content}"
+
+        return content
 
     async def _save_message(
         self,
@@ -1116,7 +1226,7 @@ class LangChainAgentService:
     async def _load_conversation_history(self, conversation_id: int) -> List[Dict[str, str]]:
         """加载对话历史消息"""
         try:
-            from database.models import AgentMessage
+            from database.models import AgentMessage, TradeOrder
             with get_db() as db:
                 messages = db.query(AgentMessage).filter(
                     AgentMessage.conversation_id == conversation_id
@@ -1136,8 +1246,8 @@ class LangChainAgentService:
                         # 工具消息 - 构造JSON格式
                         tool_data = {
                             "tool_name": message.tool_name or "",
-                            "arguments": message.tool_arguments or {},
-                            "result": message.tool_result or {},
+                            "arguments": json.loads(message.tool_arguments) if message.tool_arguments else {},
+                            "result": json.loads(message.tool_result) if message.tool_result else {},
                             "status": "success" if message.message_type == "tool_result" else "calling",
                             "tool_call_id": message.tool_call_id or ""
                         }
@@ -1146,7 +1256,30 @@ class LangChainAgentService:
                         if message.message_type == "tool_call":
                             formatted_content = f"🔧 **工具调用**: `{tool_data['tool_name']}`\\n\\n参数: {json.dumps(tool_data.get('arguments', {}), indent=2, ensure_ascii=False)}"
                         else:
-                            formatted_content = f"✅ **工具完成**: `{tool_data['tool_name']}`\\n\\n结果: {json.dumps(tool_data.get('result', {}), indent=2, ensure_ascii=False)}"
+                            # 对于工具结果，如果有相关的订单ID，显示订单详情
+                            if message.related_order_id and tool_data['tool_name'] in ['place_order', 'amend_order', 'cancel_order']:
+                                try:
+                                    order = db.query(TradeOrder).filter(
+                                        TradeOrder.order_id == message.related_order_id
+                                    ).first()
+                                    if order:
+                                        order_info = {
+                                            "order_id": order.order_id,
+                                            "inst_id": order.inst_id,
+                                            "side": order.side,
+                                            "order_type": order.order_type,
+                                            "size": order.size,
+                                            "price": order.price,
+                                            "status": order.status,
+                                            "created_at": order.created_at.isoformat() if order.created_at else None
+                                        }
+                                        formatted_content = f"✅ **工具完成**: `{tool_data['tool_name']}`\\n\\n订单详情: {json.dumps(order_info, indent=2, ensure_ascii=False)}\\n\\n操作结果: {json.dumps(tool_data.get('result', {}), indent=2, ensure_ascii=False)}"
+                                    else:
+                                        formatted_content = f"✅ **工具完成**: `{tool_data['tool_name']}`\\n\\n结果: {json.dumps(tool_data.get('result', {}), indent=2, ensure_ascii=False)}"
+                                except:
+                                    formatted_content = f"✅ **工具完成**: `{tool_data['tool_name']}`\\n\\n结果: {json.dumps(tool_data.get('result', {}), indent=2, ensure_ascii=False)}"
+                            else:
+                                formatted_content = f"✅ **工具完成**: `{tool_data['tool_name']}`\\n\\n结果: {json.dumps(tool_data.get('result', {}), indent=2, ensure_ascii=False)}"
 
                         history_messages.append({"role": "assistant", "content": formatted_content})
                     elif message.message_type == "play_result":
