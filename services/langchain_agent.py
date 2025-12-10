@@ -18,7 +18,7 @@ from sqlalchemy import and_, desc
 
 from database.models import (
     TradingPlan, AgentConversation, AgentMessage,
-    LLMConfig, TrainingRecord, PredictionData, now_beijing
+    LLMConfig, TrainingRecord, PredictionData, OrderEventLog, now_beijing
 )
 from database.db import get_db
 from utils.logger import setup_logger
@@ -2079,6 +2079,87 @@ class LangChainAgentService:
         except Exception as e:
             logger.error(f"处理新K线数据失败: plan_id={plan_id}, error={e}")
             logger.debug(f"处理新K线数据失败详情: {traceback.format_exc()}")
+            return False
+
+    async def handle_order_event(self, plan_id: int, event_type: str, order_data: dict) -> bool:
+        """
+        处理订单事件 (buy_order_done / sell_order_done)
+
+        Args:
+            plan_id: 计划ID
+            event_type: 事件类型 (buy_order_done, sell_order_done)
+            order_data: 订单数据
+
+        Returns:
+            bool: 是否成功触发
+        """
+        try:
+            logger.info(f"处理订单事件: plan_id={plan_id}, event_type={event_type}, order_id={order_data.get('order_id')}")
+
+            # 检查计划是否存在且启用自动Agent决策
+            with get_db() as db:
+                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                if not plan:
+                    logger.warning(f"计划 {plan_id} 不存在")
+                    return False
+
+                if not plan.auto_agent_decision:
+                    logger.info(f"计划 {plan_id} 未启用自动Agent决策")
+                    return False
+
+                # 获取LLM配置
+                llm_config = db.query(LLMConfig).filter(LLMConfig.id == plan.llm_config_id).first()
+                if not llm_config:
+                    logger.warning(f"计划 {plan_id} 的LLM配置不存在")
+                    return False
+
+            # 获取或创建最新的对话会话
+            with get_db() as db:
+                latest_conversation = db.query(AgentConversation).filter(
+                    AgentConversation.plan_id == plan_id
+                ).order_by(AgentConversation.created_at.desc()).first()
+
+                if not latest_conversation:
+                    logger.info(f"计划 {plan_id} 没有找到对话会话，创建新会话")
+                    # 创建新的对话会话
+                    latest_conversation = AgentConversation(
+                        plan_id=plan_id,
+                        title=f"订单事件 - {order_data.get('inst_id', 'unknown')}",
+                        status="active"
+                    )
+                    db.add(latest_conversation)
+                    db.commit()
+                    db.refresh(latest_conversation)
+
+                # 记录订单事件到数据库
+                order_event_log = OrderEventLog(
+                    plan_id=plan_id,
+                    event_type=event_type,
+                    order_id=order_data.get('order_id', ''),
+                    inst_id=order_data.get('inst_id', ''),
+                    side=order_data.get('side', ''),
+                    event_data=order_data,
+                    agent_conversation_id=latest_conversation.id
+                )
+                db.add(order_event_log)
+
+                # 添加订单事件消息到对话
+                order_message = AgentMessage(
+                    conversation_id=latest_conversation.id,
+                    role="user",
+                    message_type="order_event",
+                    content=event_type,
+                    tool_arguments=order_data
+                )
+                db.add(order_message)
+                db.commit()
+
+            logger.info(f"已为计划 {plan_id} 的订单事件创建消息，会话ID: {latest_conversation.id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"处理订单事件失败: plan_id={plan_id}, error={e}")
+            logger.debug(f"处理订单事件失败详情: {traceback.format_exc()}")
             return False
 
 

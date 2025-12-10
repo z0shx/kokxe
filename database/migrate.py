@@ -81,6 +81,46 @@ def migrate_database():
                 'COMMENT ON COLUMN agent_messages.tool_execution_time IS \'工具执行所需的时间，用于性能分析\'',
                 'COMMENT ON COLUMN agent_messages.related_order_id IS \'工具调用产生的订单ID，用于关联交易结果\''
             ]
+        },
+        # 2025-12-10: 添加订单频道订阅支持
+        {
+            'version': '2025-12-10-001',
+            'description': '添加订单频道订阅支持',
+            'sql': [
+                # 扩展 WebSocketSubscription 表支持订单频道
+                'ALTER TABLE web_socket_subscriptions ADD COLUMN IF NOT EXISTS subscribed_channels JSONB COMMENT \'订阅的频道列表（JSON）\'',
+                'ALTER TABLE web_socket_subscriptions ADD COLUMN IF NOT EXISTS last_order_update TIMESTAMP COMMENT \'最后订单更新时间\'',
+                'ALTER TABLE web_socket_subscriptions ADD COLUMN IF NOT EXISTS order_count INTEGER DEFAULT 0 COMMENT \'接收订单数量\'',
+
+                # 新增订单事件日志表
+                'CREATE TABLE IF NOT EXISTS order_event_logs (',
+                '    id SERIAL PRIMARY KEY,',
+                '    plan_id INTEGER NOT NULL,',
+                '    event_type VARCHAR(50) NOT NULL,',
+                '    order_id VARCHAR(100) NOT NULL,',
+                '    inst_id VARCHAR(50) NOT NULL,',
+                '    side VARCHAR(10) NOT NULL,',
+                '    event_data JSONB NOT NULL,',
+                '    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,',
+                '    agent_conversation_id INTEGER,',
+                '    FOREIGN KEY (plan_id) REFERENCES trading_plans(id),',
+                '    FOREIGN KEY (agent_conversation_id) REFERENCES agent_conversations(id)',
+                '    UNIQUE(plan_id, order_id, event_type)',
+                ')',
+
+                # 添加索引
+                'CREATE INDEX IF NOT EXISTS idx_order_event_logs_plan_id ON order_event_logs(plan_id)',
+                'CREATE INDEX IF NOT EXISTS idx_order_event_logs_order_id ON order_event_logs(order_id)',
+                'CREATE INDEX IF NOT EXISTS idx_order_event_logs_event_type ON order_event_logs(event_type)',
+                'CREATE INDEX IF NOT EXISTS idx_order_event_logs_processed_at ON order_event_logs(processed_at)',
+                'CREATE INDEX IF NOT EXISTS idx_order_event_logs_conversation_id ON order_event_logs(agent_conversation_id)',
+
+                # 添加注释
+                'COMMENT ON TABLE order_event_logs IS \'订单事件日志表，记录所有订单相关的WebSocket事件\'',
+                'COMMENT ON COLUMN order_event_logs.event_type IS \'事件类型：buy_order_done, sell_order_done等\'',
+                'COMMENT ON COLUMN order_event_logs.event_data IS \'订单事件的完整数据（JSON格式）\'',
+                'COMMENT ON COLUMN order_event_logs.agent_conversation_id IS \'关联的Agent对话会话ID\''
+            ]
         }
     ]
 

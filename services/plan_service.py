@@ -376,6 +376,36 @@ class PlanService:
                 logger.error(f"计划 {plan_id}: Agent 服务启动失败: {e}")
                 # 即使 Agent 服务启动失败，数据同步仍然可以工作
 
+            # 启动订单频道订阅
+            try:
+                if (plan.okx_api_key and plan.okx_secret_key and plan.okx_passphrase):
+                    from services.order_event_service import order_event_service
+
+                    api_credentials = {
+                        'api_key': plan.okx_api_key,
+                        'secret_key': plan.okx_secret_key,
+                        'passphrase': plan.okx_passphrase,
+                        'is_demo': plan.is_demo
+                    }
+
+                    # 异步订阅订单频道
+                    subscription_success = await order_event_service.subscribe_plan_orders(
+                        plan_id=plan_id,
+                        inst_id=plan.inst_id,
+                        api_credentials=api_credentials
+                    )
+
+                    if subscription_success:
+                        logger.info(f"计划 {plan_id}: 订单频道订阅成功")
+                    else:
+                        logger.warning(f"计划 {plan_id}: 订单频道订阅失败")
+                else:
+                    logger.info(f"计划 {plan_id}: 未配置 OKX API，跳过订单频道订阅")
+
+            except Exception as e:
+                logger.error(f"计划 {plan_id}: 订单频道订阅异常: {e}")
+                # 即使订单订阅失败，计划仍然可以正常启动
+
             # 更新计划状态
             cls.update_plan_status(plan_id, 'running')
             cls.update_ws_status(plan_id, True)
@@ -409,6 +439,17 @@ class PlanService:
                 await cls.agent_services[plan_id].stop()
                 del cls.agent_services[plan_id]
                 logger.info(f"计划 {plan_id}: Agent 服务已停止")
+
+            # 取消订单频道订阅
+            try:
+                from services.order_event_service import order_event_service
+                unsubscription_success = await order_event_service.unsubscribe_plan_orders(plan_id)
+                if unsubscription_success:
+                    logger.info(f"计划 {plan_id}: 订单频道订阅已取消")
+                else:
+                    logger.warning(f"计划 {plan_id}: 订单频道订阅取消失败")
+            except Exception as e:
+                logger.error(f"计划 {plan_id}: 取消订单频道订阅异常: {e}")
 
             # 清理本地引用（不停止全局连接，因为可能有其他计划在使用）
             if plan_id in cls.ws_managers:

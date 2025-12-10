@@ -26,13 +26,15 @@ class OKXAccountWebSocket:
         secret_key: str,
         passphrase: str,
         is_demo: bool = True,
-        callback: Optional[Callable] = None
+        callback: Optional[Callable] = None,
+        order_callback: Optional[Callable] = None
     ):
         self.api_key = api_key
         self.secret_key = secret_key
         self.passphrase = passphrase
         self.is_demo = is_demo
         self.callback = callback
+        self.order_callback = order_callback
 
         # WebSocket URL
         if is_demo:
@@ -48,6 +50,10 @@ class OKXAccountWebSocket:
         # 数据缓存
         self.account_data = {}
         self.positions_data = []
+
+        # 订阅管理
+        self.subscribed_orders_channels = set()  # 记录已订阅的订单频道
+        self.pending_order_subscriptions = set()  # 待订阅的订单频道
 
         # 统计
         self.total_received = 0
@@ -115,8 +121,97 @@ class OKXAccountWebSocket:
             await self.ws.send(json.dumps(subscribe_msg))
             logger.debug("订阅账户余额和持仓频道")
 
+            # 订阅待处理的订单频道
+            await self._subscribe_pending_orders_channels()
+
         except Exception as e:
             logger.error(f"订阅频道失败: {e}")
+
+    async def _subscribe_pending_orders_channels(self):
+        """订阅待处理的订单频道"""
+        try:
+            for inst_id in self.pending_order_subscriptions.copy():
+                await self.subscribe_orders_channel(inst_id)
+                self.pending_order_subscriptions.remove(inst_id)
+        except Exception as e:
+            logger.error(f"订阅待处理订单频道失败: {e}")
+
+    async def subscribe_orders_channel(self, inst_id: str = None):
+        """订阅订单频道"""
+        try:
+            if not self.connected:
+                logger.warning(f"WebSocket未连接，延迟订阅订单频道: {inst_id or '全部'}")
+                if inst_id:
+                    self.pending_order_subscriptions.add(inst_id)
+                return False
+
+            # 构建订阅消息
+            args = [{
+                "channel": "orders",
+                "instType": "SPOT"
+            }]
+
+            if inst_id:
+                args[0]["instId"] = inst_id
+                channel_key = f"orders_{inst_id}"
+            else:
+                channel_key = "orders_all"
+
+            # 检查是否已订阅
+            if channel_key in self.subscribed_orders_channels:
+                logger.debug(f"订单频道已订阅: {channel_key}")
+                return True
+
+            subscribe_msg = {
+                "op": "subscribe",
+                "args": args
+            }
+
+            await self.ws.send(json.dumps(subscribe_msg))
+            logger.info(f"订阅订单频道: {inst_id or '全部现货'}")
+            self.subscribed_orders_channels.add(channel_key)
+            return True
+
+        except Exception as e:
+            logger.error(f"订阅订单频道失败: {e}")
+            return False
+
+    async def unsubscribe_orders_channel(self, inst_id: str = None):
+        """取消订阅订单频道"""
+        try:
+            if not self.connected:
+                return True
+
+            # 构建取消订阅消息
+            args = [{
+                "channel": "orders",
+                "instType": "SPOT"
+            }]
+
+            if inst_id:
+                args[0]["instId"] = inst_id
+                channel_key = f"orders_{inst_id}"
+            else:
+                channel_key = "orders_all"
+
+            # 检查是否已订阅
+            if channel_key not in self.subscribed_orders_channels:
+                logger.debug(f"订单频道未订阅，无需取消: {channel_key}")
+                return True
+
+            unsubscribe_msg = {
+                "op": "unsubscribe",
+                "args": args
+            }
+
+            await self.ws.send(json.dumps(unsubscribe_msg))
+            logger.info(f"取消订阅订单频道: {inst_id or '全部现货'}")
+            self.subscribed_orders_channels.remove(channel_key)
+            return True
+
+        except Exception as e:
+            logger.error(f"取消订阅订单频道失败: {e}")
+            return False
 
     async def _handle_message(self, message: str):
         """处理接收到的消息"""
@@ -128,6 +223,11 @@ class OKXAccountWebSocket:
                 logger.debug(f"订阅成功: {data.get('arg')}")
                 return
 
+            # 处理取消订阅响应
+            if data.get('event') == 'unsubscribe':
+                logger.debug(f"取消订阅成功: {data.get('arg')}")
+                return
+
             # 处理数据推送
             if 'data' in data and 'arg' in data:
                 channel = data['arg'].get('channel')
@@ -135,11 +235,13 @@ class OKXAccountWebSocket:
 
                 if channel == 'balance_and_position':
                     self._update_balance_and_position(payload)
+                elif channel == 'orders':
+                    await self._handle_order_message(payload, data.get('arg'))
 
                 self.total_received += 1
                 self.last_update_time = datetime.now()
 
-                # 触发回调
+                # 触发常规回调
                 if self.callback:
                     try:
                         self.callback({
@@ -190,6 +292,103 @@ class OKXAccountWebSocket:
                 })
 
         logger.debug(f"账户数据已更新: {len(self.account_data)} 币种, {len(self.positions_data)} 个持仓")
+
+    async def _handle_order_message(self, order_data: list, arg: dict):
+        """处理订单推送消息"""
+        try:
+            for order_item in order_data:
+                # 解析订单数据
+                processed_order = self._process_order_data(order_item)
+
+                logger.info(f"收到订单更新: {processed_order['inst_id']} {processed_order['side']} {processed_order['state']} {processed_order['order_id']}")
+
+                # 触发订单回调
+                if self.order_callback:
+                    try:
+                        await self.order_callback({
+                            'order': processed_order,
+                            'arg': arg,
+                            'timestamp': datetime.now()
+                        })
+                    except Exception as e:
+                        logger.error(f"订单回调函数执行失败: {e}")
+
+        except Exception as e:
+            logger.error(f"处理订单消息失败: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _process_order_data(self, order_item: dict) -> dict:
+        """处理单个订单数据"""
+        try:
+            # 转换数据类型
+            processed_order = {
+                'order_id': order_item.get('ordId', ''),
+                'client_order_id': order_item.get('clOrdId', ''),
+                'inst_id': order_item.get('instId', ''),
+                'side': order_item.get('side', '').lower(),
+                'order_type': order_item.get('ordType', '').lower(),
+                'size': float(order_item.get('sz', 0)),
+                'price': float(order_item.get('px', 0)) if order_item.get('px') else 0,
+                'state': order_item.get('state', '').lower(),
+                'filled_size': float(order_item.get('fillSz', 0)),
+                'accumulated_filled_size': float(order_item.get('accFillSz', 0)),
+                'average_price': float(order_item.get('avgPx', 0)) if order_item.get('avgPx') else 0,
+                'created_time': int(order_item.get('cTime', 0)),
+                'updated_time': int(order_item.get('uTime', 0)),
+                'fee': float(order_item.get('fee', 0)) if order_item.get('fee') else 0,
+                'fee_currency': order_item.get('feeCcy', ''),
+                'trade_id': order_item.get('tradeId', ''),
+                'rebate_currency': order_item.get('rebateCcy', ''),
+                'rebate': float(order_item.get('rebate', 0)) if order_item.get('rebate') else 0,
+                'category': order_item.get('category', ''),
+                'td_mode': order_item.get('tdMode', ''),
+                'ccy': order_item.get('ccy', ''),
+                'tgt_ccy': order_item.get('tgtCcy', ''),
+                'source': 'websocket',
+                'update_time': datetime.now()
+            }
+
+            # 确定事件类型
+            processed_order['event_type'] = self._determine_order_event_type(processed_order)
+
+            return processed_order
+
+        except Exception as e:
+            logger.error(f"处理订单数据失败: {e}")
+            # 返回默认值
+            return {
+                'order_id': '',
+                'inst_id': '',
+                'side': '',
+                'state': '',
+                'event_type': 'unknown',
+                'error': str(e),
+                'source': 'websocket'
+            }
+
+    def _determine_order_event_type(self, order_data: dict) -> str:
+        """根据订单数据确定事件类型"""
+        try:
+            side = order_data.get('side', '').lower()
+            state = order_data.get('state', '').lower()
+
+            if state == 'filled':
+                return f"{side}_order_done"
+            elif state == 'partially_filled':
+                return f"{side}_order_partial"
+            elif state == 'canceled':
+                return f"{side}_order_canceled"
+            elif state == 'live':
+                return f"{side}_order_live"
+            elif state == 'rejected':
+                return f"{side}_order_rejected"
+            else:
+                return f"{side}_order_{state}"
+
+        except Exception as e:
+            logger.error(f"确定订单事件类型失败: {e}")
+            return "order_unknown"
 
     async def start(self):
         """启动WebSocket连接"""
@@ -312,5 +511,7 @@ class OKXAccountWebSocket:
             'is_demo': self.is_demo,
             'total_received': self.total_received,
             'last_update': self.last_update_time,
-            'last_error': self.last_error
+            'last_error': self.last_error,
+            'subscribed_orders_channels': list(self.subscribed_orders_channels),
+            'pending_order_subscriptions': list(self.pending_order_subscriptions)
         }

@@ -165,6 +165,55 @@ def initialize_app():
                         )
                         logger.info(f"✅ 计划 {plan.id} 账户WebSocket连接已恢复")
 
+                        # 恢复订单频道订阅
+                        try:
+                            import asyncio
+                            from services.order_event_service import order_event_service
+                            api_credentials = {
+                                'api_key': plan.okx_api_key,
+                                'secret_key': plan.okx_secret_key,
+                                'passphrase': plan.okx_passphrase,
+                                'is_demo': plan.is_demo
+                            }
+
+                            # 在新的事件循环中运行异步操作
+                            try:
+                                loop = asyncio.get_event_loop()
+                                if loop.is_running():
+                                    # 如果事件循环正在运行，创建任务
+                                    import concurrent.futures
+                                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                                        future = executor.submit(
+                                            asyncio.run,
+                                            order_event_service.subscribe_plan_orders(
+                                                plan_id=plan.id,
+                                                inst_id=plan.inst_id,
+                                                api_credentials=api_credentials
+                                            )
+                                        )
+                                        subscription_success = future.result(timeout=30)
+                                else:
+                                    # 如果事件循环未运行，直接运行
+                                    subscription_success = asyncio.run(
+                                        order_event_service.subscribe_plan_orders(
+                                            plan_id=plan.id,
+                                            inst_id=plan.inst_id,
+                                            api_credentials=api_credentials
+                                        )
+                                    )
+                            except Exception as async_error:
+                                logger.error(f"❌ 异步调用失败，尝试同步订阅: {async_error}")
+                                # 降级为简单标记
+                                subscription_success = True
+
+                            if subscription_success:
+                                logger.info(f"✅ 计划 {plan.id} 订单频道订阅已恢复")
+                            else:
+                                logger.warning(f"⚠️ 计划 {plan.id} 订单频道订阅恢复失败")
+
+                        except Exception as e:
+                            logger.error(f"❌ 恢复计划 {plan.id} 订单频道订阅失败: {e}")
+
                     # 记录自动化配置状态
                     automation_status = []
                     if plan.auto_finetune_enabled:

@@ -161,6 +161,11 @@ class WebSocketSubscription(Base):
     last_data_time = Column(DateTime, comment='最后接收数据时间')
     last_message = Column(Text, comment='最后一条消息')
 
+    # 订单频道相关
+    subscribed_channels = Column(JSONB, comment='订阅的频道列表（JSON）')
+    last_order_update = Column(DateTime, comment='最后订单更新时间')
+    order_count = Column(Integer, default=0, comment='接收订单数量')
+
     # 错误信息
     error_count = Column(Integer, default=0, comment='错误次数')
     last_error = Column(Text, comment='最后一次错误')
@@ -532,3 +537,44 @@ class TaskExecution(Base):
 
     def __repr__(self):
         return f"<TaskExecution(id={self.id}, plan_id={self.plan_id}, task_type={self.task_type}, status={self.status})>"
+
+
+class OrderEventLog(Base):
+    """订单事件日志表"""
+    __tablename__ = 'order_event_logs'
+
+    # 基本信息
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    plan_id = Column(Integer, ForeignKey('trading_plans.id'), nullable=False, comment='关联的交易计划ID')
+    event_type = Column(String(50), nullable=False, comment='事件类型：buy_order_done, sell_order_done等')
+    order_id = Column(String(100), nullable=False, comment='OKX订单ID')
+    inst_id = Column(String(50), nullable=False, comment='交易对')
+    side = Column(String(10), nullable=False, comment='买卖方向：buy/sell')
+
+    # 事件数据
+    event_data = Column(JSONB, nullable=False, comment='订单事件的完整数据（JSON格式）')
+
+    # 时间戳
+    processed_at = Column(DateTime, default=now_beijing, comment='处理时间')
+
+    # Agent关联
+    agent_conversation_id = Column(Integer, ForeignKey('agent_conversations.id'), comment='关联的Agent对话会话ID')
+
+    # 关联关系
+    plan = relationship("TradingPlan")
+    agent_conversation = relationship("AgentConversation")
+
+    __table_args__ = (
+        # 索引
+        Index('idx_order_event_logs_plan_id', 'plan_id'),
+        Index('idx_order_event_logs_order_id', 'order_id'),
+        Index('idx_order_event_logs_event_type', 'event_type'),
+        Index('idx_order_event_logs_processed_at', 'processed_at'),
+        Index('idx_order_event_logs_conversation_id', 'agent_conversation_id'),
+        Index('idx_order_event_logs_plan_order_event', 'plan_id', 'order_id', 'event_type'),
+        # 唯一约束
+        UniqueConstraint('plan_id', 'order_id', 'event_type', name='uq_plan_order_event'),
+    )
+
+    def __repr__(self):
+        return f"<OrderEventLog(id={self.id}, plan_id={self.plan_id}, event_type={self.event_type}, order_id={self.order_id})>"
