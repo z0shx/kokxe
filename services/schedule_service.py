@@ -539,9 +539,9 @@ class ScheduleService:
 
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(run_training_complete)
-                    # 等待训练完全完成，包括状态更新，设置较长的超时时间
+                    # 等待训练完全完成，包括状态更新，设置更长的超时时间
                     logger.info(f"等待训练完全完成: plan_id={plan_id}")
-                    result = future.result(timeout=3600)  # 1小时超时，确保训练有足够时间完成
+                    result = future.result(timeout=10800)  # 3小时超时，给微调训练足够时间完成
                     logger.info(f"✅ 自动训练完全完成: plan_id={plan_id}, result={result}")
 
             except RuntimeError:

@@ -129,12 +129,12 @@ class TrainingService:
                             start_time_beijing = record.train_start_time.astimezone(BEIJING_TZ)
 
                         hours_elapsed = (now_beijing() - start_time_beijing).total_seconds() / 3600
-                        if hours_elapsed > 4:
-                            logger.error(f"训练记录卡住超过4小时，标记为失败: id={record.id}")
+                        if hours_elapsed > 8:  # 增加到8小时，给微调训练更多时间
+                            logger.error(f"训练记录卡住超过8小时，标记为失败: id={record.id}")
                             record.status = 'failed'
                             record.train_end_time = now_beijing()
                             record.train_duration = int(hours_elapsed * 3600)
-                            record.error_message = f"训练卡住超过4小时，自动标记为失败"
+                            record.error_message = f"训练卡住超过8小时，自动标记为失败"
                             db.commit()
                         else:
                             logger.info(f"训练记录仍在合理时间内: id={record.id}, 已耗时{hours_elapsed:.1f}小时")

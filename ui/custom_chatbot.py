@@ -412,9 +412,9 @@ def process_streaming_messages(messages: List[List[Dict[str, Any]]]) -> List[Dic
 
             # 根据消息类型进行特殊处理
             if role == "system":
-                # 系统提示词 - 转换为assistant角色以便在Gradio中显示
-                formatted_content = f"💻 **系统提示词**:\n{content}"
-                chatbot_messages.append({"role": "assistant", "content": formatted_content})
+                # 系统提示词 - 保持system角色，添加格式化
+                formatted_content = f"💻 **系统提示词**:\n\n{content}"
+                chatbot_messages.append({"role": "system", "content": formatted_content})
 
             elif role == "user":
                 # 用户消息 - 直接显示
@@ -510,7 +510,8 @@ def format_conversation_history(messages: List[Dict]) -> List[Dict]:
             chatbot_messages.append({"role": "play", "content": content})
         elif role == "system":
             # 确保系统消息显示为系统提示词格式
-            chatbot_messages.append({"role": "system", "content": content})
+            formatted_content = f"💻 **系统提示词**:\n\n{content}"
+            chatbot_messages.append({"role": "system", "content": formatted_content})
         else:
             # 普通消息
             chatbot_messages.append({"role": role, "content": content})

@@ -133,16 +133,19 @@ class KlineEventService:
     async def _trigger_plan_event(self, plan: TradingPlan, kline_data: dict):
         """为单个计划触发事件"""
         try:
-            # 使用增强推理服务处理K线事件
-            from services.enhanced_inference_service import enhanced_inference_service
+            # 使用langchain_agent服务处理K线事件
+            from services.langchain_agent import agent_service
 
-            await enhanced_inference_service.handle_kline_event_trigger(
+            success = await agent_service.handle_new_kline_data(
                 plan_id=plan.id,
                 inst_id=plan.inst_id,
                 kline_data=kline_data
             )
 
-            logger.info(f"已为计划 {plan.id} 触发K线事件对话")
+            if success:
+                logger.info(f"已为计划 {plan.id} 触发K线事件对话")
+            else:
+                logger.warning(f"计划 {plan.id} 的K线事件处理失败")
 
         except Exception as e:
             logger.error(f"为计划 {plan.id} 触发事件失败: {e}")

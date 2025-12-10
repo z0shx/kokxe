@@ -1003,8 +1003,25 @@ class LangChainAgentService:
             except Exception as e:
                 logger.error(f"保存系统消息失败: {e}")
         else:
-            # 加载历史消息
-            yield await self._load_conversation_history(conversation.id)
+            # 加载历史消息，但要确保包含系统消息
+            history = await self._load_conversation_history(conversation.id)
+
+            # 检查历史中是否包含系统消息，如果没有，则添加
+            if not any(msg.get("role") == "system" for msg in history):
+                logger.info(f"对话 {conversation.id} 缺少系统消息，添加系统提示词")
+                # 保存系统消息到数据库
+                try:
+                    with get_db() as db:
+                        await self._save_message(
+                            db, conversation.id, "system", system_prompt, "text"
+                        )
+                except Exception as e:
+                    logger.error(f"保存系统消息失败: {e}")
+
+                # 在历史开头添加系统消息
+                yield [{"role": "system", "content": system_prompt}]
+            else:
+                yield history
 
         # 输出用户消息
         yield [{"role": "user", "content": user_message}]
@@ -1475,9 +1492,26 @@ class LangChainAgentService:
                     AgentMessage.conversation_id == conversation_id
                 ).order_by(AgentMessage.created_at.asc()).all()
 
+                # 分离系统消息和其他消息
+                system_messages = []
+                other_messages = []
+                for message in messages:
+                    if message.role == "system":
+                        system_messages.append(message)
+                    else:
+                        other_messages.append(message)
+
+                # 系统消息总是放在最前面，按创建时间排序
+                system_messages.sort(key=lambda x: x.created_at)
+                # 其他消息按创建时间排序
+                other_messages.sort(key=lambda x: x.created_at)
+
+                # 合并消息：系统消息在前，其他消息在后
+                ordered_messages = system_messages + other_messages
+
                 # 转换为流式消息格式
                 history_messages = []
-                for message in messages:
+                for message in ordered_messages:
                     role = message.role
                     content = message.content
 
@@ -1529,8 +1563,13 @@ class LangChainAgentService:
                         # 投资结果
                         history_messages.append({"role": "assistant", "content": content})
                     else:
-                        # 普通消息
-                        history_messages.append({"role": role, "content": content})
+                        # 普通消息 - 包括系统消息
+                        if role == "system":
+                            # 系统消息需要特殊格式化显示
+                            formatted_content = f"💻 **系统提示词**:\n\n{content}"
+                            history_messages.append({"role": "system", "content": formatted_content})
+                        else:
+                            history_messages.append({"role": role, "content": content})
 
                 return history_messages
 
@@ -1963,6 +2002,84 @@ class LangChainAgentService:
         except Exception as e:
             logger.error(f"获取统一决策记录失败: {e}")
             return []
+
+    async def handle_new_kline_data(self, plan_id: int, inst_id: str, kline_data: dict) -> bool:
+        """
+        处理新的K线数据，触发自动Agent决策
+
+        Args:
+            plan_id: 计划ID
+            inst_id: 交易对ID
+            kline_data: K线数据
+
+        Returns:
+            bool: 是否成功触发
+        """
+        try:
+            logger.info(f"处理新K线数据: plan_id={plan_id}, inst_id={inst_id}")
+
+            # 检查计划是否存在且启用自动决策
+            with get_db() as db:
+                plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                if not plan:
+                    logger.warning(f"计划 {plan_id} 不存在")
+                    return False
+
+                if not plan.auto_agent_decision:
+                    logger.info(f"计划 {plan_id} 未启用自动Agent决策")
+                    return False
+
+                # 获取LLM配置
+                llm_config = db.query(LLMConfig).filter(LLMConfig.id == plan.llm_config_id).first()
+                if not llm_config:
+                    logger.warning(f"计划 {plan_id} 的LLM配置不存在")
+                    return False
+
+            # 获取最新的对话会话
+            with get_db() as db:
+                latest_conversation = db.query(AgentConversation).filter(
+                    AgentConversation.plan_id == plan_id
+                ).order_by(AgentConversation.created_at.desc()).first()
+
+                if not latest_conversation:
+                    logger.info(f"计划 {plan_id} 没有找到对话会话，创建新会话")
+                    # 创建新的对话会话
+                    latest_conversation = AgentConversation(
+                        plan_id=plan_id,
+                        title=f"K线事件触发 - {inst_id}",
+                        status="active"
+                    )
+                    db.add(latest_conversation)
+                    db.commit()
+                    db.refresh(latest_conversation)
+
+                # 添加K线数据消息到对话
+                kline_message = AgentMessage(
+                    conversation_id=latest_conversation.id,
+                    role="user",
+                    message_type="user_message",
+                    content="new_k_line_data",
+                    tool_arguments=kline_data
+                )
+                db.add(kline_message)
+
+                # 添加系统消息说明
+                system_message = AgentMessage(
+                    conversation_id=latest_conversation.id,
+                    role="system",
+                    message_type="system_message",
+                    content=f"收到新的K线数据 - 交易对: {inst_id}, 时间: {kline_data.get('timestamp', 'unknown')}",
+                )
+                db.add(system_message)
+                db.commit()
+
+            logger.info(f"已为计划 {plan_id} 的新K线数据创建消息，会话ID: {latest_conversation.id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"处理新K线数据失败: plan_id={plan_id}, error={e}")
+            logger.debug(f"处理新K线数据失败详情: {traceback.format_exc()}")
+            return False
 
 
 # 全局实例

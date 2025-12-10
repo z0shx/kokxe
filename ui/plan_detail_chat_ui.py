@@ -487,9 +487,31 @@ class PlanDetailChatUI:
 
         def restore_conversation_handler(pid, selected_conversation):
             """恢复对话处理函数"""
-            restored_history = self.restore_selected_conversation(pid, selected_conversation)
-            button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(restored_history) > 0)
-            return restored_history, button_states[0], button_states[1], button_states[2]
+            try:
+                logger.info(f"恢复对话处理函数被调用: pid={pid}, selected_conversation={selected_conversation}")
+
+                restored_history = self.restore_selected_conversation(pid, selected_conversation)
+
+                # 检查是否返回了错误消息
+                if (restored_history and len(restored_history) > 0 and
+                    restored_history[0].get("role") == "assistant" and
+                    restored_history[0].get("content", "").startswith("❌ 恢复对话失败")):
+                    # 如果是错误消息，保持按钮可用以便重试
+                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=False)
+                else:
+                    # 正常恢复，更新按钮状态
+                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(restored_history) > 0)
+
+                return restored_history, button_states[0], button_states[1], button_states[2]
+
+            except Exception as e:
+                logger.error(f"恢复对话处理函数异常: {e}")
+                import traceback
+                logger.error(f"恢复对话处理函数异常详情: {traceback.format_exc()}")
+
+                error_message = [{"role": "assistant", "content": f"❌ 恢复对话处理失败: {str(e)}"}]
+                button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=False)
+                return error_message, button_states[0], button_states[1], button_states[2]
 
         def refresh_conversations_and_state(pid, current_history):
             """刷新对话列表并更新状态"""
@@ -654,6 +676,7 @@ class PlanDetailChatUI:
             from database.models import AgentConversation, AgentMessage
             from database.db import get_db
             from ui.custom_chatbot import format_conversation_history
+            from sqlalchemy import desc
 
             with get_db() as db:
                 # 如果没有指定对话ID，获取最新的对话
@@ -698,6 +721,7 @@ class PlanDetailChatUI:
             from database.models import AgentConversation, AgentMessage
             from database.db import get_db
             from database.models import now_beijing
+            from sqlalchemy import desc, func
 
             with get_db() as db:
                 conversations = db.query(AgentConversation).filter(
@@ -752,7 +776,20 @@ class PlanDetailChatUI:
             plan_id: 计划ID
             selected_conversation_id: 选择的对话ID
         """
-        if not selected_conversation_id:
-            return []  # 返回空历史
+        try:
+            logger.info(f"开始恢复对话: plan_id={plan_id}, conversation_id={selected_conversation_id}")
 
-        return self.restore_conversation_from_records(plan_id, selected_conversation_id)
+            if not selected_conversation_id:
+                logger.warning("选择的对话ID为空")
+                return []  # 返回空历史
+
+            restored_history = self.restore_conversation_from_records(plan_id, selected_conversation_id)
+            logger.info(f"成功恢复对话，包含 {len(restored_history)} 条消息")
+            return restored_history
+
+        except Exception as e:
+            logger.error(f"恢复对话失败: {e}")
+            import traceback
+            logger.error(f"恢复对话失败详情: {traceback.format_exc()}")
+            # 返回错误消息而不是空历史
+            return [{"role": "assistant", "content": f"❌ 恢复对话失败: {str(e)}"}]
