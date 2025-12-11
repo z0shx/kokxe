@@ -167,7 +167,6 @@ def initialize_app():
 
                         # 恢复订单频道订阅
                         try:
-                            import asyncio
                             from services.order_event_service import order_event_service
                             api_credentials = {
                                 'api_key': plan.okx_api_key,
@@ -176,43 +175,43 @@ def initialize_app():
                                 'is_demo': plan.is_demo
                             }
 
-                            # 在新的事件循环中运行异步操作
-                            try:
-                                loop = asyncio.get_event_loop()
-                                if loop.is_running():
-                                    # 如果事件循环正在运行，创建任务
-                                    import concurrent.futures
-                                    with concurrent.futures.ThreadPoolExecutor() as executor:
-                                        future = executor.submit(
-                                            asyncio.run,
-                                            order_event_service.subscribe_plan_orders(
-                                                plan_id=plan.id,
-                                                inst_id=plan.inst_id,
-                                                api_credentials=api_credentials
-                                            )
-                                        )
-                                        subscription_success = future.result(timeout=30)
-                                else:
-                                    # 如果事件循环未运行，直接运行
-                                    subscription_success = asyncio.run(
+                            # 使用线程池在后台线程中运行异步订阅
+                            import threading
+                            import time
+
+                            def subscribe_in_background():
+                                """在后台线程中执行订单频道订阅"""
+                                try:
+                                    # 创建新的事件循环
+                                    new_loop = asyncio.new_event_loop()
+                                    asyncio.set_event_loop(new_loop)
+
+                                    # 执行订阅
+                                    result = new_loop.run_until_complete(
                                         order_event_service.subscribe_plan_orders(
                                             plan_id=plan.id,
                                             inst_id=plan.inst_id,
                                             api_credentials=api_credentials
                                         )
                                     )
-                            except Exception as async_error:
-                                logger.error(f"❌ 异步调用失败，尝试同步订阅: {async_error}")
-                                # 降级为简单标记
-                                subscription_success = True
 
-                            if subscription_success:
-                                logger.info(f"✅ 计划 {plan.id} 订单频道订阅已恢复")
-                            else:
-                                logger.warning(f"⚠️ 计划 {plan.id} 订单频道订阅恢复失败")
+                                    if result:
+                                        logger.info(f"✅ 计划 {plan.id} 订单频道订阅已恢复 (后台)")
+                                    else:
+                                        logger.warning(f"⚠️ 计划 {plan.id} 订单频道订阅恢复失败 (后台)")
+
+                                    new_loop.close()
+
+                                except Exception as bg_error:
+                                    logger.error(f"❌ 后台订阅失败: {bg_error}")
+
+                            # 启动后台订阅线程
+                            subscribe_thread = threading.Thread(target=subscribe_in_background, daemon=True)
+                            subscribe_thread.start()
+                            logger.info(f"🔄 计划 {plan.id} 订单频道订阅已启动后台恢复")
 
                         except Exception as e:
-                            logger.error(f"❌ 恢复计划 {plan.id} 订单频道订阅失败: {e}")
+                            logger.error(f"❌ 启动计划 {plan.id} 订单频道订阅恢复失败: {e}")
 
                     # 记录自动化配置状态
                     automation_status = []
@@ -1015,7 +1014,7 @@ def create_app():
                                 is_valid, plan_id, clean_message, current_history, error_msg = chat_ui_instance._validate_plan_and_message(pid, user_message, history)
                                 if not is_valid:
                                     button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
-                                    return history + [{"role": "assistant", "content": error_msg}], gr.update(value=""), gr.update(visible=True, value=error_msg), button_states[0], button_states[1], button_states[2]
+                                    return history + [{"role": "assistant", "content": error_msg}], gr.update(value=""), gr.update(visible=True, value=error_msg), gr.update(visible=False), button_states[0], button_states[1], button_states[2]
 
                                 try:
                                     # 生成会话ID

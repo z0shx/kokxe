@@ -489,46 +489,44 @@ class LangChainAgentService:
         if "query_prediction_data" in enabled_tools:
             @tool
             def query_prediction_data(
-                limit: int = 20,
-                hours: int = 24,
+                limit: int = 500,
                 include_monte_carlo: bool = True,
                 monte_carlo_sample_count: int = 5,
                 include_path_statistics: bool = True
             ) -> str:
-                """查询AI模型预测数据（默认最近24小时），包含蒙特卡罗路径信息和统计数据
+                """查询AI模型预测数据（获取最新批次），包含蒙特卡罗路径信息和统计数据
 
                 Args:
-                    limit: 返回预测数据条数限制（建议20条以内）
-                    hours: 查询时间范围（小时，最大168小时=7天）
+                    limit: 返回预测数据条数限制（默认500条，确保包含最新批次）
                     include_monte_carlo: 是否包含蒙特卡罗路径样本
                     monte_carlo_sample_count: 显示蒙特卡罗路径样本数量（最多10条）
                     include_path_statistics: 是否包含路径统计分析
+
+                Returns:
+                    JSON格式的预测数据，包含以下字段：
+                    - success: 查询是否成功
+                    - total_batches: 批次数量
+                    - total_predictions: 预测数据总数
+                    - batch_data: 按批次组织的预测数据
+                    - metadata: 查询元数据
                 """
                 try:
                     # 参数验证
-                    if not isinstance(limit, int) or limit <= 0 or limit > 100:
-                        return json.dumps({"success": False, "error": "limit必须是1-100之间的整数"}, ensure_ascii=False)
-                    if not isinstance(hours, int) or hours <= 0 or hours > 168:  # 最大7天
-                        return json.dumps({"success": False, "error": "hours必须是1-168之间的整数（7天）"}, ensure_ascii=False)
+                    if not isinstance(limit, int) or limit <= 0 or limit > 1000:
+                        return json.dumps({"success": False, "error": "limit必须是1-1000之间的整数"}, ensure_ascii=False)
                     if not isinstance(monte_carlo_sample_count, int) or monte_carlo_sample_count <= 0 or monte_carlo_sample_count > 10:
                         return json.dumps({"success": False, "error": "monte_carlo_sample_count必须是1-10之间的整数"}, ensure_ascii=False)
 
                     from database.models import PredictionData
                     from database.models import now_beijing
-                    from datetime import timedelta
                     import numpy as np
 
                     with get_db() as db:
-                        # 计算时间范围
-                        end_time = now_beijing()
-                        start_time = end_time - timedelta(hours=hours)
-
-                        # 获取预测数据，按批次分组
+                        # 直接获取最新的预测数据，不限制时间范围
+                        # 这样可以确保包含未来的预测数据
                         predictions = db.query(PredictionData).filter(
-                            PredictionData.plan_id == plan_id,
-                            PredictionData.timestamp >= start_time,
-                            PredictionData.timestamp <= end_time
-                        ).order_by(PredictionData.inference_batch_id.desc(), PredictionData.timestamp.asc()).limit(limit).all()
+                            PredictionData.plan_id == plan_id
+                        ).order_by(PredictionData.prediction_time.desc(), PredictionData.timestamp.desc()).limit(limit).all()
 
                         # 按批次组织数据
                         batch_data = {}
@@ -546,7 +544,7 @@ class LangChainAgentService:
                             prediction_info = {
                                 "id": pred.id,
                                 "timestamp": pred.timestamp.isoformat(),
-                                "target_time": pred.target_time.isoformat() if pred.target_time else None,
+                                "target_time": pred.timestamp.isoformat(),
                                 "ohlc": {
                                     "open": pred.open,
                                     "high": pred.high,
@@ -562,19 +560,20 @@ class LangChainAgentService:
                                     "upward_probability": pred.upward_probability,
                                     "volatility_amplification_probability": pred.volatility_amplification_probability
                                 },
-                                "predicted_price": float(pred.predicted_price) if pred.predicted_price else None,
-                                "current_price": float(pred.current_price) if pred.current_price else None,
-                                "price_change": float(pred.price_change) if pred.price_change else None,
-                                "price_change_pct": float(pred.price_change_pct) if pred.price_change_pct else None,
-                                "upward_prob": float(pred.upward_prob) if pred.upward_prob else None,
-                                "volatility_prob": float(pred.volatility_prob) if pred.volatility_prob else None,
-                                "confidence": float(pred.confidence) if pred.confidence else None,
-                                "samples_used": pred.samples_used,
-                                "temperature": pred.temperature
+                                "predicted_price": float(pred.close) if pred.close else None,
+                                "current_price": None,  # 需要从实时数据获取
+                                "price_change": None,  # 需要计算
+                                "price_change_pct": None,  # 需要计算
+                                "upward_prob": float(pred.upward_probability) if pred.upward_probability else None,
+                                "volatility_prob": float(pred.volatility_amplification_probability) if pred.volatility_amplification_probability else None,
+                                "confidence": None,  # confidence 字段不存在
+                                "samples_used": None,  # samples_used 字段不存在
+                                "temperature": None,  # temperature 字段在 inference_params 中
                             }
 
-                            # 处理新的多路径Monte Carlo格式
-                            if include_monte_carlo and pred.prediction_data:
+                            # 处理蒙特卡罗数据 - prediction_data字段不存在，跳过此部分
+                            # 直接使用下面的inference_params逻辑
+                            if False and include_monte_carlo:  # 暂时禁用此分支
                                 try:
                                     pred_json = json.loads(pred.prediction_data)
 
@@ -706,11 +705,6 @@ class LangChainAgentService:
                                 "monte_carlo_sample_count": monte_carlo_sample_count,
                                 "include_path_statistics": include_path_statistics
                             },
-                            "time_range": {
-                                "start_time": start_time.isoformat(),
-                                "end_time": end_time.isoformat(),
-                                "hours": hours
-                            },
                             "timestamp": now_beijing().isoformat()
                         }, ensure_ascii=False, indent=2)
                 except Exception as e:
@@ -751,7 +745,7 @@ class LangChainAgentService:
                             latest_with_paths = None
 
                             for pred in predictions:
-                                if pred.prediction_data:
+                                if False and pred.prediction_data:  # 暂时禁用，字段不存在
                                     try:
                                         pred_json = json.loads(pred.prediction_data)
                                         if "monte_carlo_paths" in pred_json and len(pred_json["monte_carlo_paths"]) > 0:
@@ -849,8 +843,20 @@ class LangChainAgentService:
 
     def _build_system_prompt(self, plan: TradingPlan, tools_config: Dict[str, bool]) -> str:
         """构建系统提示词 - 三部分结构"""
-        # 第一部分：动态用户提示词
+        # 第一部分：动态用户提示词，但需要简化以避免循环
         dynamic_prompt = plan.agent_prompt or "你是一个专业的加密货币交易AI助手。"
+
+        # 如果用户提示词过于复杂，使用简化版本避免循环
+        if len(dynamic_prompt) > 500 or "keep_current_strategy" in dynamic_prompt:
+            dynamic_prompt = """你是专业的加密货币交易AI助手。
+
+**核心任务**：根据市场分析做出交易决策（买入、卖出、或保持现状）
+
+**基本原则**：
+- 每次对话做出一个明确的决策
+- 避免重复操作相同的目标
+- 确保每笔交易都有明确的理由
+- 追求稳定盈利，控制风险"""
 
         # 第二部分：可用工具描述
         tools_desc = []
@@ -901,7 +907,21 @@ class LangChainAgentService:
 - 初始本金: {plan.initial_capital} USDT
 {limits_desc}
 
-请根据以上要求，并使用相应的工具来完成交易决策操作。"""
+重要执行原则：
+1. **避免重复操作**: 在执行交易操作前，先查询当前状态，避免重复下单或取消不存在的订单
+2. **单次完成目标**: 每个工具调用应该是一个完整的操作，避免为同一目标多次调用相同工具
+3. **明确决策逻辑**: 每次交易操作都要有明确的理由和目标
+4. **及时停止**: 达到交易目标后立即停止，不要继续无意义的操作
+5. **工具调用策略**: 一次调用一个工具，确认结果后再决定下一步
+
+执行步骤建议：
+1. 首先获取当前市场信息和持仓状态
+2. 分析数据并做出明确的交易决策
+3. 如果决定交易，一次性执行完整的下单操作
+4. 确认操作结果，完成交易流程
+5. 避免反复修改订单或重复下单
+
+请根据以上原则和可用的工具来完成交易决策操作。"""
 
         return system_prompt
 
@@ -1076,13 +1096,16 @@ class LangChainAgentService:
                     "verbose": False,
                     "handle_parsing_errors": True,
                     "return_intermediate_steps": True,
-                    "max_iterations": 25,  # 增加最大迭代次数以支持复杂的多工具调用场景
-                    "max_execution_time": 600,  # 增加最大执行时间为10分钟，给复杂分析更多时间
+                    "max_iterations": 15,  # 减少最大迭代次数以防止循环，15次足够完成正常交易流程
+                    "max_execution_time": 300,  # 减少最大执行时间为5分钟，避免长时间卡住
+                    "early_stopping_method": "force",  # 强制早停，防止无限循环
                 }
 
-                # 只有非 Qwen 模型才使用 early_stopping_method
-                if llm_config.provider != "qwen":
-                    agent_kwargs["early_stopping_method"] = "generate"  # 超时时生成响应
+                # 只有 Qwen 模型需要特殊处理
+                if llm_config.provider == "qwen":
+                    # Qwen 不支持 early_stopping_method，移除该参数
+                    agent_kwargs.pop("early_stopping_method", None)
+                # 其他模型保留 "force" 设置
 
                 # 创建 AgentExecutor
                 agent_executor = AgentExecutor(**agent_kwargs)
@@ -1862,30 +1885,28 @@ class LangChainAgentService:
             yield [{"role": "assistant", "content": f"❌ 定时决策失败: {str(e)}"}]
 
     def _get_latest_predictions(self, plan_id: int, training_id: int = None) -> List[PredictionData]:
-        """获取最新的预测数据（从agent_decision_service迁移逻辑）"""
+        """获取最新的预测数据，按预测时间排序获取最新批次"""
         try:
             with get_db() as db:
                 if training_id:
-                    # 使用指定的训练记录
+                    # 使用指定的训练记录，但仍按预测时间排序
                     predictions = db.query(PredictionData).filter(
                         PredictionData.training_record_id == training_id
-                    ).order_by(PredictionData.timestamp).all()
+                    ).order_by(PredictionData.prediction_time.desc(), PredictionData.timestamp.desc()).all()
                     logger.info(f"使用指定训练记录 {training_id}，获取到 {len(predictions)} 条预测数据")
                 else:
-                    # 获取最新的预测数据
-                    latest_training = db.query(TrainingRecord).filter(
-                        TrainingRecord.plan_id == plan_id,
-                        TrainingRecord.status == 'completed'
-                    ).order_by(TrainingRecord.completed_at.desc()).first()
+                    # 直接获取最新的预测数据，按预测时间排序
+                    # 这样可以确保获取到真正最新的批次，而不依赖训练记录的完成时间
+                    predictions = db.query(PredictionData).filter(
+                        PredictionData.plan_id == plan_id
+                    ).order_by(PredictionData.prediction_time.desc(), PredictionData.timestamp.desc()).limit(100).all()
 
-                    if latest_training:
-                        predictions = db.query(PredictionData).filter(
-                            PredictionData.training_record_id == latest_training.id
-                        ).order_by(PredictionData.timestamp).all()
-                        logger.info(f"使用最新训练记录 {latest_training.id}，获取到 {len(predictions)} 条预测数据")
+                    if predictions:
+                        # 获取最新批次的训练记录ID用于日志
+                        latest_training_id = predictions[0].training_record_id
+                        logger.info(f"获取到最新预测数据批次，训练记录 {latest_training_id}，共 {len(predictions)} 条预测数据")
                     else:
-                        predictions = []
-                        logger.warning(f"计划 {plan_id} 没有找到完成的训练记录")
+                        logger.warning(f"计划 {plan_id} 没有找到预测数据")
 
                 return predictions
 
@@ -1899,12 +1920,14 @@ class LangChainAgentService:
             # 格式化预测数据
             pred_text = []
             for pred in predictions[:20]:  # 限制显示最新的20条预测数据
+                upward_prob = f"{float(pred.upward_probability):.2%}" if pred.upward_probability else "N/A"
+                volatility_prob = f"{float(pred.volatility_amplification_probability):.2%}" if pred.volatility_amplification_probability else "N/A"
+
                 pred_text.append(
                     f"时间: {pred.timestamp.strftime('%Y-%m-%d %H:%M')}, "
-                    f"预测价格: {pred.predicted_price:.6f}, "
-                    f"置信度: {pred.confidence:.2f}, "
-                    f"上涨概率: {pred.upward_prob:.2%}, "
-                    f"波动率: {pred.volatility:.2%}"
+                    f"预测价格: {float(pred.close) if pred.close else 'N/A'}, "
+                    f"上涨概率: {upward_prob}, "
+                    f"波动率: {volatility_prob}"
                 )
 
             # 获取当前价格信息

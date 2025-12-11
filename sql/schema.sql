@@ -1,5 +1,5 @@
 -- KOKEX Database Schema
--- Generated at: 2025-12-10 09:53:38.461731
+-- Generated at: 2025-12-11 10:59:40.656840
 
 
 -- Table: agent_decisions
@@ -245,6 +245,9 @@ CREATE TABLE ws_subscriptions (
 	total_saved INTEGER, 
 	last_data_time TIMESTAMP WITHOUT TIME ZONE, 
 	last_message TEXT, 
+	subscribed_channels JSONB, 
+	last_order_update TIMESTAMP WITHOUT TIME ZONE, 
+	order_count INTEGER, 
 	error_count INTEGER, 
 	last_error TEXT, 
 	last_error_time TIMESTAMP WITHOUT TIME ZONE, 
@@ -330,6 +333,26 @@ CREATE TABLE agent_messages (
 	created_at TIMESTAMP WITHOUT TIME ZONE, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(conversation_id) REFERENCES agent_conversations (id) ON DELETE CASCADE
+)
+
+;
+
+-- Table: order_event_logs
+
+CREATE TABLE order_event_logs (
+	id SERIAL NOT NULL, 
+	plan_id INTEGER NOT NULL, 
+	event_type VARCHAR(50) NOT NULL, 
+	order_id VARCHAR(100) NOT NULL, 
+	inst_id VARCHAR(50) NOT NULL, 
+	side VARCHAR(10) NOT NULL, 
+	event_data JSONB NOT NULL, 
+	processed_at TIMESTAMP WITHOUT TIME ZONE, 
+	agent_conversation_id INTEGER, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_plan_order_event UNIQUE (plan_id, order_id, event_type), 
+	FOREIGN KEY(plan_id) REFERENCES trading_plans (id), 
+	FOREIGN KEY(agent_conversation_id) REFERENCES agent_conversations (id)
 )
 
 ;
