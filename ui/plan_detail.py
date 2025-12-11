@@ -3,6 +3,11 @@
 包含：上部概览、左侧训练列表、中间K线图、右侧Agent记录、下方账户订单
 """
 import gradio as gr
+
+# 兼容性检查：确保使用正确的调度器
+from services.unified_scheduler import unified_scheduler
+scheduler_instance = unified_scheduler
+
 import plotly.graph_objects as go
 import pandas as pd
 import asyncio
@@ -3536,8 +3541,7 @@ class PlanDetailUI:
                 db.commit()
 
                 # 启动定时任务调度器
-                from services.schedule_service import ScheduleService
-                success = await ScheduleService.start_schedule(plan_id)
+                success = await scheduler_instance.start_plan_schedule(plan_id)
 
                 # 订阅K线事件
                 from services.kline_event_service import get_kline_event_service
@@ -3615,8 +3619,7 @@ class PlanDetailUI:
                 get_kline_event_service().unsubscribe_plan(plan_id)
 
                 # 停止定时任务调度器
-                from services.schedule_service import ScheduleService
-                success = await ScheduleService.stop_schedule(plan_id)
+                success = await scheduler_instance.stop_plan_schedule(plan_id)
 
                 logger.info(f"计划已停止: plan_id={plan_id}, schedule_success={success}")
                 return "✅ 计划已停止\n✅ 所有定时任务已移除"
@@ -3891,10 +3894,8 @@ class PlanDetailUI:
     def load_task_executions(self, plan_id: int) -> pd.DataFrame:
         """加载任务执行记录"""
         try:
-            from services.scheduler_service import scheduler_service
-
             # 获取任务历史
-            task_history = scheduler_service.get_task_history(plan_id, limit=100)
+            task_history = scheduler_instance.get_task_history(plan_id, limit=100)
 
             if not task_history:
                 return pd.DataFrame(columns=[

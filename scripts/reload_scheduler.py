@@ -5,12 +5,19 @@
 """
 
 import sys
+
+# 使用统一调度器
+from services.unified_scheduler import unified_scheduler
+scheduler_instance = unified_scheduler
+
 from pathlib import Path
 
 # 添加项目根目录到 Python 路径
 sys.path.insert(0, str(Path(__file__).parent))
 
-from services.schedule_service import ScheduleService
+from services.scheduler_config import scheduler_config
+from services.unified_scheduler import unified_scheduler
+ScheduleService = unified_scheduler if scheduler_config.should_use_unified_scheduler() else None
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__, "reload_scheduler.log")

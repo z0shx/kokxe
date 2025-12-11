@@ -97,15 +97,21 @@ def initialize_app():
     # 初始化调度器并重新加载定时任务
     try:
         logger.info("正在初始化定时任务调度器...")
-        from services.schedule_service import ScheduleService
+        from services.unified_scheduler import unified_scheduler
 
-        # 初始化调度器
-        ScheduleService.init_scheduler()
-        logger.info("✅ 调度器初始化成功")
+        # 启动统一调度器（异步调用）
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(unified_scheduler.start_scheduler())
+            logger.info("✅ 统一调度器启动成功")
 
-        # 重新加载定时任务（同步调用）
-        ScheduleService.reload_all_schedules()
-        logger.info("✅ 定时任务重新加载完成")
+            # 重新加载定时任务
+            loop.run_until_complete(unified_scheduler.reload_all_schedules())
+            logger.info("✅ 定时任务重新加载完成")
+        finally:
+            loop.close()
 
     except Exception as e:
         logger.error(f"⚠️ 调度器初始化失败: {e}")

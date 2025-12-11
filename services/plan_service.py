@@ -2,6 +2,23 @@
 交易计划业务逻辑服务
 """
 import asyncio
+
+# 兼容性检查：确保使用正确的调度器
+try:
+    from services.scheduler_config import scheduler_config
+    if scheduler_config.should_use_unified_scheduler():
+        from services.unified_scheduler import unified_scheduler
+        scheduler_instance = unified_scheduler
+    else:
+        # 使用传统调度器
+        from services.scheduler_service import scheduler_service
+        from services.schedule_service import ScheduleService
+        scheduler_instance = scheduler_service
+except ImportError:
+    # 回退到统一调度器
+    from services.unified_scheduler import unified_scheduler
+    scheduler_instance = unified_scheduler
+
 from datetime import datetime
 from typing import Optional, Dict, List
 from database.db import get_db
@@ -233,16 +250,16 @@ class PlanService:
                 db.commit()
 
                 # 启动定时任务调度器
-                from services.schedule_service import ScheduleService
-                success = await ScheduleService.start_schedule(plan_id)
+                from services.unified_scheduler import unified_scheduler
+
+                success = await unified_scheduler.start_plan_schedule(plan_id)
 
                 logger.info(f"计划已启动: plan_id={plan_id}, schedule_success={success}")
 
                 if success:
-                    jobs = ScheduleService.get_plan_jobs(plan_id)
                     return {
                         'success': True,
-                        'message': f'✅ 计划已启动，创建了 {len(jobs)} 个定时任务'
+                        'message': f'✅ 计划已启动，定时任务调度成功'
                     }
                 else:
                     return {
@@ -281,8 +298,9 @@ class PlanService:
                 db.commit()
 
                 # 停止定时任务调度器
-                from services.schedule_service import ScheduleService
-                success = await ScheduleService.stop_schedule(plan_id)
+                from services.unified_scheduler import unified_scheduler
+
+                success = await unified_scheduler.stop_plan_schedule(plan_id)
 
                 logger.info(f"计划已停止: plan_id={plan_id}, schedule_success={success}")
                 return {
