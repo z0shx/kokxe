@@ -2185,6 +2185,32 @@ class LangChainAgentService:
             logger.debug(f"处理订单事件失败详情: {traceback.format_exc()}")
             return False
 
+    async def auto_decision_wrapper(
+        self,
+        plan_id: int,
+        training_id: int = None,
+        prediction_data: List[Dict] = None
+    ) -> None:
+        """
+        auto_decision 的包装方法，正确处理 AsyncGenerator
+        供 inference_service.py 中的 asyncio.create_task 调用
+
+        Args:
+            plan_id: 计划ID
+            training_id: 训练记录ID（可选）
+            prediction_data: 预测数据（可选，如果不提供则从数据库获取）
+        """
+        try:
+            # 消费 AsyncGenerator 的所有输出
+            async for messages in self.auto_decision(plan_id, training_id, prediction_data):
+                logger.debug(f"自动决策消息: {len(messages) if messages else 0} 条")
+
+            logger.info(f"自动决策完成: plan_id={plan_id}, training_id={training_id}")
+
+        except Exception as e:
+            logger.error(f"自动决策包装器失败: plan_id={plan_id}, training_id={training_id}, error={e}")
+            logger.debug(f"自动决策包装器失败详情: {traceback.format_exc()}")
+
 
 # 全局实例
 agent_service = LangChainAgentService()
