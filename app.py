@@ -1419,7 +1419,7 @@ def create_app():
                         overview_text,  # overview_md - 只需要一个字符串
                         "", "",  # ws_result, plan_result
                         overview_data[1], overview_data[4],  # ws_status_md, plan_status_md
-                        gr.update(visible=not overview_data[2]), gr.update(visible=overview_data[3]), gr.update(visible=not overview_data[5]), gr.update(visible=overview_data[6]),  # ws_start_btn, ws_stop_btn, plan_start_btn, plan_stop_btn
+                        gr.update(visible=overview_data[2]), gr.update(visible=overview_data[3]), gr.update(visible=overview_data[5]), gr.update(visible=overview_data[6]),  # ws_start_btn, ws_stop_btn, plan_start_btn, plan_stop_btn
                         automation_config.get('auto_finetune_enabled', False),  # auto_finetune_switch
                         automation_config.get('auto_inference_enabled', False),  # auto_inference_switch
                         automation_config.get('auto_agent_enabled', False),  # auto_agent_switch

@@ -2195,21 +2195,48 @@ class LangChainAgentService:
         auto_decision 的包装方法，正确处理 AsyncGenerator
         供 inference_service.py 中的 asyncio.create_task 调用
 
+        增强版本：添加完整上下文日志输出
+
         Args:
             plan_id: 计划ID
             training_id: 训练记录ID（可选）
             prediction_data: 预测数据（可选，如果不提供则从数据库获取）
         """
         try:
+            from config import config
+            detailed_logging = config.AGENT_DETAILED_LOGGING
+
+            logger.info(f"🤖 [AGENT推理开始] plan_id={plan_id}, training_id={training_id}")
+
+            # 只获取 system prompt
+            if detailed_logging:
+                try:
+                    with get_db() as db:
+                        plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
+                        if plan:
+                            tools_config = plan.agent_tools_config or {}
+                            system_prompt = self._build_system_prompt(plan, tools_config)
+
+                            # 只输出 system prompt
+                            logger.info(f"🔧 [System Prompt] plan_id={plan_id}")
+                            logger.info(f"🔧 [System Prompt Content]\n{system_prompt}")
+                        else:
+                            logger.error(f"❌ 计划不存在: plan_id={plan_id}")
+                            return
+                except Exception as e:
+                    logger.error(f"❌ 获取 system prompt 失败: {e}")
+                    return
+
             # 消费 AsyncGenerator 的所有输出
             async for messages in self.auto_decision(plan_id, training_id, prediction_data):
-                logger.debug(f"自动决策消息: {len(messages) if messages else 0} 条")
+                # 不记录任何内容，只执行推理
+                pass
 
-            logger.info(f"自动决策完成: plan_id={plan_id}, training_id={training_id}")
+            logger.info(f"✅ [AGENT推理完成] plan_id={plan_id}, training_id={training_id}")
 
         except Exception as e:
-            logger.error(f"自动决策包装器失败: plan_id={plan_id}, training_id={training_id}, error={e}")
-            logger.debug(f"自动决策包装器失败详情: {traceback.format_exc()}")
+            logger.error(f"❌ [AGENT推理失败] plan_id={plan_id}, training_id={training_id}, error={e}")
+            logger.debug(f"❌ [AGENT推理失败详情] {traceback.format_exc()}")
 
 
 # 全局实例

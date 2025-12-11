@@ -90,6 +90,9 @@ class Config:
     DATA_VALIDATION_MAX_MISSING_POINTS = int(os.getenv("DATA_VALIDATION_MAX_MISSING_POINTS", "10"))  # 最大允许缺失数据点数
     DATA_VALIDATION_BATCH_SIZE = int(os.getenv("DATA_VALIDATION_BATCH_SIZE", "100"))  # 批量处理大小
 
+    # Agent 推理详细日志配置
+    AGENT_DETAILED_LOGGING = os.getenv("AGENT_DETAILED_LOGGING", "true").lower() == "true"
+
     def __init__(self):
         # 确保必要目录存在
         self.MODEL_SAVE_PATH.mkdir(parents=True, exist_ok=True)
