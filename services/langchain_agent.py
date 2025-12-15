@@ -522,25 +522,36 @@ class LangChainAgentService:
                     import numpy as np
 
                     with get_db() as db:
-                        # 直接获取最新的预测数据，不限制时间范围
-                        # 这样可以确保包含未来的预测数据
-                        predictions = db.query(PredictionData).filter(
+                        # 获取最新的批次ID，确保返回完整批次数据
+                        latest_batch_id = db.query(PredictionData.inference_batch_id).filter(
                             PredictionData.plan_id == plan_id
-                        ).order_by(PredictionData.prediction_time.desc(), PredictionData.timestamp.desc()).limit(limit).all()
+                        ).order_by(PredictionData.prediction_time.desc()).limit(1).scalar()
 
-                        # 按批次组织数据
-                        batch_data = {}
+                        if not latest_batch_id:
+                            return json.dumps({
+                                "success": False,
+                                "error": "没有找到预测数据"
+                            }, ensure_ascii=False)
+
+                        # 获取该完整批次的所有预测数据
+                        predictions = db.query(PredictionData).filter(
+                            PredictionData.plan_id == plan_id,
+                            PredictionData.inference_batch_id == latest_batch_id
+                        ).order_by(PredictionData.timestamp).all()
+
+                        # 组织批次数据（现在只有一个批次）
+                        batch_data = {
+                            latest_batch_id: {
+                                "batch_id": latest_batch_id,
+                                "training_record_id": predictions[0].training_record_id if predictions else None,
+                                "prediction_time": predictions[0].prediction_time.isoformat() if predictions and predictions[0].prediction_time else None,
+                                "inference_params": predictions[0].inference_params if predictions else None,
+                                "predictions": []
+                            }
+                        }
+
+                        # 遍历该批次的所有预测数据
                         for pred in predictions:
-                            batch_id = pred.inference_batch_id
-                            if batch_id not in batch_data:
-                                batch_data[batch_id] = {
-                                    "batch_id": batch_id,
-                                    "training_record_id": pred.training_record_id,
-                                    "prediction_time": pred.prediction_time.isoformat() if pred.prediction_time else None,
-                                    "inference_params": pred.inference_params,
-                                    "predictions": []
-                                }
-
                             prediction_info = {
                                 "id": pred.id,
                                 "timestamp": pred.timestamp.isoformat(),
@@ -682,7 +693,8 @@ class LangChainAgentService:
                                     logger.debug(f"解析推理参数失败: {parse_error}")
                                     prediction_info["inference_config_error"] = str(parse_error)
 
-                            batch_data[batch_id]["predictions"].append(prediction_info)
+                            # 添加到最新批次中
+                            batch_data[latest_batch_id]["predictions"].append(prediction_info)
 
                         # 转换为列表格式
                         result_data = list(batch_data.values())
@@ -842,21 +854,13 @@ class LangChainAgentService:
         return False
 
     def _build_system_prompt(self, plan: TradingPlan, tools_config: Dict[str, bool]) -> str:
-        """构建系统提示词 - 三部分结构"""
-        # 第一部分：动态用户提示词，但需要简化以避免循环
-        dynamic_prompt = plan.agent_prompt or "你是一个专业的加密货币交易AI助手。"
+        """构建系统提示词 - 强制使用计划配置的提示词"""
+        # 强制要求必须配置计划提示词，否则拒绝执行
+        if not plan.agent_prompt:
+            raise ValueError("计划未配置 Agent 提示词，请先在计划设置中配置自定义提示词内容")
 
-        # 如果用户提示词过于复杂，使用简化版本避免循环
-        if len(dynamic_prompt) > 500 or "keep_current_strategy" in dynamic_prompt:
-            dynamic_prompt = """你是专业的加密货币交易AI助手。
-
-**核心任务**：根据市场分析做出交易决策（买入、卖出、或保持现状）
-
-**基本原则**：
-- 每次对话做出一个明确的决策
-- 避免重复操作相同的目标
-- 确保每笔交易都有明确的理由
-- 追求稳定盈利，控制风险"""
+        # 直接使用计划配置的提示词，不做任何简化
+        dynamic_prompt = plan.agent_prompt
 
         # 第二部分：可用工具描述
         tools_desc = []
@@ -991,19 +995,33 @@ class LangChainAgentService:
 
             # 如果没有现有对话，创建新对话
             if not conversation:
+                current_time = now_beijing()
                 conversation = AgentConversation(
                     plan_id=plan_id,
                     conversation_type=conversation_type,
                     status='active',
-                    started_at=now_beijing(),
-                    last_message_at=now_beijing()
+                    started_at=current_time,
+                    last_message_at=current_time
                 )
                 db.add(conversation)
                 db.commit()
                 db.refresh(conversation)
 
         # 检查是否为新创建的对话
-        is_new_conversation = (conversation.created_at == conversation.last_message_at)
+        # 方法1: 使用时间差判断
+        time_diff = abs((conversation.last_message_at - conversation.created_at).total_seconds())
+        is_new_conversation_by_time = (time_diff < 1.0)
+
+        # 方法2: 检查是否已有系统消息
+        with get_db() as db:
+            system_message_count = db.query(AgentMessage).filter(
+                AgentMessage.conversation_id == conversation.id,
+                AgentMessage.role == "system"
+            ).count()
+            is_new_conversation_by_msg = (system_message_count == 0)
+
+        # 综合判断：如果任一条件满足，认为是新对话
+        is_new_conversation = is_new_conversation_by_time or is_new_conversation_by_msg
 
         # 构建系统提示词
         tools_config = plan.agent_tools_config or {}
@@ -1885,28 +1903,47 @@ class LangChainAgentService:
             yield [{"role": "assistant", "content": f"❌ 定时决策失败: {str(e)}"}]
 
     def _get_latest_predictions(self, plan_id: int, training_id: int = None) -> List[PredictionData]:
-        """获取最新的预测数据，按预测时间排序获取最新批次"""
+        """获取最新完整批次的预测数据"""
         try:
             with get_db() as db:
                 if training_id:
-                    # 使用指定的训练记录，但仍按预测时间排序
-                    predictions = db.query(PredictionData).filter(
+                    # 指定训练记录：获取该训练记录的最新批次ID
+                    latest_batch_id = db.query(PredictionData.inference_batch_id).filter(
                         PredictionData.training_record_id == training_id
-                    ).order_by(PredictionData.prediction_time.desc(), PredictionData.timestamp.desc()).all()
-                    logger.info(f"使用指定训练记录 {training_id}，获取到 {len(predictions)} 条预测数据")
-                else:
-                    # 直接获取最新的预测数据，按预测时间排序
-                    # 这样可以确保获取到真正最新的批次，而不依赖训练记录的完成时间
+                    ).order_by(PredictionData.prediction_time.desc()).limit(1).scalar()
+
+                    if not latest_batch_id:
+                        logger.warning(f"训练记录 {training_id} 没有找到预测数据")
+                        return []
+
+                    # 获取该批次的所有预测数据
                     predictions = db.query(PredictionData).filter(
+                        PredictionData.training_record_id == training_id,
+                        PredictionData.inference_batch_id == latest_batch_id
+                    ).order_by(PredictionData.timestamp).all()
+
+                    logger.info(f"获取训练记录 {training_id} 的最新批次 {latest_batch_id}，共 {len(predictions)} 条预测数据")
+                else:
+                    # 获取计划的最新批次ID
+                    latest_batch_id = db.query(PredictionData.inference_batch_id).filter(
                         PredictionData.plan_id == plan_id
-                    ).order_by(PredictionData.prediction_time.desc(), PredictionData.timestamp.desc()).limit(100).all()
+                    ).order_by(PredictionData.prediction_time.desc()).limit(1).scalar()
+
+                    if not latest_batch_id:
+                        logger.warning(f"计划 {plan_id} 没有找到预测数据")
+                        return []
+
+                    # 获取该批次的所有预测数据
+                    predictions = db.query(PredictionData).filter(
+                        PredictionData.plan_id == plan_id,
+                        PredictionData.inference_batch_id == latest_batch_id
+                    ).order_by(PredictionData.timestamp).all()
 
                     if predictions:
-                        # 获取最新批次的训练记录ID用于日志
                         latest_training_id = predictions[0].training_record_id
-                        logger.info(f"获取到最新预测数据批次，训练记录 {latest_training_id}，共 {len(predictions)} 条预测数据")
+                        logger.info(f"获取计划 {plan_id} 的最新批次 {latest_batch_id}，训练记录 {latest_training_id}，共 {len(predictions)} 条预测数据")
                     else:
-                        logger.warning(f"计划 {plan_id} 没有找到预测数据")
+                        logger.warning(f"计划 {plan_id} 的最新批次 {latest_batch_id} 没有预测数据")
 
                 return predictions
 
@@ -1949,14 +1986,8 @@ class LangChainAgentService:
 
 预测数据：
 {chr(10).join(pred_text)}
-
-请分析这些预测数据，给出具体的交易建议：
-1. 当前市场趋势分析
-2. 建议的交易操作（买入/卖出/持有）
-3. 具体的下单策略（价格、数量等）
-4. 风险控制建议
-
-如果决定执行交易，请使用相应的工具进行操作。请基于量化分析结果做出决策，而不是主观猜测。"""
+请基于量化分析结果做出决策，而不是主观猜测。
+请分析这些预测数据，然后决定执行交易相应的工具进行操作。"""
 
             return prompt
 
