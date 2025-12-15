@@ -8,6 +8,7 @@ from typing import Callable, Optional
 from datetime import datetime, timezone
 from config import config
 from utils.logger import get_ws_logger
+from database.models import to_beijing_naive
 
 class OKXWebSocket:
     """OKX WebSocket 客户端"""
@@ -276,12 +277,14 @@ class OKXWebSocket:
             if candle[8] != '1':
                 return None
 
-            # ⚠️ 重要: OKX WebSocket 返回的是 UTC 时间戳,必须显式指定 UTC 时区
-            # 使用 timezone.utc 确保 datetime 对象是 timezone-aware 的
+            # ⚠️ 重要: OKX WebSocket 返回的是 UTC 时间戳，需要转换为UTC+8北京时间存储
+            # 转换流程：UTC时间戳 -> UTC timezone-aware时间 -> UTC+8北京时间 -> naive datetime存储
+            utc_timestamp_ms = int(candle[0])
             return {
                 'inst_id': self.inst_id,
                 'interval': self.interval,
-                'timestamp': datetime.fromtimestamp(int(candle[0]) / 1000, tz=timezone.utc),
+                'timestamp': datetime.fromtimestamp(utc_timestamp_ms / 1000, tz=timezone.utc),  # 保持UTC timezone-aware
+                'timestamp_beijing': self._utc_timestamp_to_beijing_naive(utc_timestamp_ms),  # 转换为北京时间naive
                 'open': float(candle[1]),
                 'high': float(candle[2]),
                 'low': float(candle[3]),
@@ -292,3 +295,18 @@ class OKXWebSocket:
         except (ValueError, IndexError) as e:
             self.logger.error(f"[{self.environment}] K线数据解析错误: {e}")
             return None
+
+    def _utc_timestamp_to_beijing_naive(self, utc_timestamp_ms):
+        """
+        将UTC时间戳（毫秒）转换为UTC+8北京时间的naive datetime
+
+        Args:
+            utc_timestamp_ms: UTC时间戳（毫秒）
+
+        Returns:
+            UTC+8的naive datetime，用于数据库存储
+        """
+        # 转换为UTC timezone-aware时间
+        utc_time = datetime.fromtimestamp(utc_timestamp_ms / 1000, tz=timezone.utc)
+        # 转换为北京时间并移除时区信息
+        return to_beijing_naive(utc_time)

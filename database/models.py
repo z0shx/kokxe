@@ -1,7 +1,8 @@
 """
 数据库模型定义
+时区标准：统一使用UTC+8北京时间，彻底解决时区混乱问题
 """
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import pytz
 from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Text, UniqueConstraint, Index, ForeignKey
 from sqlalchemy.orm import relationship
@@ -14,25 +15,86 @@ Base = declarative_base()
 BEIJING_TZ = pytz.timezone('Asia/Shanghai')
 
 def now_beijing():
-    """获取北京时间"""
-    return datetime.now(BEIJING_TZ)
+    """
+    获取当前UTC+8北京时间，返回naive datetime用于数据库存储
+
+    统一标准：数据库所有时间字段都存储UTC+8北京时间的naive datetime
+    这样避免了时区转换的复杂性和潜在错误
+    """
+    return datetime.now(BEIJING_TZ).replace(tzinfo=None)
+
+# 时间转换辅助函数
+def to_beijing_naive(dt_aware):
+    """
+    将timezone-aware时间转换为UTC+8的naive datetime用于数据库存储
+
+    Args:
+        dt_aware: timezone-aware的时间对象
+
+    Returns:
+        UTC+8的naive datetime，用于数据库存储
+    """
+    if dt_aware is None:
+        return None
+    # 转换为北京时间
+    dt_beijing = dt_aware.astimezone(BEIJING_TZ)
+    # 移除时区信息，用于数据库存储
+    return dt_beijing.replace(tzinfo=None)
+
+def from_beijing_naive(dt_naive):
+    """
+    将数据库存储的naive北京时间转换为timezone-aware北京时间
+
+    Args:
+        dt_naive: 数据库中的naive datetime（代表UTC+8北京时间）
+
+    Returns:
+        timezone-aware的UTC+8北京时间
+    """
+    if dt_naive is None:
+        return None
+    # 添加北京时间时区信息
+    return BEIJING_TZ.localize(dt_naive)
+
+def utc_timestamp_to_beijing(utc_timestamp_ms):
+    """
+    将UTC时间戳（毫秒）转换为UTC+8北京时间的naive datetime
+
+    Args:
+        utc_timestamp_ms: UTC时间戳（毫秒）
+
+    Returns:
+        UTC+8的naive datetime
+    """
+    if utc_timestamp_ms is None:
+        return None
+    # 转换为UTC timezone-aware时间
+    utc_time = datetime.fromtimestamp(utc_timestamp_ms / 1000, tz=timezone.utc)
+    # 转换为北京时间并移除时区信息
+    return to_beijing_naive(utc_time)
 
 
 class KlineData(Base):
-    """K线数据表"""
+    """
+    K线数据表
+
+    时区标准：所有时间字段存储UTC+8北京时间的naive datetime
+    timestamp字段：K线对应的UTC+8北京时间（不是UTC时间）
+    created_at字段：记录创建时的UTC+8北京时间
+    """
     __tablename__ = 'kline_data'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     inst_id = Column(String(50), nullable=False, comment='交易对，如 ETH-USDT')
     interval = Column(String(10), nullable=False, comment='时间颗粒度：30m/1H/2H/4H')
-    timestamp = Column(DateTime, nullable=False, comment='K线时间戳')
+    timestamp = Column(DateTime, nullable=False, comment='K线时间戳（UTC+8北京时间）')
     open = Column(Float, nullable=False, comment='开盘价')
     high = Column(Float, nullable=False, comment='最高价')
     low = Column(Float, nullable=False, comment='最低价')
     close = Column(Float, nullable=False, comment='收盘价')
     volume = Column(Float, nullable=False, comment='成交量')
     amount = Column(Float, nullable=False, comment='成交额')
-    created_at = Column(DateTime, default=now_beijing, comment='创建时间')
+    created_at = Column(DateTime, default=now_beijing, comment='创建时间（UTC+8北京时间）')
 
     # 唯一约束：交易对+时间颗粒度+时间戳
     __table_args__ = (

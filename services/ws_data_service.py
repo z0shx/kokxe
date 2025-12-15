@@ -219,13 +219,14 @@ class WebSocketDataService:
                     )
                     return
 
-                # 数据库返回的是 timezone-naive，添加 UTC 时区
-                from datetime import timezone
-                last_timestamp = last_record.timestamp.replace(tzinfo=timezone.utc)
-                self.last_data_time = last_timestamp
+                # 数据库存储的是UTC+8北京时间的naive datetime，需要添加时区信息用于比较
+                from database.models import from_beijing_naive
+                last_timestamp_beijing = from_beijing_naive(last_record.timestamp)
+                self.last_data_time = last_timestamp_beijing
 
-            # 获取当前时间（UTC）
-            current_time = datetime.now(timezone.utc)
+            # 获取当前北京时间
+            from database.models import BEIJING_TZ
+            current_time_beijing = datetime.now(BEIJING_TZ)
             interval_minutes = self.downloader.checker.interval_minutes
 
             # 将当前时间向下对齐到周期边界（找到当前周期的开始时间）
@@ -235,18 +236,18 @@ class WebSocketDataService:
                 aligned_seconds = (ts_seconds // period_seconds) * period_seconds
                 return datetime.fromtimestamp(aligned_seconds, tz=dt.tzinfo)
 
-            current_period_start = align_to_period_start(current_time, interval_minutes)
+            current_period_start = align_to_period_start(current_time_beijing, interval_minutes)
 
             # 最后一个完整周期 = 当前周期的前一个周期
             # 因为当前周期还没结束（或者刚开始）
             last_complete_period_start = current_period_start - timedelta(minutes=interval_minutes)
 
             # 计算时间差（从数据库最后时间到最后完整周期）
-            time_diff = last_complete_period_start - last_timestamp
+            time_diff = last_complete_period_start - last_timestamp_beijing
 
             self.logger.info(
-                f"[{self.environment}] 数据完整性检查: "
-                f"数据库最后={last_timestamp.strftime('%Y-%m-%d %H:%M:%S')}, "
+                f"[{self.environment}] 数据完整性检查(UTC+8): "
+                f"数据库最后={last_timestamp_beijing.strftime('%Y-%m-%d %H:%M:%S')}, "
                 f"最后完整周期={last_complete_period_start.strftime('%Y-%m-%d %H:%M:%S')}, "
                 f"差距={time_diff}"
             )
@@ -260,14 +261,14 @@ class WebSocketDataService:
                 # 计算填补范围：
                 # - start_backfill: 数据库最后时间的下一个周期（第一个需要填补的周期）
                 # - end_backfill: 最后完整周期的下一个周期（因为 before 参数是不包含的）
-                start_backfill = last_timestamp + timedelta(minutes=interval_minutes)
+                start_backfill = last_timestamp_beijing + timedelta(minutes=interval_minutes)
                 # before 参数获取 < before 的数据，所以要 +1 周期才能包含 last_complete_period_start
                 end_backfill = last_complete_period_start + timedelta(minutes=interval_minutes)
 
                 self.logger.info(
-                    f"[{self.environment}] 🔧 开始填补缺失数据: "
+                    f"[{self.environment}] 🔧 开始填补缺失数据(UTC+8): "
                     f"从 {start_backfill.strftime('%Y-%m-%d %H:%M:%S')} "
-                    f"到 {last_complete_period_start.strftime('%Y-%m-%d %H:%M:%S')} UTC "
+                    f"到 {last_complete_period_start.strftime('%Y-%m-%d %H:%M:%S')} "
                     f"(API before参数={end_backfill.strftime('%Y-%m-%d %H:%M:%S')})"
                 )
 
@@ -413,9 +414,9 @@ class WebSocketDataService:
                 ).order_by(KlineData.timestamp.desc()).first()
 
                 if last_record:
-                    # 数据库返回的是 timezone-naive，需要添加 UTC 时区以便与 current_time 比较
-                    from datetime import timezone
-                    self.last_data_time = last_record.timestamp.replace(tzinfo=timezone.utc)
+                    # 数据库存储的是UTC+8北京时间的naive datetime，需要添加时区信息
+                    from database.models import from_beijing_naive
+                    self.last_data_time = from_beijing_naive(last_record.timestamp)
 
         if self.last_data_time:
             # 计算时间差
@@ -426,9 +427,9 @@ class WebSocketDataService:
             # 如果时间差大于预期，说明有缺失
             if time_diff > expected_diff * 1.5:  # 允许50%的误差
                 self.logger.warning(
-                    f"[{self.environment}] 检测到数据缺失: "
-                    f"最后数据时间 {self.last_data_time}, "
-                    f"当前数据时间 {current_time}, "
+                    f"[{self.environment}] 检测到数据缺失(UTC+8): "
+                    f"最后数据时间 {self.last_data_time.strftime('%Y-%m-%d %H:%M:%S')}, "
+                    f"当前数据时间 {current_time.strftime('%Y-%m-%d %H:%M:%S')}, "
                     f"差距 {time_diff}"
                 )
 
@@ -514,22 +515,27 @@ class WebSocketDataService:
                 if parsed:
                     # 保存到数据库
                     with get_db() as db:
-                        # 转换为UTC时间戳存储（保持时区信息）
-                        # OKX API返回的是UTC时间戳，转换为naive UTC时间存储
-                        timestamp_utc = parsed['timestamp'].replace(tzinfo=None)
+                        # 使用北京时间存储（统一时区标准）
+                        # 优先使用 timestamp_beijing 字段，如果不存在则从 timestamp 转换
+                        if 'timestamp_beijing' in parsed:
+                            timestamp_beijing = parsed['timestamp_beijing']
+                        else:
+                            # 兼容旧格式，从UTC时间转换为北京时间
+                            from database.models import to_beijing_naive
+                            timestamp_beijing = to_beijing_naive(parsed['timestamp'])
 
-                        # 检查是否已存在
+                        # 检查是否已存在（使用北京时间比较）
                         existing = db.query(KlineData).filter(
                             KlineData.inst_id == self.inst_id,
                             KlineData.interval == self.interval,
-                            KlineData.timestamp == timestamp_utc
+                            KlineData.timestamp == timestamp_beijing
                         ).first()
 
                         if not existing:
                             new_data = KlineData(
                                 inst_id=self.inst_id,
                                 interval=self.interval,
-                                timestamp=timestamp_utc,
+                                timestamp=timestamp_beijing,  # 使用北京时间存储
                                 open=parsed['open'],
                                 high=parsed['high'],
                                 low=parsed['low'],
@@ -591,17 +597,22 @@ class WebSocketDataService:
         Returns:
             是否为新数据（True=新插入，False=更新已有数据）
         """
-        # 转换UTC时间戳为naive datetime存储
-        # parsed_data['timestamp'] 是 timezone-aware (UTC)，转换为naive UTC时间
-        timestamp_utc = parsed_data['timestamp'].replace(tzinfo=None)
-        timestamp_naive = timestamp_utc
+        # 使用北京时间存储（统一时区标准）
+        # 优先使用 timestamp_beijing 字段，如果不存在则从 timestamp 转换
+        if 'timestamp_beijing' in parsed_data:
+            # 新的数据格式，直接使用北京时间naive datetime
+            timestamp_beijing = parsed_data['timestamp_beijing']
+        else:
+            # 兼容旧格式，从UTC时间转换为北京时间
+            from database.models import to_beijing_naive
+            timestamp_beijing = to_beijing_naive(parsed_data['timestamp'])
 
         with get_db() as db:
-            # 先检查数据是否存在
+            # 先检查数据是否存在（使用北京时间比较）
             existing = db.query(KlineData).filter(
                 KlineData.inst_id == self.inst_id,
                 KlineData.interval == self.interval,
-                KlineData.timestamp == timestamp_utc
+                KlineData.timestamp == timestamp_beijing
             ).first()
 
             if existing:
@@ -615,11 +626,11 @@ class WebSocketDataService:
                 db.commit()
                 return False  # 不是新数据
             else:
-                # 新数据，插入
+                # 新数据，插入（使用北京时间）
                 new_data = KlineData(
                     inst_id=self.inst_id,
                     interval=self.interval,
-                    timestamp=timestamp_naive,
+                    timestamp=timestamp_beijing,
                     open=parsed_data['open'],
                     high=parsed_data['high'],
                     low=parsed_data['low'],

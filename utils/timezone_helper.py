@@ -7,10 +7,14 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Union
 import pytz
 
-# 定义时区常量
+# 定义时区常量 - 统一使用UTC+8北京时间
 UTC_TZ = timezone.utc
 BEIJING_TZ = timezone(timedelta(hours=8))  # UTC+8
 SHANGHAI_TZ = pytz.timezone('Asia/Shanghai')  # 备用，更准确的时区
+
+# 注意：为了保持时区一致性，推荐使用 BEIJING_TZ 而不是 SHANGHAI_TZ
+# 数据库存储：UTC+8北京时间的naive datetime
+# UI显示：UTC+8北京时间的timezone-aware datetime
 
 
 def convert_to_beijing_time(dt: Optional[Union[datetime, str]]) -> Optional[datetime]:
@@ -56,13 +60,11 @@ def convert_to_beijing_time(dt: Optional[Union[datetime, str]]) -> Optional[date
     # 处理时区转换
     if dt.tzinfo is None:
         # naive datetime，假设它已经是北京时间（因为数据库使用UTC+8存储）
-        # 直接返回naive datetime，不进行时区转换
-        return dt
+        # 使用SHANGHAI_TZ来添加时区信息，因为datetime.timezone没有localize方法
+        return SHANGHAI_TZ.localize(dt)
     else:
-        # timezone-aware datetime，先转换为UTC
-        dt_utc = dt.astimezone(UTC_TZ)
-        # 转换为UTC+8
-        dt_beijing = dt_utc.astimezone(BEIJING_TZ)
+        # timezone-aware datetime，转换为UTC+8
+        dt_beijing = dt.astimezone(BEIJING_TZ)
         return dt_beijing
 
 

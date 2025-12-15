@@ -262,19 +262,21 @@ def initialize_app():
 
     # 启动调度器健康检查
     try:
-        from services.schedule_service import ScheduleService
+        from services.unified_scheduler import unified_scheduler
         import threading
         import time
 
         def scheduler_health_check():
-            """调度器健康检查线程"""
+            """统一调度器健康检查线程"""
             while True:
                 try:
                     time.sleep(300)  # 每5分钟检查一次
 
-                    # 检查调度器是否有任务
-                    scheduler = ScheduleService.get_scheduler()
-                    jobs = scheduler.get_jobs()
+                    # 检查统一调度器是否有任务
+                    if unified_scheduler.scheduler:
+                        jobs = unified_scheduler.scheduler.get_jobs()
+                    else:
+                        jobs = []
 
                     # 检查是否有运行中的计划但没有对应调度任务
                     from database.db import get_db
@@ -287,7 +289,8 @@ def initialize_app():
                         ).all()
 
                         for plan in running_plans:
-                            plan_jobs = ScheduleService.get_plan_jobs(plan.id)
+                            # 检查该计划的调度任务
+                            plan_jobs = [job for job in jobs if f"plan_{plan.id}_" in job.id]
                             inference_job = None
 
                             for job in plan_jobs:
@@ -301,7 +304,7 @@ def initialize_app():
                                 try:
                                     loop = __import__('asyncio').new_event_loop()
                                     __import__('asyncio').set_event_loop(loop)
-                                    success = loop.run_until_complete(ScheduleService.start_schedule(plan.id))
+                                    success = loop.run_until_complete(unified_scheduler.start_plan_schedule(plan.id))
                                     if success:
                                         logger.info(f"✅ 计划 {plan.id} 预测任务重新加载成功")
                                     else:
@@ -337,9 +340,11 @@ def initialize_app():
                     if health_check_thread._stop_event.wait(timeout=300):  # 5分钟
                         break
 
-                    # 检查调度器是否有任务
-                    scheduler = ScheduleService.get_scheduler()
-                    jobs = scheduler.get_jobs()
+                    # 检查统一调度器是否有任务
+                    if unified_scheduler.scheduler:
+                        jobs = unified_scheduler.scheduler.get_jobs()
+                    else:
+                        jobs = []
 
                     # 检查是否有运行中的计划但没有对应调度任务
                     from database.db import get_db
@@ -352,7 +357,8 @@ def initialize_app():
                         ).all()
 
                         for plan in running_plans:
-                            plan_jobs = ScheduleService.get_plan_jobs(plan.id)
+                            # 检查该计划的调度任务
+                            plan_jobs = [job for job in jobs if f"plan_{plan.id}_" in job.id]
                             inference_job = None
 
                             for job in plan_jobs:
@@ -366,7 +372,7 @@ def initialize_app():
                                 try:
                                     loop = __import__('asyncio').new_event_loop()
                                     __import__('asyncio').set_event_loop(loop)
-                                    success = loop.run_until_complete(ScheduleService.start_schedule(plan.id))
+                                    success = loop.run_until_complete(unified_scheduler.start_plan_schedule(plan.id))
                                     if success:
                                         logger.info(f"✅ 计划 {plan.id} 预测任务重新加载成功")
                                     else:
@@ -1570,12 +1576,19 @@ def create_app():
                         return "❌ 请先选择计划"
 
                     try:
-                        from services.schedule_service import ScheduleService
-                        result = ScheduleService.trigger_finetune(int(pid))
-                        if result['success']:
-                            return f"✅ 手动微调训练已启动: {result['message']}"
-                        else:
-                            return f"❌ 手动微调训练失败: {result['error']}"
+                        from services.unified_scheduler import unified_scheduler
+                        import asyncio
+                        # 创建事件循环并运行异步函数
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            result = loop.run_until_complete(unified_scheduler._trigger_finetune(int(pid)))
+                            if result['success']:
+                                return f"✅ 手动微调训练已启动: training_id={result.get('training_id')}"
+                            else:
+                                return f"❌ 手动微调训练失败: {result['error']}"
+                        finally:
+                            loop.close()
                     except Exception as e:
                         logger.error(f"手动触发微调失败: {e}")
                         return f"❌ 手动微调训练失败: {str(e)}"
@@ -1586,12 +1599,19 @@ def create_app():
                         return "❌ 请先选择计划"
 
                     try:
-                        from services.schedule_service import ScheduleService
-                        result = ScheduleService.trigger_inference(int(pid))
-                        if result['success']:
-                            return f"✅ 手动预测推理已启动: {result['message']}"
-                        else:
-                            return f"❌ 手动预测推理失败: {result['error']}"
+                        from services.unified_scheduler import unified_scheduler
+                        import asyncio
+                        # 创建事件循环并运行异步函数
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            result = loop.run_until_complete(unified_scheduler._trigger_inference(int(pid)))
+                            if result and result.get('success', False):
+                                return f"✅ 手动预测推理已启动: inference_id={result.get('inference_id')}"
+                            else:
+                                return f"❌ 手动预测推理失败"
+                        finally:
+                            loop.close()
                     except Exception as e:
                         logger.error(f"手动触发预测失败: {e}")
                         return f"❌ 手动预测推理失败: {str(e)}"
