@@ -51,6 +51,14 @@ class KronosTokenizer(nn.Module, PyTorchModelHubMixin):
         self.s1_bits = s1_bits
         self.s2_bits = s2_bits
         self.codebook_dim = s1_bits + s2_bits # Total dimension of the codebook after quantization
+
+        # Store BSQ parameters for saving/loading
+        self.beta = beta
+        self.gamma0 = gamma0
+        self.gamma = gamma
+        self.zeta = zeta
+        self.group_size = group_size
+
         self.embed = nn.Linear(self.d_in, self.d_model)
         self.head = nn.Linear(self.d_model, self.d_in)
 
@@ -173,6 +181,114 @@ class KronosTokenizer(nn.Module, PyTorchModelHubMixin):
             z = layer(z)
         z = self.head(z)
         return z
+
+    def save_pretrained(self, save_directory):
+        """
+        Save model and configuration to directory.
+
+        Args:
+            save_directory (str): Directory to save the model.
+        """
+        import os
+        import json
+        import torch
+
+        os.makedirs(save_directory, exist_ok=True)
+
+        # Save model state dict
+        model_path = os.path.join(save_directory, "pytorch_model.bin")
+        torch.save(self.state_dict(), model_path)
+
+        # Save configuration
+        config = {
+            "d_in": self.d_in,
+            "d_model": self.d_model,
+            "n_heads": self.n_heads,
+            "ff_dim": self.ff_dim,
+            "n_enc_layers": self.enc_layers,
+            "n_dec_layers": self.dec_layers,
+            "ffn_dropout_p": self.ffn_dropout_p,
+            "attn_dropout_p": self.attn_dropout_p,
+            "resid_dropout_p": self.resid_dropout_p,
+            "s1_bits": self.s1_bits,
+            "s2_bits": self.s2_bits,
+            "beta": self.beta,
+            "gamma0": self.gamma0,
+            "gamma": self.gamma,
+            "zeta": self.zeta,
+            "group_size": self.group_size
+        }
+
+        config_path = os.path.join(save_directory, "config.json")
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+
+    @classmethod
+    def from_pretrained(cls, save_directory, local_files_only=False):
+        """
+        Load model and configuration from directory.
+
+        Args:
+            save_directory (str): Directory containing the saved model.
+            local_files_only (bool): Whether to only load from local files.
+
+        Returns:
+            KronosTokenizer: Loaded model.
+        """
+        import os
+        import json
+        import torch
+
+        # Load configuration
+        config_path = os.path.join(save_directory, "config.json")
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"Configuration file not found: {config_path}")
+
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+
+        # Create model instance
+        model = cls(
+            d_in=config["d_in"],
+            d_model=config["d_model"],
+            n_heads=config["n_heads"],
+            ff_dim=config["ff_dim"],
+            n_enc_layers=config["n_enc_layers"],
+            n_dec_layers=config["n_dec_layers"],
+            ffn_dropout_p=config["ffn_dropout_p"],
+            attn_dropout_p=config["attn_dropout_p"],
+            resid_dropout_p=config["resid_dropout_p"],
+            s1_bits=config["s1_bits"],
+            s2_bits=config["s2_bits"],
+            beta=config["beta"],
+            gamma0=config["gamma0"],
+            gamma=config["gamma"],
+            zeta=config["zeta"],
+            group_size=config["group_size"]
+        )
+
+        # Load state dict - support both .bin and .safetensors formats
+        bin_path = os.path.join(save_directory, "pytorch_model.bin")
+        safetensors_path = os.path.join(save_directory, "model.safetensors")
+
+        if os.path.exists(safetensors_path):
+            # Try to load safetensors format
+            try:
+                from safetensors.torch import load_file
+                state_dict = load_file(safetensors_path, device='cpu')
+                model.load_state_dict(state_dict)
+            except ImportError:
+                # If safetensors library not available, fall back to torch.load
+                import warnings
+                warnings.warn("safetensors library not available, falling back to torch.load")
+                model.load_state_dict(torch.load(safetensors_path, map_location='cpu'))
+        elif os.path.exists(bin_path):
+            # Load pytorch .bin format
+            model.load_state_dict(torch.load(bin_path, map_location='cpu'))
+        else:
+            raise FileNotFoundError(f"Model weights not found. Tried: {bin_path}, {safetensors_path}")
+
+        return model
 
 
 class Kronos(nn.Module, PyTorchModelHubMixin):
@@ -496,6 +612,104 @@ def calc_time_stamps(x_timestamp):
         time_df['month'] = x_timestamp.month
 
     return time_df
+
+    def save_pretrained(self, save_directory):
+        """
+        Save model and configuration to directory.
+
+        Args:
+            save_directory (str): Directory to save the model.
+        """
+        import os
+        import json
+        import torch
+
+        os.makedirs(save_directory, exist_ok=True)
+
+        # Save model state dict
+        model_path = os.path.join(save_directory, "pytorch_model.bin")
+        torch.save(self.state_dict(), model_path)
+
+        # Save configuration
+        config = {
+            "s1_bits": self.s1_bits,
+            "s2_bits": self.s2_bits,
+            "n_layers": self.n_layers,
+            "d_model": self.d_model,
+            "n_heads": self.n_heads,
+            "ff_dim": self.ff_dim,
+            "ffn_dropout_p": self.ffn_dropout_p,
+            "attn_dropout_p": self.attn_dropout_p,
+            "resid_dropout_p": self.resid_dropout_p,
+            "token_dropout_p": self.token_dropout_p,
+            "learn_te": self.learn_te
+        }
+
+        config_path = os.path.join(save_directory, "config.json")
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+
+    @classmethod
+    def from_pretrained(cls, save_directory, local_files_only=False):
+        """
+        Load model and configuration from directory.
+
+        Args:
+            save_directory (str): Directory containing the saved model.
+            local_files_only (bool): Whether to only load from local files.
+
+        Returns:
+            Kronos: Loaded model.
+        """
+        import os
+        import json
+        import torch
+
+        # Load configuration
+        config_path = os.path.join(save_directory, "config.json")
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"Configuration file not found: {config_path}")
+
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+
+        # Create model instance
+        model = cls(
+            s1_bits=config["s1_bits"],
+            s2_bits=config["s2_bits"],
+            n_layers=config["n_layers"],
+            d_model=config["d_model"],
+            n_heads=config["n_heads"],
+            ff_dim=config["ff_dim"],
+            ffn_dropout_p=config["ffn_dropout_p"],
+            attn_dropout_p=config["attn_dropout_p"],
+            resid_dropout_p=config["resid_dropout_p"],
+            token_dropout_p=config["token_dropout_p"],
+            learn_te=config["learn_te"]
+        )
+
+        # Load state dict - support both .bin and .safetensors formats
+        bin_path = os.path.join(save_directory, "pytorch_model.bin")
+        safetensors_path = os.path.join(save_directory, "model.safetensors")
+
+        if os.path.exists(safetensors_path):
+            # Try to load safetensors format
+            try:
+                from safetensors.torch import load_file
+                state_dict = load_file(safetensors_path, device='cpu')
+                model.load_state_dict(state_dict)
+            except ImportError:
+                # If safetensors library not available, fall back to torch.load
+                import warnings
+                warnings.warn("safetensors library not available, falling back to torch.load")
+                model.load_state_dict(torch.load(safetensors_path, map_location='cpu'))
+        elif os.path.exists(bin_path):
+            # Load pytorch .bin format
+            model.load_state_dict(torch.load(bin_path, map_location='cpu'))
+        else:
+            raise FileNotFoundError(f"Model weights not found. Tried: {bin_path}, {safetensors_path}")
+
+        return model
 
 
 class KronosPredictor:

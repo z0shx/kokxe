@@ -563,8 +563,44 @@ class WebSocketDataService:
             是否为新数据（True=新插入，False=更新已有数据）
         """
         try:
-            # 使用 loop.run_in_executor 在线程池中执行数据库操作
-            loop = asyncio.get_event_loop()
+            # 检查服务是否仍在运行
+            if not self.running:
+                self.logger.warning(
+                    f"[{self.environment}] 服务已停止，跳过数据保存"
+                )
+                return False
+
+            # 检查事件循环是否仍在运行
+            try:
+                loop = asyncio.get_running_loop()
+                if loop.is_closed():
+                    self.logger.warning(
+                        f"[{self.environment}] 事件循环已关闭，跳过数据保存"
+                    )
+                    return False
+            except RuntimeError:
+                # 没有运行中的事件循环，创建新的
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    is_new = loop.run_until_complete(self._save_to_db_sync(parsed_data))
+                    loop.close()
+                except Exception as e:
+                    self.logger.error(
+                        f"[{self.environment}] 同步保存数据失败: {e}"
+                    )
+                    return False
+
+                # 只在新数据时打印日志
+                if is_new:
+                    self.logger.info(
+                        f"[{self.environment}] 新增K线数据: "
+                        f"{parsed_data['timestamp']}, "
+                        f"close={parsed_data['close']}"
+                    )
+                return is_new
+
+            # 事件循环正常，使用异步方式
             is_new = await loop.run_in_executor(
                 None,
                 self._save_to_db,
@@ -586,6 +622,12 @@ class WebSocketDataService:
                 f"[{self.environment}] 保存K线数据失败: {e}"
             )
             return False
+
+    async def _save_to_db_sync(self, parsed_data: dict) -> bool:
+        """
+        同步保存数据到数据库（用于事件循环关闭时）
+        """
+        return self._save_to_db(parsed_data)
 
     def _save_to_db(self, parsed_data: dict) -> bool:
         """

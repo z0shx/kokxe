@@ -2079,7 +2079,7 @@ class LangChainAgentService:
                     logger.warning(f"计划 {plan_id} 不存在")
                     return False
 
-                if not plan.auto_agent_decision:
+                if not plan.auto_agent_enabled:
                     logger.info(f"计划 {plan_id} 未启用自动Agent决策")
                     return False
 
@@ -2157,7 +2157,7 @@ class LangChainAgentService:
                     logger.warning(f"计划 {plan_id} 不存在")
                     return False
 
-                if not plan.auto_agent_decision:
+                if not plan.auto_agent_enabled:
                     logger.info(f"计划 {plan_id} 未启用自动Agent决策")
                     return False
 

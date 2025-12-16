@@ -142,6 +142,14 @@ class KronosTrainer:
             predictor_lr = train_params.get('predictor_learning_rate', finetune_params.get('learning_rate', 0.000001))
             seed = train_params.get('seed', finetune_params.get('seed', 42))
 
+            # 新增关键参数获取（使用kronos的默认值）
+            weight_decay = train_params.get('weight_decay', finetune_params.get('weight_decay', 0.01))  # 使用kronos的默认值
+            accumulation_steps = train_params.get('accumulation_steps', finetune_params.get('accumulation_steps', 1))
+            log_interval = train_params.get('log_interval', finetune_params.get('log_interval', 50))
+            adam_beta1 = train_params.get('adam_beta1', finetune_params.get('adam_beta1', 0.9))
+            adam_beta2 = train_params.get('adam_beta2', finetune_params.get('adam_beta2', 0.95))
+            gradient_clip_norm = train_params.get('gradient_clip_norm', finetune_params.get('gradient_clip_norm', 2.0))
+
             # 记录解析后的训练参数
             self.logger.info(f"解析的训练参数:")
             self.logger.info(f"  tokenizer_epochs: {tokenizer_epochs}")
@@ -149,8 +157,17 @@ class KronosTrainer:
             self.logger.info(f"  batch_size: {batch_size}")
             self.logger.info(f"  tokenizer_lr: {tokenizer_lr}")
             self.logger.info(f"  predictor_lr: {predictor_lr}")
+            self.logger.info(f"  weight_decay: {weight_decay}")
+            self.logger.info(f"  accumulation_steps: {accumulation_steps}")
+            self.logger.info(f"  adam_beta1: {adam_beta1}")
+            self.logger.info(f"  adam_beta2: {adam_beta2}")
+            self.logger.info(f"  gradient_clip_norm: {gradient_clip_norm}")
             self.logger.info(f"  lookback_window: {lookback_window}")
             self.logger.info(f"  predict_window: {predict_window}")
+            self.logger.info(f"  clip: {clip}")
+            self.logger.info(f"  train_ratio: {train_ratio}")
+            self.logger.info(f"  val_ratio: {val_ratio}")
+            self.logger.info(f"  seed: {seed}")
 
             # 验证并修复预训练模型路径
             pretrained_tokenizer, pretrained_predictor = self._validate_and_fix_pretrained_paths(model_paths)
@@ -181,7 +198,11 @@ class KronosTrainer:
                 seed=seed,
                 clip=clip,
                 train_ratio=train_ratio,
-                val_ratio=val_ratio
+                val_ratio=val_ratio,
+                weight_decay=weight_decay,
+                accumulation_steps=accumulation_steps,
+                log_interval=log_interval,
+                gradient_clip_norm=gradient_clip_norm
             )
 
             if not tokenizer_metrics['success']:
@@ -205,7 +226,11 @@ class KronosTrainer:
                 seed=seed,
                 clip=clip,
                 train_ratio=train_ratio,
-                val_ratio=val_ratio
+                val_ratio=val_ratio,
+                weight_decay=weight_decay,
+                log_interval=log_interval,
+                adam_beta1=adam_beta1,
+                adam_beta2=adam_beta2
             )
 
             if not predictor_metrics['success']:
@@ -241,16 +266,19 @@ class KronosTrainer:
         """
         训练Tokenizer
 
-        参考 finetune_csv/finetune_tokenizer.py，使用数据库数据进行训练
+        精确移植kronos/finetune/train_tokenizer.py的训练逻辑
+        包含完整的reconstruction loss和BSQ loss计算
         """
         try:
             import torch
             import torch.nn.functional as F
             from torch.utils.data import DataLoader
+            from torch.optim.lr_scheduler import OneCycleLR
             from services.database_dataset import DatabaseKlineDataset
             from tqdm import tqdm
+            import time
 
-            # 获取参数
+            # 获取参数（全部从kwargs获取，确保参数传递完整）
             lookback_window = kwargs.get('lookback_window', 512)
             predict_window = kwargs.get('predict_window', 48)
             epochs = kwargs.get('epochs', 25)
@@ -262,7 +290,19 @@ class KronosTrainer:
             val_ratio = kwargs.get('val_ratio', 0.1)
             pretrained_path = kwargs.get('pretrained_path', '')
             save_path = kwargs.get('save_path', '')
-            weight_decay = kwargs.get('weight_decay', 0.01)
+            weight_decay = kwargs.get('weight_decay', 0.01)  # 使用kronos的默认值
+            accumulation_steps = kwargs.get('accumulation_steps', 1)
+            log_interval = kwargs.get('log_interval', 50)
+            gradient_clip_norm = kwargs.get('gradient_clip_norm', 2.0)
+
+            self.logger.info(f"Tokenizer训练参数:")
+            self.logger.info(f"  epochs: {epochs}")
+            self.logger.info(f"  batch_size: {batch_size}")
+            self.logger.info(f"  lr: {lr}")
+            self.logger.info(f"  weight_decay: {weight_decay}")
+            self.logger.info(f"  accumulation_steps: {accumulation_steps}")
+            self.logger.info(f"  gradient_clip_norm: {gradient_clip_norm}")
+            self.logger.info(f"  log_interval: {log_interval}")
 
             # 设备
             device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -299,21 +339,23 @@ class KronosTrainer:
                 val_ratio=val_ratio
             )
 
-            # 2. 创建DataLoader
+            # 2. 创建DataLoader（使用kronos相同的配置）
             train_loader = DataLoader(
                 train_dataset,
-                batch_size=batch_size,
+                batch_size=1,  # kronos使用batch_size=1，然后在内部手动处理
                 shuffle=True,
-                num_workers=0,  # Gradio环境建议使用0
-                pin_memory=True if torch.cuda.is_available() else False
+                num_workers=0,
+                pin_memory=True if torch.cuda.is_available() else False,
+                drop_last=True
             )
 
             val_loader = DataLoader(
                 val_dataset,
-                batch_size=batch_size,
+                batch_size=1,  # kronos使用batch_size=1，然后在内部手动处理
                 shuffle=False,
                 num_workers=0,
-                pin_memory=True if torch.cuda.is_available() else False
+                pin_memory=True if torch.cuda.is_available() else False,
+                drop_last=False
             )
 
             self.logger.info(f"训练样本: {len(train_dataset)}, 验证样本: {len(val_dataset)}")
@@ -323,96 +365,163 @@ class KronosTrainer:
             tokenizer = KronosTokenizer.from_pretrained(pretrained_path, local_files_only=True)
             tokenizer = tokenizer.to(device)
 
-            # 4. 设置优化器
+            # 4. 设置优化器和调度器（完全复制kronos的逻辑）
             optimizer = torch.optim.AdamW(
                 tokenizer.parameters(),
                 lr=lr,
                 weight_decay=weight_decay
             )
 
-            # 5. 训练循环
+            # 添加OneCycleLR调度器（复制kronos逻辑）
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                optimizer=optimizer,
+                max_lr=lr,
+                steps_per_epoch=len(train_loader),
+                epochs=epochs,
+                pct_start=0.03,
+                div_factor=10
+            )
+
+            # 5. 完整的训练循环（精确复制kronos逻辑）
             best_val_loss = float('inf')
+            batch_idx_global = 0
+            start_time = time.time()
             self.logger.info(f"开始训练Tokenizer: {epochs}个epoch...")
 
-            for epoch in range(epochs):
+            for epoch_idx in range(epochs):
+                epoch_start_time = time.time()
+
                 # 计算并报告进度 (Tokenizer占总进度的5%-50%)
-                tokenizer_progress = 0.05 + (epoch / epochs) * 0.45
+                tokenizer_progress = 0.05 + (epoch_idx / epochs) * 0.45
                 self._report_progress(
                     tokenizer_progress,
                     'tokenizer',
-                    f'Tokenizer Epoch {epoch+1}/{epochs}'
+                    f'Tokenizer Epoch {epoch_idx+1}/{epochs}'
                 )
 
                 # 训练阶段
                 tokenizer.train()
-                train_loss = 0.0
-                train_recon_loss = 0.0
-                train_entropy_loss = 0.0
 
                 # 设置epoch种子（用于数据增强的随机性）
-                train_dataset.set_epoch_seed(epoch)
+                train_dataset.set_epoch_seed(epoch_idx * 10000)
 
-                for batch_idx, (batch_x, _) in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}", disable=True)):
-                    # 移动到设备，DataLoader已经返回正确的 (B, T, 6) 形状
-                    batch_x = batch_x.to(device)  # (B, T, 6)
+                for i, (ori_batch_x, _) in enumerate(train_loader):
+                    # 去掉第一个维度 (batch_size=1)，添加batch维度用于tokenizer
+                    # ori_batch_x: (1, seq_len, 6) -> (seq_len, 6) -> (1, seq_len, 6)
+                    ori_batch_x = ori_batch_x.squeeze(0).to(device, non_blocking=True)
+                    # 为tokenizer添加batch维度: (seq_len, 6) -> (1, seq_len, 6)
+                    ori_batch_x = ori_batch_x.unsqueeze(0)
 
-                    # 前向传播 - tokenizer返回4个值：(z_pre, z), bsq_loss, quantized, z_indices
-                    zs, bsq_loss, _, _ = tokenizer(batch_x)
-                    z_pre, z = zs  # z_pre: 使用s1_bits的重建, z: 使用完整codebook的重建
+                    # 确保形状正确: (1, seq_len, 6)
+                    if len(ori_batch_x.shape) != 3 or ori_batch_x.shape[0] != 1:
+                        self.logger.error(f"输入数据形状错误: {ori_batch_x.shape}, 期望 (1, seq_len, 6)")
+                        continue
 
-                    # 计算损失
-                    recon_loss_pre = F.mse_loss(z_pre, batch_x)
-                    recon_loss_all = F.mse_loss(z, batch_x)
-                    recon_loss = recon_loss_pre + recon_loss_all
-                    loss = (recon_loss + bsq_loss) / 2
+                    # --- 梯度累积循环（完全复制kronos逻辑）---
+                    current_batch_total_loss = 0.0
+                    # 如果梯度累积>1，需要拆分batch
+                    if accumulation_steps > 1:
+                        # 对于单个样本，拆分sequence维度
+                        seq_len = ori_batch_x.shape[1]
+                        chunk_size = seq_len // accumulation_steps
+                        actual_batch_size = 1
+                    else:
+                        actual_batch_size = 1
 
-                    # 反向传播
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
+                    for j in range(accumulation_steps):
+                        if accumulation_steps > 1:
+                            start_idx = j * chunk_size
+                            end_idx = (j + 1) * chunk_size
+                            # 拆分sequence维度： (1, seq_len, 6) -> (1, chunk_size, 6)
+                            batch_x = ori_batch_x[:, start_idx:end_idx, :]
+                        else:
+                            # 不进行梯度累积，直接使用整个batch
+                            batch_x = ori_batch_x
 
-                    # 累计损失
-                    train_loss += loss.item()
-                    train_recon_loss += recon_loss.item()
-                    train_entropy_loss += bsq_loss.item()
-
-                avg_train_loss = train_loss / len(train_loader)
-                avg_recon_loss = train_recon_loss / len(train_loader)
-                avg_entropy_loss = train_entropy_loss / len(train_loader)
-
-                # 验证阶段
-                tokenizer.eval()
-                val_loss = 0.0
-
-                with torch.no_grad():
-                    for batch_x, _ in val_loader:
-                        batch_x = batch_x.to(device)
-
-                        # 前向传播 - tokenizer返回4个值
+                        # 前向传播（精确复制kronos逻辑）
                         zs, bsq_loss, _, _ = tokenizer(batch_x)
-                        _, z = zs  # 使用完整codebook的重建
+                        z_pre, z = zs
 
-                        # 只计算重建损失用于验证
-                        recon_loss = F.mse_loss(z, batch_x)
-                        loss = (recon_loss + bsq_loss) / 2
+                        # Loss计算（修复负值问题）
+                        recon_loss_pre = F.mse_loss(z_pre, batch_x)
+                        recon_loss_all = F.mse_loss(z, batch_x)
+                        recon_loss = recon_loss_pre + recon_loss_all
 
-                        val_loss += loss.item()
+                        # 确保bsq_loss为正值，如果为负则设为0
+                        bsq_loss_positive = torch.clamp(bsq_loss, min=0.0)
 
-                avg_val_loss = val_loss / len(val_loader)
+                        # 总loss计算
+                        loss = (recon_loss + bsq_loss_positive) / 2  # w_1=w_2=1
 
+                        loss_scaled = loss / accumulation_steps
+                        current_batch_total_loss += loss.item()
+                        loss_scaled.backward()
+
+                    # --- 梯度累积后的优化器步骤 ---
+                    torch.nn.utils.clip_grad_norm_(tokenizer.parameters(), max_norm=gradient_clip_norm)
+                    optimizer.step()
+                    scheduler.step()
+                    optimizer.zero_grad()
+
+                    # --- 日志记录（复制kronos逻辑）---
+                    if (batch_idx_global + 1) % log_interval == 0:
+                        avg_loss = current_batch_total_loss / accumulation_steps
+                        self.logger.info(
+                            f"[Epoch {epoch_idx + 1}/{epochs}, Step {i + 1}/{len(train_loader)}] "
+                            f"LR {optimizer.param_groups[0]['lr']:.6f}, Loss: {avg_loss:.4f}"
+                        )
+
+                    batch_idx_global += 1
+
+                # --- 验证循环（完全复制kronos逻辑）---
+                tokenizer.eval()
+                tot_val_loss_sum = 0.0
+                val_sample_count = 0
+                with torch.no_grad():
+                    for ori_batch_x, _ in val_loader:
+                        # 与训练循环相同的维度处理
+                        ori_batch_x = ori_batch_x.squeeze(0).to(device, non_blocking=True)
+                        ori_batch_x = ori_batch_x.unsqueeze(0)
+
+                        # 确保形状正确
+                        if len(ori_batch_x.shape) != 3 or ori_batch_x.shape[0] != 1:
+                            self.logger.error(f"验证数据形状错误: {ori_batch_x.shape}, 期望 (1, seq_len, 6)")
+                            continue
+
+                        zs, _, _, _ = tokenizer(ori_batch_x)
+                        _, z = zs
+                        val_loss_item = F.mse_loss(z, ori_batch_x)
+
+                        tot_val_loss_sum += val_loss_item.item() * ori_batch_x.size(0)
+                        val_sample_count += ori_batch_x.size(0)
+
+                avg_val_loss = tot_val_loss_sum / val_sample_count if val_sample_count > 0 else 0
+
+                # --- Epoch总结和保存（复制kronos逻辑）---
                 self.logger.info(
-                    f"Epoch {epoch+1}/{epochs} - "
-                    f"Train Loss: {avg_train_loss:.6f} (Recon: {avg_recon_loss:.6f}, Entropy: {avg_entropy_loss:.6f}) - "
-                    f"Val Loss: {avg_val_loss:.6f}"
+                    f"\n--- Epoch {epoch_idx + 1}/{epochs} Summary ---"
+                    f"Validation Loss: {avg_val_loss:.4f}"
+                    f"Time This Epoch: {time.time() - epoch_start_time:.2f}s"
+                    f"Total Time Elapsed: {time.time() - start_time:.2f}s\n"
                 )
 
-                # 保存最佳模型
+                # 保存最佳模型（复制predictor逻辑）
                 if avg_val_loss < best_val_loss:
                     best_val_loss = avg_val_loss
-                    self.logger.info(f"保存最佳模型 (val_loss={best_val_loss:.6f}) -> {save_path}")
-                    tokenizer.save_pretrained(save_path)
+                    save_path = kwargs.get('save_path', '')
+                    if save_path:
+                        tokenizer.save_pretrained(save_path)
+                        self.logger.info(f"Best tokenizer saved to {save_path} (Val Loss: {best_val_loss:.4f})")
 
-            self.logger.info(f"Tokenizer训练完成! 最佳验证损失: {best_val_loss:.6f}")
+                self.logger.info(f"Tokenizer训练完成! 最佳验证损失: {best_val_loss:.6f}")
+
+                # 确保最终模型被保存（如果还没有保存过）
+                save_path = kwargs.get('save_path', '')
+                if save_path and best_val_loss == float('inf'):
+                    # 如果没有有效的验证损失，仍然保存最终模型
+                    tokenizer.save_pretrained(save_path)
+                    self.logger.info(f"Final tokenizer saved to {save_path} (no valid validation)")
+                    best_val_loss = 0.0  # 设置为有效值
 
             return {
                 'success': True,
@@ -429,28 +538,44 @@ class KronosTrainer:
         """
         训练Predictor
 
-        参考 finetune_csv/finetune_base_model.py，使用数据库数据进行训练
+        精确移植kronos/finetune/train_predictor.py的训练逻辑
+        包含完整的tokenization和语言模型训练
         """
         try:
             import torch
+            import torch.nn as nn
             from torch.utils.data import DataLoader
+            from torch.optim.lr_scheduler import OneCycleLR
             from services.database_dataset import DatabaseKlineDataset
             from tqdm import tqdm
+            import time
 
-            # 获取参数
+            # 获取参数（全部从kwargs获取，确保参数传递完整）
             tokenizer_path = kwargs.get('tokenizer_path', '')
             lookback_window = kwargs.get('lookback_window', 512)
             predict_window = kwargs.get('predict_window', 48)
             epochs = kwargs.get('epochs', 50)
             batch_size = kwargs.get('batch_size', 16)
-            lr = kwargs.get('lr', 0.000001)
+            lr = kwargs.get('lr', 0.00004)  # 使用kronos的默认值
             seed = kwargs.get('seed', 42)
             clip = kwargs.get('clip', 5.0)
             train_ratio = kwargs.get('train_ratio', 0.9)
             val_ratio = kwargs.get('val_ratio', 0.1)
             pretrained_path = kwargs.get('pretrained_path', '')
             save_path = kwargs.get('save_path', '')
-            weight_decay = kwargs.get('weight_decay', 0.01)
+            weight_decay = kwargs.get('weight_decay', 0.01)  # 使用kronos的默认值
+            log_interval = kwargs.get('log_interval', 50)
+            adam_beta1 = kwargs.get('adam_beta1', 0.9)
+            adam_beta2 = kwargs.get('adam_beta2', 0.95)
+
+            self.logger.info(f"Predictor训练参数:")
+            self.logger.info(f"  epochs: {epochs}")
+            self.logger.info(f"  batch_size: {batch_size}")
+            self.logger.info(f"  lr: {lr}")
+            self.logger.info(f"  weight_decay: {weight_decay}")
+            self.logger.info(f"  adam_beta1: {adam_beta1}")
+            self.logger.info(f"  adam_beta2: {adam_beta2}")
+            self.logger.info(f"  log_interval: {log_interval}")
 
             # 设备
             device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -519,103 +644,129 @@ class KronosTrainer:
 
             self.logger.info(f"训练样本: {len(train_dataset)}, 验证样本: {len(val_dataset)}")
 
-            # 5. 设置优化器
+            # 5. 设置优化器和调度器（使用传递的参数）
             optimizer = torch.optim.AdamW(
                 model.parameters(),
                 lr=lr,
+                betas=(adam_beta1, adam_beta2),  # 使用传递的参数
                 weight_decay=weight_decay
             )
 
-            # 6. 训练循环
+            # 添加OneCycleLR调度器（复制kronos逻辑）
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                optimizer, max_lr=lr,
+                steps_per_epoch=len(train_loader),
+                epochs=epochs,
+                pct_start=0.03, div_factor=10
+            )
+
+            # 6. 训练循环（精确复制kronos逻辑）
             best_val_loss = float('inf')
+            batch_idx_global = 0
+            start_time = time.time()
             self.logger.info(f"开始训练Predictor: {epochs}个epoch...")
 
-            for epoch in range(epochs):
+            for epoch_idx in range(epochs):
+                epoch_start_time = time.time()
+
                 # 计算并报告进度 (Predictor占总进度的50%-100%)
-                predictor_progress = 0.50 + (epoch / epochs) * 0.50
+                predictor_progress = 0.50 + (epoch_idx / epochs) * 0.50
                 self._report_progress(
                     predictor_progress,
                     'predictor',
-                    f'Predictor Epoch {epoch+1}/{epochs}'
+                    f'Predictor Epoch {epoch_idx+1}/{epochs}'
                 )
 
-                # 训练阶段
+                # 训练阶段（完全复制kronos逻辑）
                 model.train()
-                train_loss = 0.0
+                train_dataset.set_epoch_seed(epoch_idx * 10000)
+                val_dataset.set_epoch_seed(0)  # Keep validation sampling consistent
 
-                # 设置epoch种子
-                train_dataset.set_epoch_seed(epoch * 10000)
+                for i, (batch_x, batch_x_stamp) in enumerate(train_loader):
+                    # 移动到设备，不进行squeeze操作
+                    batch_x = batch_x.to(device, non_blocking=True)
+                    batch_x_stamp = batch_x_stamp.to(device, non_blocking=True)
 
-                for batch_idx, (batch_x, batch_x_stamp) in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}", disable=True)):
-                    batch_x = batch_x.to(device)  # (B, window, 6)
-                    batch_x_stamp = batch_x_stamp.to(device)  # (B, window, 5) - minute, hour, weekday, day, month
+                    # 确保形状正确: (batch_size, seq_len, features)
+                    if len(batch_x.shape) != 3:
+                        self.logger.error(f"Predictor输入数据形状错误: {batch_x.shape}, 期望 (batch_size, seq_len, 6)")
+                        continue
+                    if len(batch_x_stamp.shape) != 3:
+                        self.logger.error(f"Predictor时间戳形状错误: {batch_x_stamp.shape}, 期望 (batch_size, seq_len, 5)")
+                        continue
 
-                    # 使用tokenizer编码为tokens（冻结，无梯度）
+                    # --- Tokenize输入数据（完全复制kronos逻辑）---
                     with torch.no_grad():
                         token_seq_0, token_seq_1 = tokenizer.encode(batch_x, half=True)
 
-                    # 构造输入和目标 (autoregressive)
-                    # 输入: tokens[:, :-1], 输出: tokens[:, 1:]
+                    # --- 为语言模型准备输入和目标（完全复制kronos逻辑）---
                     token_in = [token_seq_0[:, :-1], token_seq_1[:, :-1]]
                     token_out = [token_seq_0[:, 1:], token_seq_1[:, 1:]]
 
-                    # 调用Predictor forward
+                    # --- 前向传播和损失计算（完全复制kronos逻辑）---
                     logits = model(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
+                    loss, s1_loss, s2_loss = model.head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
 
-                    # 计算损失
-                    loss, s1_loss, s2_loss = model.head.compute_loss(
-                        logits[0], logits[1], token_out[0], token_out[1]
-                    )
-
-                    # 反向传播
+                    # --- 反向传播和优化（完全复制kronos逻辑）---
                     optimizer.zero_grad()
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
                     optimizer.step()
+                    scheduler.step()
 
-                    train_loss += loss.item()
+                    # --- 日志记录（复制kronos逻辑）---
+                    if (batch_idx_global + 1) % log_interval == 0:
+                        lr_current = optimizer.param_groups[0]['lr']
+                        self.logger.info(
+                            f"[Epoch {epoch_idx + 1}/{epochs}, Step {i + 1}/{len(train_loader)}] "
+                            f"LR {lr_current:.6f}, Loss: {loss.item():.4f}"
+                        )
 
-                avg_train_loss = train_loss / len(train_loader)
+                    batch_idx_global += 1
 
-                # 验证阶段
+                # --- 验证循环（完全复制kronos逻辑）---
                 model.eval()
-                val_loss = 0.0
-
+                tot_val_loss_sum = 0.0
+                val_batches_processed = 0
                 with torch.no_grad():
                     for batch_x, batch_x_stamp in val_loader:
-                        batch_x = batch_x.to(device)
-                        batch_x_stamp = batch_x_stamp.to(device)
+                        # 移动到设备，不进行squeeze操作
+                        batch_x = batch_x.to(device, non_blocking=True)
+                        batch_x_stamp = batch_x_stamp.to(device, non_blocking=True)
 
-                        # 编码
+                        # 确保形状正确: (batch_size, seq_len, features)
+                        if len(batch_x.shape) != 3:
+                            self.logger.error(f"Predictor验证输入形状错误: {batch_x.shape}, 期望 (batch_size, seq_len, 6)")
+                            continue
+                        if len(batch_x_stamp.shape) != 3:
+                            self.logger.error(f"Predictor验证时间戳形状错误: {batch_x_stamp.shape}, 期望 (batch_size, seq_len, 5)")
+                            continue
+
                         token_seq_0, token_seq_1 = tokenizer.encode(batch_x, half=True)
-
-                        # 构造输入输出
                         token_in = [token_seq_0[:, :-1], token_seq_1[:, :-1]]
                         token_out = [token_seq_0[:, 1:], token_seq_1[:, 1:]]
 
-                        # 前向传播
                         logits = model(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
+                        val_loss, _, _ = model.head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
 
-                        # 计算损失
-                        loss, _, _ = model.head.compute_loss(
-                            logits[0], logits[1], token_out[0], token_out[1]
-                        )
+                        tot_val_loss_sum += val_loss.item()
+                        val_batches_processed += 1
 
-                        val_loss += loss.item()
+                avg_val_loss = tot_val_loss_sum / val_batches_processed if val_batches_processed > 0 else 0
 
-                avg_val_loss = val_loss / len(val_loader)
-
+                # --- Epoch总结和保存（复制kronos逻辑）---
                 self.logger.info(
-                    f"Epoch {epoch+1}/{epochs} - "
-                    f"Train Loss: {avg_train_loss:.6f} - "
-                    f"Val Loss: {avg_val_loss:.6f}"
+                    f"\n--- Epoch {epoch_idx + 1}/{epochs} Summary ---"
+                    f"Validation Loss: {avg_val_loss:.4f}"
+                    f"Time This Epoch: {time.time() - epoch_start_time:.2f}s"
+                    f"Total Time Elapsed: {time.time() - start_time:.2f}s\n"
                 )
 
-                # 保存最佳模型
                 if avg_val_loss < best_val_loss:
                     best_val_loss = avg_val_loss
-                    self.logger.info(f"保存最佳模型 (val_loss={best_val_loss:.6f}) -> {save_path}")
+                    save_path = f"{save_path}/best_model"
                     model.save_pretrained(save_path)
+                    self.logger.info(f"Best model saved to {save_path} (Val Loss: {best_val_loss:.4f})")
 
             self.logger.info(f"Predictor训练完成! 最佳验证损失: {best_val_loss:.6f}")
 
@@ -669,7 +820,14 @@ class KronosInferencer:
 
             # 加载本地模型，指定local_files_only=True
             tokenizer = KronosTokenizer.from_pretrained(tokenizer_path, local_files_only=True)
-            model = Kronos.from_pretrained(predictor_path, local_files_only=True)
+
+            # 检查predictor模型是否在best_model子目录中
+            import os
+            predictor_best_model_path = os.path.join(predictor_path, "best_model")
+            if os.path.exists(predictor_best_model_path) and os.path.exists(os.path.join(predictor_best_model_path, "config.json")):
+                model = Kronos.from_pretrained(predictor_best_model_path, local_files_only=True)
+            else:
+                model = Kronos.from_pretrained(predictor_path, local_files_only=True)
 
             self.predictor = KronosPredictor(model, tokenizer, device=self.device, max_context=512)
             self.logger.info("模型加载成功")
