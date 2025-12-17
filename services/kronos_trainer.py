@@ -523,6 +523,15 @@ class KronosTrainer:
                     self.logger.info(f"Final tokenizer saved to {save_path} (no valid validation)")
                     best_val_loss = 0.0  # 设置为有效值
 
+            # 清理CUDA内存
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    self.logger.info("已清理CUDA内存 (Tokenizer训练完成)")
+            except Exception as cleanup_error:
+                self.logger.error(f"清理CUDA内存失败: {cleanup_error}")
+
             return {
                 'success': True,
                 'best_val_loss': float(best_val_loss)
@@ -532,6 +541,16 @@ class KronosTrainer:
             self.logger.error(f"Tokenizer训练失败: {e}")
             import traceback
             traceback.print_exc()
+
+            # 清理CUDA内存
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    self.logger.info("已清理CUDA内存 (Tokenizer训练失败)")
+            except Exception as cleanup_error:
+                self.logger.error(f"清理CUDA内存失败: {cleanup_error}")
+
             return {'success': False, 'error': str(e)}
 
     def _train_predictor(self, **kwargs) -> Dict:
@@ -770,6 +789,15 @@ class KronosTrainer:
 
             self.logger.info(f"Predictor训练完成! 最佳验证损失: {best_val_loss:.6f}")
 
+            # 清理CUDA内存
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    self.logger.info("已清理CUDA内存 (Predictor训练完成)")
+            except Exception as cleanup_error:
+                self.logger.error(f"清理CUDA内存失败: {cleanup_error}")
+
             return {
                 'success': True,
                 'best_val_loss': float(best_val_loss)
@@ -779,6 +807,16 @@ class KronosTrainer:
             self.logger.error(f"Predictor训练失败: {e}")
             import traceback
             traceback.print_exc()
+
+            # 清理CUDA内存
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    self.logger.info("已清理CUDA内存 (Predictor训练失败)")
+            except Exception as cleanup_error:
+                self.logger.error(f"清理CUDA内存失败: {cleanup_error}")
+
             return {'success': False, 'error': str(e)}
 
 
