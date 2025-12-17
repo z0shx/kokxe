@@ -2108,12 +2108,22 @@ class LangChainAgentService:
                     db.refresh(latest_conversation)
 
                 # 添加K线数据消息到对话
+                # 处理datetime序列化问题
+                safe_kline_data = {}
+                for key, value in kline_data.items():
+                    if isinstance(value, datetime):
+                        safe_kline_data[key] = value.isoformat()
+                    elif hasattr(value, '__dict__'):  # 处理复杂对象
+                        safe_kline_data[key] = str(value)
+                    else:
+                        safe_kline_data[key] = value
+
                 kline_message = AgentMessage(
                     conversation_id=latest_conversation.id,
                     role="user",
                     message_type="user_message",
                     content="new_k_line_data",
-                    tool_arguments=kline_data
+                    tool_arguments=safe_kline_data
                 )
                 db.add(kline_message)
 
