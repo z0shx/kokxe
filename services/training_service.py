@@ -635,6 +635,8 @@ class TrainingService:
                         'train_end_time': record.train_end_time,
                         'train_duration': record.train_duration,
                         'data_count': record.data_count,
+                        'data_start_time': record.data_start_time,
+                        'data_end_time': record.data_end_time,
                         'created_at': record.created_at
                     })
 

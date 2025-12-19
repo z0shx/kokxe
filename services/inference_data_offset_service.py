@@ -5,6 +5,7 @@
 import datetime
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Tuple
+import pytz
 from database.db import get_db
 from database.models import TradingPlan, PredictionData, TrainingRecord, KlineData
 from utils.logger import setup_logger
@@ -16,7 +17,8 @@ logger = setup_logger(__name__, "inference_data_offset.log")
 class InferenceDataOffsetService:
     """推理数据偏移计算服务"""
 
-    BEIJING_TZ = BEIJING_TZ
+    # 使用pytz的Asia/Shanghai时区，它有localize方法
+    BEIJING_TZ = pytz.timezone('Asia/Shanghai')
 
     @classmethod
     def calculate_optimal_data_offset(
@@ -92,14 +94,50 @@ class InferenceDataOffsetService:
                 if latest_prediction:
                     # 计算时间差
                     latest_prediction_time = latest_prediction.timestamp
-                    if hasattr(latest_prediction_time, 'astimezone'):
-                        latest_prediction_time = latest_prediction_time.astimezone(cls.BEIJING_TZ)
-                    else:
-                        # 如果没有时区信息，假设为UTC+8
-                        latest_prediction_time = cls.BEIJING_TZ.localize(latest_prediction_time.replace(tzinfo=None))
 
-                    # 确保时间差为正数，如果预测时间在未来，说明时区转换有问题
-                    time_diff = current_time - latest_prediction_time
+                    # 统一处理时间对象，确保都有正确的时区信息
+                    try:
+                        if latest_prediction_time.tzinfo is None:
+                            # 如果没有时区信息，假设为UTC+8（北京时间）
+                            latest_prediction_time = cls.BEIJING_TZ.localize(latest_prediction_time)
+                        else:
+                            # 如果有时区信息，转换为北京时间
+                            latest_prediction_time = latest_prediction_time.astimezone(cls.BEIJING_TZ)
+
+                        # 确保时间差为正数，如果预测时间在未来，说明时区转换有问题
+                        time_diff = current_time - latest_prediction_time
+                    except AttributeError as e:
+                        # 如果时间对象没有tzinfo属性，尝试其他方法
+                        logger.warning(f"时间对象属性错误: {e}, 尝试备用处理方法")
+                        # 将时间对象转换为datetime类型并添加时区
+                        if isinstance(latest_prediction_time, str):
+                            # 如果是字符串，尝试解析
+                            from dateutil import parser
+                            latest_prediction_time = parser.parse(latest_prediction_time)
+                            if latest_prediction_time.tzinfo is None:
+                                latest_prediction_time = cls.BEIJING_TZ.localize(latest_prediction_time)
+                            else:
+                                latest_prediction_time = latest_prediction_time.astimezone(cls.BEIJING_TZ)
+                        else:
+                            # 尝试转换为datetime并添加时区
+                            import datetime as dt
+                            if hasattr(latest_prediction_time, 'to_pydatetime'):
+                                # pandas Timestamp
+                                latest_prediction_time = latest_prediction_time.to_pydatetime()
+                                if latest_prediction_time.tzinfo is None:
+                                    latest_prediction_time = cls.BEIJING_TZ.localize(latest_prediction_time)
+                                else:
+                                    latest_prediction_time = latest_prediction_time.astimezone(cls.BEIJING_TZ)
+                            else:
+                                # 其他类型，强制转换
+                                latest_prediction_time = dt.datetime.combine(
+                                    latest_prediction_time.date() if hasattr(latest_prediction_time, 'date') else latest_prediction_time,
+                                    latest_prediction_time.time() if hasattr(latest_prediction_time, 'time') else latest_prediction_time
+                                )
+                                latest_prediction_time = cls.BEIJING_TZ.localize(latest_prediction_time)
+
+                        time_diff = current_time - latest_prediction_time
+
                     time_diff_hours = time_diff.total_seconds() / 3600
 
                     # 如果时间差为负，说明预测时间在未来，可能是时区问题，使用绝对值

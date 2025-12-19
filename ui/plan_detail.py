@@ -327,6 +327,12 @@ class PlanDetailUI:
                     'failed': '❌'
                 }.get(record['status'], '❓')
 
+                # 格式化训练数据时间范围
+                if record['data_start_time'] and record['data_end_time']:
+                    data_time_range = f"{format_datetime_short_beijing(record['data_start_time'])} ~ {format_datetime_short_beijing(record['data_end_time'])}"
+                else:
+                    data_time_range = "N/A"
+
                 df_data.append({
                     'ID': record['id'],
                     '版本': record['version'],
@@ -334,6 +340,7 @@ class PlanDetailUI:
                     '启用': '✓' if record['is_active'] else '✗',
                     '数据量': record['data_count'] or 0,
                     '训练时长(秒)': record['train_duration'] or 0,  # 改为纯数字
+                    '训练数据时间范围': data_time_range,
                     '创建时间': format_datetime_short_beijing(record['created_at'])
                 })
 
