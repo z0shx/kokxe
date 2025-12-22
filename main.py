@@ -833,19 +833,69 @@ def create_app():
 
                             # 工具配置
                             gr.Markdown("**可用工具** (勾选启用工具)")
-                            with gr.Row():
-                                tool_query_prediction = gr.Checkbox(label="🔮 query_prediction_data", value=True, info="按时间范围和批次ID查询预测数据")
-                                tool_prediction_history = gr.Checkbox(label="📈 get_prediction_history", value=True, info="查询历史预测批次列表（最多30批次）")
-                                tool_query_historical_kline = gr.Checkbox(label="📈 query_historical_kline_data", value=True, info="查询历史K线数据（UTC+8时间戳）")
-                            with gr.Row():
-                                tool_get_utc_time = gr.Checkbox(label="🕒 get_current_utc_time", value=True, info="获取当前UTC+8时间")
-                                tool_run_inference = gr.Checkbox(label="🤖 run_latest_model_inference", value=False, info="触发最新模型推理")
-                                tool_get_account = gr.Checkbox(label="🔍 get_account_balance", value=True, info="查询账户余额")
-                            with gr.Row():
-                                tool_get_pending_orders = gr.Checkbox(label="📋 get_pending_orders", value=True, info="查询挂单")
-                                tool_place_order = gr.Checkbox(label="💰 place_order", value=True, info="下限价单")
-                                tool_cancel_order = gr.Checkbox(label="❌ cancel_order", value=True, info="撤单")
-                                tool_amend_order = gr.Checkbox(label="✏️ amend_order", value=True, info="改单")
+
+                            # 动态工具配置
+                            def update_tools_for_plan(plan_id):
+                                """根据选择的计划更新工具配置"""
+                                if not plan_id:
+                                    return gr.CheckboxGroup(choices=[], value=[], visible=False)
+
+                                try:
+                                    # 获取工具配置数据
+                                    config_data = detail_ui.get_agent_tools_config_data(int(plan_id))
+                                    return gr.CheckboxGroup(
+                                        choices=config_data['tool_choices'],
+                                        value=config_data['selected_tools'],
+                                        label="可用工具 (勾选启用工具)",
+                                        info=f"建议启用查询类工具，谨慎启用交易类工具 (总计 {config_data['all_tools_count']} 个工具)",
+                                        visible=True
+                                    )
+                                except Exception as e:
+                                    logger.error(f"加载工具配置失败: {e}")
+                                    return gr.CheckboxGroup(choices=[], value=[], visible=True)
+
+                            # 初始状态 - 显示所有可用工具，默认启用查询类工具
+                            def get_all_tools_with_defaults():
+                                """获取所有工具并默认启用查询类工具"""
+                                try:
+                                    from services.agent_tools import get_all_tools
+                                    all_tools = get_all_tools()
+
+                                    tool_choices = []
+                                    tool_selected = []
+
+                                    # 默认启用的查询类工具
+                                    default_enabled_tools = {
+                                        'get_account_balance', 'get_account_positions', 'get_order_info',
+                                        'get_pending_orders', 'get_order_history', 'get_fills',
+                                        'get_current_price', 'get_latest_prediction_analysis',
+                                        'get_prediction_history', 'query_prediction_data',
+                                        'query_historical_kline_data', 'get_current_utc_time'
+                                    }
+
+                                    for tool_name, tool_obj in all_tools.items():
+                                        tool_desc = tool_obj.description[:60] + "..."
+                                        tool_choices.append(f"{tool_name}: {tool_desc}")
+
+                                        # 默认启用查询类和预测分析类工具
+                                        if tool_name in default_enabled_tools:
+                                            tool_selected.append(f"{tool_name}: {tool_desc}")
+
+                                    return tool_choices, tool_selected, f"总计 {len(tool_choices)} 个工具，默认启用 {len(tool_selected)} 个工具"
+                                except Exception as e:
+                                    logger.error(f"获取工具配置失败: {e}")
+                                    return [], [], "工具配置加载失败"
+
+                            # 获取所有工具配置
+                            all_choices, all_selected, all_info = get_all_tools_with_defaults()
+
+                            tools_checkbox_group = gr.CheckboxGroup(
+                                choices=all_choices,
+                                value=all_selected,
+                                label="可用工具 (勾选启用工具)",
+                                info=all_info,
+                                visible=True
+                            )
 
                               
                          # 保存按钮
@@ -1263,14 +1313,15 @@ def create_app():
                             512, 48,  # inference_lookback_window, inference_predict_window
                             1.0, 0.9, 30, 0, "",  # inference_temperature, inference_top_p, inference_sample_count, inference_data_offset, inference_params_status
                             gr.update(), None, "",  # llm_config, prompt_template, agent_prompt
-                            True, True, True, True, True, True, True, True, True, True, True, True, True,  # 工具选择
+                            gr.CheckboxGroup(choices=[], value=[]),  # 动态工具选择
                             1000.0, 30.0, 10.0, 20.0,  # 交易限制默认值：quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss
                             gr.DataFrame(), gr.Plot(), "", gr.DataFrame(), "请保存推理参数后查看数据范围...", "", gr.DataFrame(), [{"role": "assistant", "content": "请先选择计划"}], "", "", "",  # training_df, kline_chart, probability_indicators_md, inference_df, inference_data_range_info, prediction_data_preview, agent_df, agent_chatbot, agent_user_input, agent_status
                             "### 💰 账户信息\n\n未加载",  # account_status
                             gr.DataFrame(),  # order_table
                             gr.DataFrame(),  # task_executions_df  # task_executions
                             gr.Timer(active=False),  # account_timer
-                            None  # inference_record_id
+                            None,  # inference_record_id
+                            gr.CheckboxGroup(choices=[], value=[])  # 添加工具配置
                         )
 
                     def safe_int(value, default=0):
@@ -1419,6 +1470,26 @@ def create_app():
                         logger.warning(f"task_executions_df 不是 DataFrame 类型: {type(task_executions_df)}")
                         task_executions_df = pd.DataFrame()
 
+                    # 获取动态工具配置
+                    try:
+                        config_data = detail_ui.get_agent_tools_config_data(int(plan_id))
+                        tools_choices = config_data['tool_choices']
+                        tools_selected = config_data['selected_tools']
+                        tools_info = f"总计 {config_data['all_tools_count']} 个工具"
+                    except Exception as e:
+                        logger.error(f"获取工具配置失败: {e}")
+                        tools_choices = []
+                        tools_selected = []
+                        tools_info = "工具配置加载失败"
+
+                    # 创建工具配置组
+                    tools_checkbox_group = gr.CheckboxGroup(
+                        choices=tools_choices,
+                        value=tools_selected,
+                        label="可用工具 (勾选启用工具)",
+                        info=tools_info
+                    )
+
                     return (
                         gr.update(visible=True),   # detail_container
                         gr.update(visible=False),  # no_plan_msg
@@ -1455,16 +1526,6 @@ def create_app():
                         gr.update(choices=llm_configs if isinstance(llm_configs, list) else [], value=int(agent_config.get('llm_config_id')) if agent_config.get('llm_config_id') is not None else None),  # llm_config_dropdown
                         gr.update(choices=prompt_templates if isinstance(prompt_templates, list) else [], value=None),  # prompt_template_dropdown
                         agent_config.get('agent_prompt', ''),  # agent_prompt_textbox
-                        tools_config.get('query_prediction_data', True),  # tool_query_prediction
-                        tools_config.get('get_prediction_history', True),  # tool_prediction_history
-                        tools_config.get('query_historical_kline_data', True),  # tool_query_historical_kline
-                        tools_config.get('get_current_utc_time', True),  # tool_get_utc_time
-                        tools_config.get('run_latest_model_inference', False),  # tool_run_inference
-                        tools_config.get('get_account_balance', True),  # tool_get_account
-                        tools_config.get('get_pending_orders', True),  # tool_get_pending_orders
-                        tools_config.get('place_order', True),  # tool_place_order
-                        tools_config.get('cancel_order', True),  # tool_cancel_order
-                        tools_config.get('amend_order', True),  # tool_amend_order
                         safe_float(quick_usdt_amount, 1000.0),  # quick_usdt_amount
                         safe_float(quick_usdt_percentage, 30.0),  # quick_usdt_percentage
                         safe_int(quick_avg_orders, 10),  # quick_avg_orders
@@ -1481,7 +1542,8 @@ def create_app():
                         orders_df,  # order_table
                         task_executions_df,  # task_executions_df
                         gr.Timer(active=True),  # account_timer - 启动账户定时器
-                        get_latest_training_id(int(plan_id))  # 自动填充最新的训练记录ID
+                        get_latest_training_id(int(plan_id)),  # 自动填充最新的训练记录ID
+                        tools_checkbox_group  # 添加工具配置
                     )
 
                 # 保存参数函数
@@ -1755,10 +1817,7 @@ def create_app():
                         inference_lookback_window, inference_predict_window,  # 推理数据窗口
                         inference_temperature, inference_top_p, inference_sample_count, inference_data_offset, inference_params_status,  # 推理参数
                         llm_config_dropdown, prompt_template_dropdown, agent_prompt_textbox,  # Agent配置
-                        tool_query_prediction, tool_prediction_history, tool_query_historical_kline,  # 数据查询工具
-                        tool_get_utc_time, tool_run_inference, tool_get_account,  # 系统和账户工具
-                        tool_get_pending_orders, tool_place_order, tool_cancel_order, tool_amend_order,  # 交易工具
-                        # ReAct配置已移除
+                        # 工具变量已移除 - 现在使用动态的tools_checkbox_group
                         quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss,  # 交易限制配置
                         training_df, kline_chart, probability_indicators_md,  # K线图和概率指标
                         inference_df, inference_data_range_info, prediction_data_preview, agent_df,
@@ -1829,10 +1888,7 @@ def create_app():
                         inference_lookback_window, inference_predict_window,  # 推理数据窗口
                         inference_temperature, inference_top_p, inference_sample_count, inference_data_offset, inference_params_status,
                         llm_config_dropdown, prompt_template_dropdown, agent_prompt_textbox,  # Agent配置
-                        tool_query_prediction, tool_prediction_history, tool_query_historical_kline,  # 数据查询工具
-                        tool_get_utc_time, tool_run_inference, tool_get_account,  # 系统和账户工具
-                        tool_get_pending_orders, tool_place_order, tool_cancel_order, tool_amend_order,  # 交易工具
-                        # ReAct配置已移除
+                        # 工具变量已移除 - 现在使用动态的tools_checkbox_group
                         quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss,  # 交易限制配置
                         training_df, kline_chart, probability_indicators_md,  # K线图和概率指标
                         inference_df, inference_data_range_info, prediction_data_preview, agent_df,
@@ -2005,7 +2061,8 @@ def create_app():
                 )
 
                 # Agent配置事件
-                def save_agent_config_wrapper(pid, llm_id, prompt, t1, t2, t3, t4, t5, t6, t7, t8, t9, t10):
+                def save_agent_config_wrapper(pid, llm_id, prompt, selected_tools):
+                    """保存Agent配置包装函数"""
                     if not pid:
                         return "❌ 请先选择计划"
 
@@ -2021,31 +2078,34 @@ def create_app():
                             logger.error(f"验证LLM配置失败: {e}")
                             return "❌ 获取LLM配置列表失败，请重试"
 
-                    tools_config = {
-                        'query_prediction_data': t1,
-                        'get_prediction_history': t2,
-                        'query_historical_kline_data': t3,
-                        'get_current_utc_time': t4,
-                        'run_latest_model_inference': t5,
-                        'get_account_balance': t6,
-                        'get_pending_orders': t7,
-                        'place_order': t8,
-                        'cancel_order': t9,
-                        'amend_order': t10
-                    }
-                    # 保存Agent配置
-                    agent_result = detail_ui.save_agent_config(int(pid), llm_id, prompt, tools_config)
+                    # 使用新的保存工具配置方法
+                    agent_result = detail_ui.save_tools_config(int(pid), selected_tools)
 
-                    # ReAct 配置已移除
-                    return f"{agent_result}"
+                    # 同时保存LLM和提示词配置
+                    try:
+                        # 将工具配置转换为数据库格式
+                        from services.agent_tools import get_all_tools
+                        all_tools = get_all_tools()
+
+                        tools_config_db = {}
+                        for tool_name in all_tools.keys():
+                            # 提取工具名称（去除描述部分）
+                            tool_enabled = any(selected_name.startswith(tool_name + ":") for selected_name in selected_tools)
+                            tools_config_db[tool_name] = tool_enabled
+
+                        # 保存完整Agent配置
+                        result = detail_ui.save_agent_config(int(pid), llm_id, prompt, tools_config_db)
+
+                        return f"{agent_result}\\n{result}"
+
+                    except Exception as e:
+                        logger.error(f"保存Agent配置失败: {e}")
+                        return f"{agent_result}\\n❌ 配置保存失败: {str(e)}"
 
                 save_agent_config_btn.click(
                     fn=save_agent_config_wrapper,
                     inputs=[
-                        plan_id_input, llm_config_dropdown, agent_prompt_textbox,
-                        tool_query_prediction, tool_prediction_history, tool_query_historical_kline,
-                        tool_get_utc_time, tool_run_inference, tool_get_account,
-                        tool_get_pending_orders, tool_place_order, tool_cancel_order, tool_amend_order
+                        plan_id_input, llm_config_dropdown, agent_prompt_textbox, tools_checkbox_group
                     ],
                     outputs=[agent_config_status]
                 )

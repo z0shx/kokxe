@@ -800,6 +800,43 @@ class LangChainAgentService:
 
             available_tools["get_prediction_history"] = get_prediction_history
 
+        # 14. 获取最新批次预测均值数据
+        if "get_latest_prediction_analysis" in enabled_tools:
+            @tool
+            def get_latest_prediction_analysis(plan_id: int = 3) -> str:
+                """获取最新批次预测均值数据"""
+                try:
+                    from services.trading_tools import get_latest_prediction_analysis
+
+                    # 调用预测分析工具
+                    result = get_latest_prediction_analysis(plan_id)
+
+                    # 处理datetime对象的序列化
+                    def datetime_handler(obj):
+                        if hasattr(obj, 'isoformat'):
+                            return obj.isoformat()
+                        raise TypeError(repr(obj) + " is not JSON serializable")
+
+                    return json.dumps({
+                        "success": True,
+                        "data": {
+                            "training_version": result.get("training_version"),
+                            "training_id": result.get("training_id"),
+                            "plan_id": result.get("plan_id"),
+                            "data_points_count": result.get("data_points_count"),
+                            "time_points_count": result.get("time_points_count"),
+                            "extremes": result.get("extremes"),
+                            "analysis_summary": result.get("analysis_summary"),
+                            "raw_data": result.get("raw_data", [])
+                        },
+                        "message": result.get("message", "预测分析完成")
+                    }, ensure_ascii=False, default=datetime_handler)
+                except Exception as e:
+                    logger.error(f"获取最新预测分析失败: {e}")
+                    return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+            available_tools["get_latest_prediction_analysis"] = get_latest_prediction_analysis
+
         return list(available_tools.values())
 
     def _detect_qwen_thinking(self, content: str, llm_config: LLMConfig = None) -> bool:
@@ -880,6 +917,7 @@ class LangChainAgentService:
             "query_prediction_data": "查询AI模型预测数据（包含蒙特卡罗路径和不确定性范围）",
             "get_prediction_history": "获取历史预测记录",
             "run_latest_model_inference": "执行最新的AI模型推理",
+            "get_latest_prediction_analysis": "获取最新批次预测均值数据，基于多批次蒙特卡罗路径计算最高价、最低价、时间范围等关键指标",
             "query_historical_kline_data": "查询历史K线数据"
         }
 

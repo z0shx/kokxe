@@ -202,10 +202,33 @@ AGENT_TOOLS = {
         risk_level="low"
     ),
 
+    "get_latest_prediction_analysis": AgentTool(
+        name="get_latest_prediction_analysis",
+        description="""获取最新批次预测均值数据。该工具自动分析最新训练记录的多批次预测数据，基于30条蒙特卡罗路径进行综合计算，提供：
+1. 最高价格及时间范围 - 基于所有预测样本计算的最高价预测值
+2. 最低价格及时间范围 - 基于所有预测样本计算的最低价预测值
+3. 预测时间跨度 - 未来预测数据覆盖的时间范围
+4. 价格波动范围 - 预测的价格区间和波动率分析
+5. 共识度分析 - 多批次预测的一致性程度
+6. 统计指标 - 平均价格、波动率等关键统计数据
+
+该工具无需参数，自动获取当前计划的最新训练记录进行分析。只分析未来预测数据（当前K线时间之后）。""",
+        category=ToolCategory.QUERY,
+        parameters={
+            "plan_id": {
+                "type": "integer",
+                "description": "交易计划ID，默认为3。如果不提供，将使用默认计划",
+                "required": False
+            }
+        },
+        required_params=[],
+        risk_level="low"
+    ),
+
     # 交易类工具
     "place_limit_order": AgentTool(
         name="place_limit_order",
-        description="""下限价单。限价单以指定价格买入或卖出，只有当市场价格达到或优于限价时才会成交。
+        description="""专用限价单工具。强制限价单模式，防止市价单风险，支持更精细控制和资金管理。
 
 重要提示：
 1. 下单前必须先调用 get_account_balance 确认有足够的资金
@@ -502,7 +525,7 @@ AGENT_TOOLS = {
 
     "place_order": AgentTool(
         name="place_order",
-        description="下单（买入或卖出）。执行市价单或限价单交易，支持现货交易。下单前请确保账户有足够资金。",
+        description="通用下单工具（买入或卖出）。支持市价单和限价单，适用于自动交易场景。下单前请确保账户有足够资金。",
         category=ToolCategory.TRADE,
         parameters={
             "inst_id": {

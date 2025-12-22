@@ -250,6 +250,8 @@ class AgentToolExecutor:
                 return await self._get_fills(normalized_params)
             elif tool_name == "get_current_price":
                 return await self._get_current_price(normalized_params)
+            elif tool_name == "get_latest_prediction_analysis":
+                return await self._get_latest_prediction_analysis(normalized_params)
             elif tool_name == "place_limit_order":
                 return await self._place_limit_order(normalized_params)
             elif tool_name == "place_order":
@@ -435,6 +437,53 @@ class AgentToolExecutor:
             return {"success": True, "data": result.get("data", [])}
         else:
             return {"success": False, "error": result.get("msg", "查询失败")}
+
+    async def _get_latest_prediction_analysis(self, params: Dict) -> Dict:
+        """获取最新批次预测均值数据"""
+        try:
+            # 导入预测分析工具
+            from services.trading_tools import get_latest_prediction_analysis
+
+            # 获取参数，如果没有提供plan_id则使用默认值
+            plan_id = params.get("plan_id", self.plan_id or 3)
+
+            logger.info(f"[{self.environment}] 执行预测分析，计划ID: {plan_id}")
+
+            # 调用预测分析工具
+            result = get_latest_prediction_analysis(plan_id)
+
+            if result['success']:
+                logger.info(f"[{self.environment}] 预测分析成功，数据点: {result['data_points_count']}")
+                return {
+                    "success": True,
+                    "data": {
+                        "training_version": result['training_version'],
+                        "training_id": result['training_id'],
+                        "plan_id": result['plan_id'],
+                        "data_points_count": result['data_points_count'],
+                        "time_points_count": result['time_points_count'],
+                        "extremes": result['extremes'],
+                        "summary": result['analysis_summary'],
+                        "raw_data": result.get('raw_data', [])
+                    },
+                    "message": result['message']
+                }
+            else:
+                logger.error(f"[{self.environment}] 预测分析失败: {result.get('error', 'Unknown error')}")
+                return {
+                    "success": False,
+                    "error": result.get('error', 'Unknown error'),
+                    "message": result.get('message', '预测分析失败')
+                }
+
+        except Exception as e:
+            error_msg = f"预测分析工具执行异常: {str(e)}"
+            logger.error(f"[{self.environment}] {error_msg}")
+            return {
+                "success": False,
+                "error": str(e),
+                "message": error_msg
+            }
 
     # ============================================
     # 交易类工具实现（使用 WebSocket）

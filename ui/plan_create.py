@@ -886,11 +886,13 @@ class PlanCreateUI(BaseUIComponent, DatabaseMixin):
             }
 
             # 构建 Agent 工具配置（使用默认值）
-            agent_tools_config = {
-                "enable_order": True,
-                "enable_adjust": True,
-                "enable_cancel": True
-            }
+            from services.agent_tools_config_helper import get_default_tools_config
+            default_config = get_default_tools_config("moderate")  # 使用适中模式
+
+            # 转换为工具启用格式
+            agent_tools_config = {}
+            for tool_name in default_config["enabled_tools"]:
+                agent_tools_config[tool_name] = True
 
             # 构建交易限制（使用用户配置的值）
             trading_limits = {

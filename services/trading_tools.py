@@ -1630,3 +1630,60 @@ class OKXTradingTools:
             logger.error(f"同步订单状态失败: {e}")
             return False
 
+
+def get_latest_prediction_analysis(plan_id: int = 3) -> Dict:
+    """
+    获取最新批次预测均值数据工具函数
+
+    该工具自动获取指定计划最新训练记录的多批次预测数据，
+    基于多条蒙特卡罗路径进行综合计算，提供：
+    - 最高价格及时间范围
+    - 最低价格及时间范围
+    - 预测共识度分析
+    - 整体统计指标
+
+    Args:
+        plan_id: 交易计划ID，默认为3
+
+    Returns:
+        Dict: 包含极值预测和统计信息的字典
+    """
+    try:
+        from services.prediction_analysis_service import prediction_analysis_service
+
+        logger.info(f"调用预测分析服务获取计划 {plan_id} 的最新预测分析")
+        result = prediction_analysis_service.get_latest_prediction_analysis(plan_id)
+
+        if 'error' in result:
+            logger.warning(f"预测分析返回错误: {result['error']}")
+            return {
+                'success': False,
+                'error': result['error'],
+                'message': f"预测分析失败: {result['error']}"
+            }
+
+        # 格式化成功结果
+        formatted_result = prediction_analysis_service.format_analysis_result(result)
+
+        return {
+            'success': True,
+            'training_id': result['training_id'],
+            'training_version': result['training_version'],
+            'plan_id': plan_id,
+            'data_points_count': result['data_points_count'],
+            'time_points_count': result['time_points_count'],
+            'extremes': result['extremes'],
+            'analysis_summary': formatted_result,
+            'raw_data': result.get('raw_stats', [])[:3],  # 保留前3个时间点的原始数据
+            'message': f"✅ 成功获取训练记录 {result['training_version']} 的预测分析"
+        }
+
+    except Exception as e:
+        error_msg = f"获取最新预测分析工具执行失败: {e}"
+        logger.error(error_msg)
+        return {
+            'success': False,
+            'error': str(e),
+            'message': error_msg
+        }
+

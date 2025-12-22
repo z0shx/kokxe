@@ -3148,6 +3148,25 @@ class PlanDetailUI:
                 }
             })
 
+        # 4.5. 📊 get_latest_prediction_analysis - 获取最新批次预测均值数据
+        if tools_config.get('get_latest_prediction_analysis', True):
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "get_latest_prediction_analysis",
+                    "description": "获取最新批次预测均值数据。自动分析最新训练记录的多批次预测数据，基于30条蒙特卡罗路径进行综合计算，提供最高价格、最低价格、时间范围、共识度等关键预测指标。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "plan_id": {
+                                "type": "integer",
+                                "description": "交易计划ID，默认为3。如果不提供，将使用默认计划"
+                            }
+                        }
+                    }
+                }
+            })
+
         # 5. 🤖 run_latest_model_inference - 触发最新模型推理
         if tools_config.get('run_latest_model_inference', False):
             tools.append({
@@ -3953,3 +3972,107 @@ class PlanDetailUI:
     def get_latest_chat_history(self, plan_id: int):
         """获取最新的聊天历史"""
         return self.get_latest_conversation_messages(plan_id)
+
+    def get_agent_tools_config_data(self, plan_id: int):
+        """获取 Agent 工具配置数据（用于UI构建）"""
+        # 获取当前工具配置
+        agent_config = self.get_agent_config(plan_id)
+        current_tools_config = agent_config.get('agent_tools_config', {})
+
+        # 获取所有可用工具
+        from services.agent_tools import get_all_tools
+        all_tools = get_all_tools()
+
+        # 准备工具选项
+        tool_choices = []
+        for tool_name, tool_obj in all_tools.items():
+            tool_choices.append(f"{tool_name}: {tool_obj.description[:60]}...")
+
+        # 默认选中的工具（生成完整名称以匹配CheckboxGroup格式）
+        selected_tools = []
+        for tool_name, enabled in current_tools_config.items():
+            if enabled and tool_name in all_tools:
+                selected_tools.append(f"{tool_name}: {all_tools[tool_name].description[:60]}...")
+
+        return {
+            'tool_choices': tool_choices,
+            'selected_tools': selected_tools,
+            'all_tools_count': len(all_tools),
+            'enabled_count': len(selected_tools),
+            'current_tools_config': current_tools_config
+        }
+
+    def save_tools_config(self, plan_id: int, selected_tool_names):
+        """保存工具配置的函数"""
+        try:
+            # 获取所有可用工具
+            from services.agent_tools import get_all_tools
+            all_tools = get_all_tools()
+
+            # 将工具名称转换为工具配置字典
+            new_tools_config = {}
+            for tool_name in all_tools.keys():
+                # 提取工具名称（去除描述部分）
+                tool_enabled = any(selected_name.startswith(tool_name + ":") for selected_name in selected_tool_names)
+                new_tools_config[tool_name] = tool_enabled
+
+            # 保存到数据库
+            agent_config = self.get_agent_config(plan_id)
+            result = self.save_agent_config(
+                plan_id=plan_id,
+                llm_config_id=agent_config.get('llm_config_id', 1),
+                agent_prompt=agent_config.get('agent_prompt', ''),
+                tools_config=new_tools_config
+            )
+
+            enabled_count = sum(1 for enabled in new_tools_config.values() if enabled)
+            return f"✅ 配置已保存 - 启用了 {enabled_count}/{len(all_tools)} 个工具"
+
+        except Exception as e:
+            return f"❌ 保存失败: {str(e)}"
+
+    def reset_tools_to_default(self, plan_id: int):
+        """重置工具为默认配置的函数"""
+        try:
+            # 获取所有可用工具
+            from services.agent_tools import get_all_tools
+            all_tools = get_all_tools()
+
+            from services.agent_tools_config_helper import get_default_tools_config
+            default_config = get_default_tools_config("moderate")  # 使用适中模式
+
+            # 转换格式
+            default_tools = {}
+            for tool_name in default_config["enabled_tools"]:
+                default_tools[tool_name] = True
+
+            # 保存到数据库
+            agent_config = self.get_agent_config(plan_id)
+            result = self.save_agent_config(
+                plan_id=plan_id,
+                llm_config_id=agent_config.get('llm_config_id', 1),
+                agent_prompt=agent_config.get('agent_prompt', ''),
+                tools_config=default_tools
+            )
+
+            # 返回默认选中的工具
+            default_selected = [f"{name}: {all_tools[name].description[:60]}..."
+                              for name in default_config["enabled_tools"] if name in all_tools]
+
+            enabled_count = len(default_config["enabled_tools"])
+            status = f"✅ 已重置为默认配置 - 启用了 {enabled_count} 个工具"
+
+            return default_selected, status
+
+        except Exception as e:
+            # 获取当前工具配置作为fallback
+            agent_config = self.get_agent_config(plan_id)
+            current_tools_config = agent_config.get('agent_tools_config', {})
+
+            from services.agent_tools import get_all_tools
+            all_tools = get_all_tools()
+
+            current_selected = [f"{name}: {all_tools[name].description[:60]}..."
+                              for name, enabled in current_tools_config.items()
+                              if enabled and name in all_tools]
+            return current_selected, f"❌ 重置失败: {str(e)}"

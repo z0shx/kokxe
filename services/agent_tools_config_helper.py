@@ -28,7 +28,8 @@ def get_default_tools_config(risk_level: str = "conservative") -> dict:
             "get_pending_orders",
             "get_order_history",
             "get_fills",
-            "get_current_price"
+            "get_current_price",
+            "get_latest_prediction_analysis"
         ]
     elif risk_level == "moderate":
         # 适中模式：允许查询 + 撤单/改单
@@ -40,6 +41,7 @@ def get_default_tools_config(risk_level: str = "conservative") -> dict:
             "get_order_history",
             "get_fills",
             "get_current_price",
+            "get_latest_prediction_analysis",
             "cancel_order",
             "amend_order"
         ]
