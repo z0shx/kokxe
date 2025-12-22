@@ -980,28 +980,7 @@ def create_app():
                             # AI Agent 对话界面组件直接在这里创建
                             gr.Markdown("**AI Agent 对话**")
 
-                            # 对话记录选择区域
-                            with gr.Row():
-                                conversation_selector = gr.Dropdown(
-                                    label="📝 对话记录",
-                                    choices=[("无对话记录", None)],
-                                    value=None,
-                                    interactive=True,
-                                    scale=4
-                                )
-                                restore_conversation_btn = gr.Button(
-                                    "🔄 恢复对话",
-                                    variant="secondary",
-                                    size="sm",
-                                    scale=1,
-                                    interactive=False
-                                )
-                                refresh_conversations_btn = gr.Button(
-                                    "🔃 刷新列表",
-                                    variant="secondary",
-                                    size="sm",
-                                    scale=1
-                                )
+                            # 移除重复的对话恢复下拉选择器 - 直接使用列表点击恢复功能
 
                             # 对话状态显示
                             agent_status = gr.Markdown("", visible=False)
@@ -1249,9 +1228,6 @@ def create_app():
                             'agent_execute_inference_btn': agent_execute_inference_btn,
                             'agent_clear_btn': agent_clear_btn,
                             'agent_status': agent_status,
-                            'conversation_selector': conversation_selector,
-                            'restore_conversation_btn': restore_conversation_btn,
-                            'refresh_conversations_btn': refresh_conversations_btn,
                             **event_wrappers
                         }
 
@@ -2319,24 +2295,6 @@ def create_app():
                 # AI Agent 事件绑定现在通过 chat_ui.bind_events() 处理
                 chat_ui.bind_events(chat_components, plan_id_input)
 
-                # 初始化对话UI
-                def initialize_conversation_ui(pid):
-                    """初始化对话UI，加载对话列表"""
-                    try:
-                        choices = chat_ui.get_conversation_list_for_selection(pid)
-                        return gr.update(choices=choices), gr.update(interactive=False)
-                    except Exception as e:
-                        logger.error(f"初始化对话UI失败: {e}")
-                        return gr.update(choices=[("无对话记录", None)]), gr.update(interactive=False)
-
-                # 绑定初始化函数 - 当页面加载或plan_id变化时调用
-                if hasattr(plan_id_input, 'change'):
-                    plan_id_input.change(
-                        fn=initialize_conversation_ui,
-                        inputs=[plan_id_input],
-                        outputs=[conversation_selector, restore_conversation_btn]
-                    )
-
                 # 刷新账户信息
                 def refresh_account_wrapper(pid):
                     # 使用安全的plan_id处理函数
@@ -2404,12 +2362,12 @@ def create_app():
                     outputs=[account_status]
                 )
 
-                # Agent决策记录点击事件 - 在chatbot中显示详情
-                def show_agent_decision_detail(evt: gr.SelectData, plan_id):
-                    """显示Agent决策详情到chatbot"""
+                # Agent对话记录点击事件 - 恢复对话到chatbot
+                def restore_agent_conversation(evt: gr.SelectData, plan_id):
+                    """恢复Agent对话到chatbot"""
                     try:
                         if evt is None or not hasattr(evt, 'index') or not evt.index:
-                            return [{"role": "assistant", "content": "请点击决策记录查看详情"}]
+                            return [{"role": "assistant", "content": "请点击对话记录查看详情"}]
 
                         if not plan_id:
                             return [{"role": "assistant", "content": "请先选择计划"}]
@@ -2417,44 +2375,47 @@ def create_app():
                         # 获取点击的行索引
                         row_index = evt.index[0]
 
-                        # 从数据库重新获取Agent决策数据
+                        # 从数据库重新获取Agent对话数据
                         try:
                             agent_decisions = detail_ui.load_agent_decisions(int(plan_id))
                             if agent_decisions.empty or row_index >= len(agent_decisions):
-                                return [{"role": "assistant", "content": "决策记录不存在或已被更新"}]
+                                return [{"role": "assistant", "content": "对话记录不存在或已被更新"}]
 
-                            # 获取点击行的ID
+                            # 获取点击行的ID（对话ID）
                             clicked_row = agent_decisions.iloc[row_index]
                             if 'ID' in clicked_row:
-                                decision_id = int(clicked_row['ID'])
+                                conversation_id = int(clicked_row['ID'])
                             else:
                                 # 假设第一列是ID
-                                decision_id = int(clicked_row.iloc[0])
+                                conversation_id = int(clicked_row.iloc[0])
 
                         except Exception as load_error:
-                            logger.error(f"加载决策数据失败: {load_error}")
-                            return [{"role": "assistant", "content": "无法加载决策数据"}]
+                            logger.error(f"加载对话数据失败: {load_error}")
+                            return [{"role": "assistant", "content": "无法加载对话数据"}]
 
-                        # 获取决策详情
-                        detail_content = detail_ui.get_agent_decision_detail(decision_id)
+                        # 使用chat_ui组件恢复对话
+                        restored_history = detail_ui.chat_ui.restore_selected_conversation(int(plan_id), conversation_id)
 
-                        # 格式化为chatbot消息
-                        chat_messages = [
-                            {"role": "user", "content": f"查看决策记录 ID: {decision_id} 的详情"},
-                            {"role": "assistant", "content": detail_content}
-                        ]
-
-                        return chat_messages
+                        if restored_history and len(restored_history) > 0:
+                            # 检查是否是错误消息
+                            if (restored_history[0].get("role") == "assistant" and
+                                restored_history[0].get("content", "").startswith("❌ 恢复对话失败")):
+                                return restored_history
+                            else:
+                                # 添加用户消息说明恢复操作
+                                return restored_history + [{"role": "user", "content": f"已恢复对话 ID: {conversation_id}"}]
+                        else:
+                            return [{"role": "assistant", "content": "恢复的对话为空"}]
 
                     except Exception as e:
-                        logger.error(f"获取Agent决策详情失败: {e}")
+                        logger.error(f"恢复Agent对话失败: {e}")
                         import traceback
                         traceback.print_exc()
-                        return [{"role": "assistant", "content": f"获取决策详情失败: {str(e)}"}]
+                        return [{"role": "assistant", "content": f"恢复对话失败: {str(e)}"}]
 
-                # 绑定Agent决策列表点击事件
+                # 绑定Agent对话列表点击事件
                 agent_df.select(
-                    fn=show_agent_decision_detail,
+                    fn=restore_agent_conversation,
                     inputs=[plan_id_input],
                     outputs=[agent_chatbot]
                 )

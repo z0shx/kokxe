@@ -41,25 +41,52 @@ python app.py
 python tests/test_ws_header.py
 
 # Test agent tools functionality
-python scripts/test_agent_tools.py
+python tests/test_real_agent_tools.py
+python tests/test_all_langchain_tools.py
+
+# Test prediction analysis tool
+python tests/test_prediction_tool.py
+
+# Test LangChain agent integration
+python tests/test_real_langchain_agent.py
+python tests/test_langchain_agent_final.py
+
+# Test automation workflow
+python tests/test_agent_auto_inference.py
 
 # Test configuration center
 python scripts/test_config_center.py
 
-# Run inference batch tests
-python test_inference_batches.py
+# Run specific test cases
+python tests/test_latest_prediction_analysis.py
+python tests/test_inference_data_offset.py
+
+# Test streaming functionality
+python tests/test_streaming_fixes.py
 ```
 
 ### Database Operations
 ```bash
+# Initialize database
+python -c "from database.db import init_db; init_db()"
+
 # Run database migrations
-python -c "from database.migrate import migrate_database; migrate_database()"
+python scripts/run_migration.py
 
 # Check database connection
 python -c "from database.db import get_db; db = next(get_db()); print('Database connected successfully')"
 
 # Initialize database schema
 python sql/schema.sql  # Run SQL schema file
+
+# Fix stuck training records
+python scripts/fix_stuck_training.py
+
+# Update agent tools configuration
+python scripts/update_agent_tools_config.py [plan_id]
+
+# Update agent configuration
+python scripts/update_agent_config.py
 ```
 
 ## Architecture & Code Structure
@@ -85,12 +112,19 @@ KOKEX follows a **microservices architecture** with the following key layers:
 #### **Core Services (`services/`)**
 - `training_service.py`: Orchestrates two-stage model training pipeline
 - `inference_service.py`: Handles model predictions with Monte Carlo sampling
-- `langchain_agent_v2.py`: AI-powered trading decisions using LLMs with LangChain
-- `ws_connection_manager.py`: Real-time market data streaming
-- `okx_rest_service.py`: Exchange integration for trade execution
-- `schedule_service.py`: Automated task scheduling and management (APScheduler)
+- `langchain_agent.py`: AI-powered trading decisions using LLMs with LangChain
+- `agent_tools.py`: AI agent tool definitions and configurations
+- `agent_tool_executor.py`: Tool execution engine for AI agents
+- `prediction_analysis_service.py`: Multi-batch prediction data analysis
 - `trading_tools.py`: OKX trading API integration (order placement, cancellation)
 - `automation_service.py`: End-to-end automated trading workflow orchestration
+- `unified_scheduler.py`: Unified task scheduling system (replaces deprecated schedulers)
+- `conversation_service.py`: Agent conversation and message management
+- `ws_connection_manager.py`: Real-time market data streaming
+- `plan_service.py`: Trading plan management operations
+- `capital_management_service.py`: Risk and capital management
+- `kline_event_service.py`: K-line data event handling
+- `order_event_service.py`: Order status event processing
 
 #### **Web Interface (`ui/`)**
 - `plan_create.py`: Trading plan creation and configuration
@@ -100,11 +134,16 @@ KOKEX follows a **microservices architecture** with the following key layers:
 
 #### **Database Models (`database/models.py`)**
 Key entities:
-- `TradingPlan`: Trading strategy configurations
-- `KlineData`: Historical OHLCV market data
-- `TrainingRecord`: Model training history and metrics
-- `AgentDecision`: AI agent decision logs
-- `TradeOrder`: Executed trade records
+- `TradingPlan`: Trading strategy configurations and automation settings
+- `KlineData`: Historical OHLCV market data with UTC+0 timestamps
+- `TrainingRecord`: Model training history and performance metrics
+- `AgentDecision`: AI agent decision logs (legacy, mostly replaced by AgentMessage)
+- `AgentConversation`: Agent conversation sessions and metadata
+- `AgentMessage`: Individual agent messages with tool calls and results
+- `PredictionData`: Model inference predictions and analysis data
+- `TradeOrder`: Executed trade records and order tracking
+- `LLMConfig`: LLM provider configurations and credentials
+- `SystemLog`: System-level logging and monitoring events
 
 ### Data Flow Architecture
 
@@ -177,12 +216,38 @@ Each trading plan includes:
 - **Decision Logging**: Complete audit trail for all decisions
 
 ### Tool Integration
-The AI agent has access to:
-- `get_current_price`: Real-time price data
-- `place_order`: Order execution (market/limit orders)
-- `cancel_order`: Order cancellation
-- `get_positions`: Current position information
-- `get_trading_limits`: Risk constraint checking
+The AI agent has access to 17+ tools across three categories:
+
+**Query Tools** (9 tools):
+- `get_account_balance`: Query account balances and available funds
+- `get_account_positions`: Query current positions and holdings
+- `get_order_info`: Query specific order details and status
+- `get_pending_orders`: Query all active/limit orders
+- `get_order_history`: Query historical order records
+- `get_fills`: Query trade execution details
+- `get_current_price`: Get real-time market prices
+- `get_latest_prediction_analysis`: Analyze latest multi-batch prediction data
+- `get_prediction_history`: Query historical model predictions
+- `query_prediction_data`: Search stored prediction data by criteria
+- `query_historical_kline_data`: Query real historical K-line data
+- `get_current_utc_time`: Get current Beijing time
+
+**Trade Tools** (3 tools):
+- `place_limit_order`: Execute limit orders with risk management
+- `cancel_order`: Cancel pending orders
+- `amend_order`: Modify existing order parameters
+- `place_order`: General order execution (market/limit)
+
+**Monitor Tools** (1 tool):
+- `run_latest_model_inference`: Trigger model inference on latest data
+
+### Agent Context Persistence
+The system maintains complete agent context through:
+- **AgentConversation**: Session-level conversation metadata
+- **AgentMessage**: Individual messages with tool calls, results, and execution times
+- **Tool Call Tracking**: Complete audit trail with tool_call_id linking calls to results
+- **Error Handling**: Comprehensive error logging and recovery mechanisms
+- **Conversation History**: Persistent context loading for continued conversations
 
 ## Development Guidelines
 
@@ -204,18 +269,31 @@ The AI agent has access to:
 - Use `ModelService` for model loading and management
 - Training operations are asynchronous with progress tracking
 - Model versioning is handled automatically (v1, v2, etc.)
+- Multi-GPU training support via PyTorch DistributedDataParallel
+- CUDA memory cleanup after training completion
 
 ### API Integration Best Practices
-- OKX API credentials are encrypted in database
+- OKX API credentials are encrypted using AES-256 in database
 - All API operations support demo/live mode switching
 - Implement proper rate limiting and error handling
 - Use proxy configuration for network access
+- WebSocket connections support automatic reconnection and health monitoring
+
+### Agent Tool Development
+- Tool definitions are centralized in `services/agent_tools.py`
+- Tools are categorized as QUERY, TRADE, or MONITOR
+- Each tool must implement proper parameter validation
+- Tool execution is tracked with unique tool_call_id for audit trails
+- Tool results are automatically persisted to AgentMessage table
+- Use `services/agent_tool_executor.py` for tool execution logic
 
 ### Error Handling
-- Implement comprehensive logging with structured format
-- Use the global logger from `utils.logger`
-- All services should handle database connection errors
-- WebSocket reconnection is automatic but should be monitored
+- Implement comprehensive logging with structured format using `utils.logger`
+- Use `services/agent_error_handler.py` for agent-specific error handling
+- All services should handle database connection errors gracefully
+- WebSocket reconnection is automatic but should be monitored via logs
+- Agent execution failures are logged with full context to SystemLog table
+- Training and inference operations have timeout and retry mechanisms
 
 ## Important Implementation Notes
 

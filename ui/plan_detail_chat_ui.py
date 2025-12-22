@@ -5,9 +5,59 @@ import asyncio
 import gradio as gr
 from utils.logger import setup_logger
 from ui.custom_chatbot import create_custom_chatbot, process_streaming_messages
-from ui.enhanced_chatbot import enhanced_chatbot
 
 logger = setup_logger(__name__, "plan_detail_chat_ui.log")
+
+
+class ChatButtonStateManager:
+    """简化的聊天按钮状态管理器"""
+
+    # 类变量用于跟踪活动任务
+    _active_tasks = {}
+
+    @staticmethod
+    def update_button_states(is_running: bool, has_context: bool = False, has_input: bool = False):
+        """更新按钮状态"""
+        if is_running:
+            return (
+                gr.update(interactive=False, visible=False),  # 发送按钮
+                gr.update(interactive=True, visible=True),   # 取消按钮
+                gr.update(interactive=False, visible=False)   # 执行推理按钮
+            )
+        else:
+            send_interactive = has_input or has_context
+            return (
+                gr.update(interactive=send_interactive, visible=True),  # 发送按钮
+                gr.update(interactive=False, visible=False),            # 取消按钮
+                gr.update(interactive=True, visible=True)               # 执行推理按钮 - 始终可用
+            )
+
+    @staticmethod
+    def generate_session_id(plan_id: str, input_text: str = "") -> str:
+        """生成会话ID"""
+        import hashlib
+        import time
+        content = f"{plan_id}_{input_text}_{time.time()}"
+        return hashlib.md5(content.encode()).hexdigest()[:16]
+
+    @classmethod
+    def register_task(cls, session_id: str, task_info: dict):
+        """注册任务"""
+        cls._active_tasks[session_id] = task_info
+
+    @classmethod
+    def cancel_task(cls, session_id: str) -> bool:
+        """取消任务"""
+        if session_id in cls._active_tasks:
+            task_info = cls._active_tasks[session_id]
+            try:
+                # 简化的取消逻辑
+                task_info['cancelled'] = True
+                del cls._active_tasks[session_id]
+                return True
+            except Exception:
+                return False
+        return False
 
 
 class PlanDetailChatUI:
@@ -16,76 +66,55 @@ class PlanDetailChatUI:
     def __init__(self, plan_detail_ui):
         self.plan_detail_ui = plan_detail_ui
         self.current_session_id = None
+        self.active_tasks = {}  # 简化的任务管理
 
     def _async_to_sync_stream(self, async_func, initial_history=None, **kwargs):
-        """
-        重写的异步流转同步处理方法
-        支持真正的实时流式输出
-        """
+        """简化的异步流转同步处理方法"""
         import asyncio
-        import sys
-        import threading
-        import queue
-        from ui.streaming_handler import StreamingHandler
 
-        # 统一使用线程处理，避免事件循环冲突
-        result_queue = queue.Queue()
-        error_queue = queue.Queue()
+        try:
+            # 创建新的事件循环
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
 
-        def run_async_in_thread():
+            current_history = initial_history.copy() if initial_history else []
+
+            async def stream_processor():
+                try:
+                    async for message_batch in async_func(**kwargs):
+                        if isinstance(message_batch, list):
+                            for message in message_batch:
+                                current_history.append(message)
+                                yield current_history.copy(), gr.update(value=""), gr.update(visible=False, value="")
+                        else:
+                            current_history.append(message_batch)
+                            yield current_history.copy(), gr.update(value=""), gr.update(visible=False, value="")
+
+                except Exception as e:
+                    error_message = [{"role": "assistant", "content": f"❌ 流式处理错误: {str(e)}"}]
+                    current_history.extend(error_message)
+                    yield current_history.copy(), gr.update(value=""), gr.update(visible=True, value=f"❌ 流式处理错误: {str(e)}")
+
+            # 运行异步生成器
+            async_gen = stream_processor()
             try:
-                # 创建新的事件循环
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
+                while True:
+                    result = loop.run_until_complete(async_gen.__anext__())
+                    yield result
+            except StopAsyncIteration:
+                pass
 
-                async def stream_processor():
-                    handler = StreamingHandler()
-                    current_history = initial_history.copy() if initial_history else []
-                    session_id = "session_" + str(hash(str(kwargs)))
+        except Exception as e:
+            # 错误处理
+            current_history = initial_history.copy() if initial_history else []
+            error_message = [{"role": "assistant", "content": f"❌ 异步处理错误: {str(e)}"}]
+            yield current_history + error_message, gr.update(value=""), gr.update(visible=True, value=f"❌ 异步处理错误: {str(e)}")
 
-                    async for message_batch in handler.process_agent_stream_realtime(
-                        async_func(**kwargs), session_id
-                    ):
-                        # 立即处理每个消息批次
-                        for message in message_batch:
-                            current_history.append(message)
-                            result_queue.put(("message", current_history.copy(), gr.update(value=""), gr.update(visible=False, value="")))
-
-                    result_queue.put(("done", None, None, None))
-
-                new_loop.run_until_complete(stream_processor())
-                new_loop.close()
-
-            except Exception as e:
-                error_queue.put(e)
-
-        # 启动异步处理线程
-        thread = threading.Thread(target=run_async_in_thread, daemon=True)
-        thread.start()
-
-        # 实时获取结果并yield
-        while True:
+        finally:
             try:
-                # 检查错误
-                if not error_queue.empty():
-                    raise error_queue.get()
-
-                # 获取消息
-                status, history, user_input_update, status_update = result_queue.get(timeout=0.1)
-                if status == "message":
-                    yield history, user_input_update, status_update
-                elif status == "done":
-                    break
-
-            except queue.Empty:
-                continue
-
-            except Exception as e:
-                # 降级处理：使用简单的同步包装
-                current_history = initial_history.copy() if initial_history else []
-                error_message = [{"role": "assistant", "content": f"❌ 流式处理错误: {str(e)}"}]
-                yield current_history + error_message, gr.update(value=""), gr.update(visible=True, value=f"❌ 流式处理错误: {str(e)}")
-                break
+                loop.close()
+            except:
+                pass
 
     def _validate_plan_and_message(self, pid, user_message, history):
         """验证计划存在性和消息内容"""
@@ -300,30 +329,7 @@ class PlanDetailChatUI:
         # 对话状态显示
         agent_status = gr.Markdown("", visible=False)
 
-        # 对话记录选择区域
-        with gr.Row():
-            conversation_selector = gr.Dropdown(
-                label="📝 对话记录",
-                choices=[("无对话记录", None)],
-                value=None,
-                interactive=True,
-                scale=4
-            )
-            restore_conversation_btn = gr.Button(
-                "🔄 恢复对话",
-                variant="secondary",
-                size="sm",
-                scale=1,
-                interactive=False
-            )
-            refresh_conversations_btn = gr.Button(
-                "🔃 刷新列表",
-                variant="secondary",
-                size="sm",
-                scale=1
-            )
-
-        # 保存组件引用
+        # 保存组件引用（移除重复的对话恢复下拉选择器组件）
         components.update({
             'agent_chatbot': agent_chatbot,
             'agent_user_input': agent_user_input,
@@ -331,10 +337,7 @@ class PlanDetailChatUI:
             'agent_cancel_btn': agent_cancel_btn,
             'agent_execute_inference_btn': agent_execute_inference_btn,
             'agent_clear_btn': agent_clear_btn,
-            'agent_status': agent_status,
-            'conversation_selector': conversation_selector,
-            'restore_conversation_btn': restore_conversation_btn,
-            'refresh_conversations_btn': refresh_conversations_btn
+            'agent_status': agent_status
         })
 
         # 定义简化的同步事件处理函数
@@ -342,24 +345,24 @@ class PlanDetailChatUI:
             """输入变化时更新按钮状态"""
             has_input = bool(user_input and user_input.strip())
             has_context = bool(history and len(history) > 0)
-            return enhanced_chatbot.update_button_states(False, has_context=has_context, has_input=has_input)
+            return ChatButtonStateManager.update_button_states(False, has_context=has_context, has_input=has_input)
         def agent_send_message_wrapper(pid, user_message, history):
             """发送消息给AI Agent（支持取消的流式版本）"""
             # 验证输入
             is_valid, plan_id, clean_message, current_history, error_msg = self._validate_plan_and_message(pid, user_message, history)
             if not is_valid:
-                button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=len(history) > 0)
                 yield history + [{"role": "assistant", "content": error_msg}], gr.update(value=""), gr.update(visible=True, value=error_msg), button_states[0], button_states[1], button_states[2]
                 return
 
             try:
                 # 生成会话ID
-                self.current_session_id = enhanced_chatbot.generate_session_id(str(plan_id), clean_message)
+                self.current_session_id = ChatButtonStateManager.generate_session_id(str(plan_id), clean_message)
 
                 # 使用带取消功能的异步流转同步处理
                 from services.langchain_agent import agent_service
                 final_result = None
-                for result in enhanced_chatbot.async_to_sync_stream_with_cancel(
+                for result in ChatButtonStateManager.async_to_sync_stream(
                     agent_service.stream_conversation,
                     session_id=self.current_session_id,
                     initial_history=current_history,
@@ -386,24 +389,24 @@ class PlanDetailChatUI:
             except Exception as e:
                 logger.error(f"发送消息失败: {e}")
                 error_message = [{"role": "assistant", "content": f"❌ 发送失败: {str(e)}"}]
-                button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(current_history) > 0)
+                button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=len(current_history) > 0)
                 yield current_history + error_message, gr.update(value=""), gr.update(visible=True, value=str(e)), button_states[0], button_states[1], button_states[2]
 
         def agent_cancel_inference_wrapper(pid, history):
             """取消推理"""
             if self.current_session_id:
-                success = enhanced_chatbot.cancel_task(self.current_session_id)
+                success = ChatButtonStateManager.cancel_task(self.current_session_id)
                 if success:
                     logger.info(f"推理已取消: {self.current_session_id}")
                     # 保留当前对话上下文
-                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                    button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=len(history) > 0)
                     return history, gr.update(value=""), gr.update(visible=True, value="推理已取消，保留当前上下文"), button_states[0], button_states[1], button_states[2]
                 else:
                     logger.warning(f"取消推理失败: {self.current_session_id}")
-                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                    button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=len(history) > 0)
                     return history, gr.update(value=""), gr.update(visible=True, value="取消推理失败"), button_states[0], button_states[1], button_states[2]
             else:
-                button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=len(history) > 0)
                 return history, gr.update(value=""), gr.update(visible=True, value="没有正在进行的推理"), button_states[0], button_states[1], button_states[2]
 
         def agent_execute_inference_wrapper(pid, history):
@@ -411,7 +414,7 @@ class PlanDetailChatUI:
             # 验证计划存在性（重用验证方法，但传入空消息以跳过消息验证）
             _, plan_id, _, _, error_msg = self._validate_plan_and_message(pid, "dummy", [])
             if error_msg and "计划不存在" in error_msg:
-                button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=len(history) > 0)
                 yield history + [{"role": "assistant", "content": error_msg}], gr.update(visible=True, value=error_msg), button_states[0], button_states[1], button_states[2]
                 return
 
@@ -423,14 +426,14 @@ class PlanDetailChatUI:
                 from services.historical_data_service import historical_data_service
                 historical_data = historical_data_service.get_optimal_historical_data(plan_id)
                 if not historical_data:
-                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(empty_history) > 0)
+                    button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=len(empty_history) > 0)
                     yield empty_history + [{"role": "assistant", "content": "❌ 未找到可用的历史K线数据"}], gr.update(visible=True, value="未找到可用的历史K线数据"), button_states[0], button_states[1], button_states[2]
                     return
 
                 # 获取最新预测交易数据
                 prediction_data = self._get_latest_prediction_csv_data(plan_id)
                 if not prediction_data:
-                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(empty_history) > 0)
+                    button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=len(empty_history) > 0)
                     yield empty_history + [{"role": "assistant", "content": "❌ 未找到可用的预测数据，请先执行模型推理"}], gr.update(visible=True, value="未找到可用的预测数据，请先执行模型推理"), button_states[0], button_states[1], button_states[2]
                     return
 
@@ -454,7 +457,7 @@ class PlanDetailChatUI:
                     conversation_type="inference_session"
                 ):
                     # 推理函数需要返回完整的5个值：chatbot, status, send_btn, cancel_btn, inference_btn
-                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                    button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=len(history) > 0)
                     final_result = (history, status_update, button_states[0], button_states[1], button_states[2])
                     yield final_result
 
@@ -472,64 +475,16 @@ class PlanDetailChatUI:
             except Exception as e:
                 logger.error(f"执行推理失败: {e}")
                 error_message = [{"role": "assistant", "content": f"❌ 执行推理失败: {str(e)}"}]
-                button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=len(history) > 0)
                 yield history + error_message, gr.update(visible=True, value=f"执行推理失败: {str(e)}"), button_states[0], button_states[1], button_states[2]
 
-        # 保存事件处理函数
-        # 对话记录相关处理函数
-        def load_conversation_choices(pid):
-            """加载对话选择列表"""
-            return self.get_conversation_list_for_selection(pid)
-
-        def update_restore_button_state(selected_conversation):
-            """更新恢复按钮状态"""
-            return gr.update(interactive=bool(selected_conversation))
-
-        def restore_conversation_handler(pid, selected_conversation):
-            """恢复对话处理函数"""
-            try:
-                logger.info(f"恢复对话处理函数被调用: pid={pid}, selected_conversation={selected_conversation}")
-
-                restored_history = self.restore_selected_conversation(pid, selected_conversation)
-
-                # 检查是否返回了错误消息
-                if (restored_history and len(restored_history) > 0 and
-                    restored_history[0].get("role") == "assistant" and
-                    restored_history[0].get("content", "").startswith("❌ 恢复对话失败")):
-                    # 如果是错误消息，保持按钮可用以便重试
-                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=False)
-                else:
-                    # 正常恢复，更新按钮状态
-                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(restored_history) > 0)
-
-                return restored_history, button_states[0], button_states[1], button_states[2]
-
-            except Exception as e:
-                logger.error(f"恢复对话处理函数异常: {e}")
-                import traceback
-                logger.error(f"恢复对话处理函数异常详情: {traceback.format_exc()}")
-
-                error_message = [{"role": "assistant", "content": f"❌ 恢复对话处理失败: {str(e)}"}]
-                button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=False)
-                return error_message, button_states[0], button_states[1], button_states[2]
-
-        def refresh_conversations_and_state(pid, current_history):
-            """刷新对话列表并更新状态"""
-            choices = self.get_conversation_list_for_selection(pid)
-            has_context = bool(current_history and len(current_history) > 0)
-            button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=has_context)
-            return gr.update(choices=choices), button_states[0], button_states[1], button_states[2]
-
+        # 保存事件处理函数（移除重复的对话恢复下拉选择器相关处理函数）
         components.update({
             'agent_send_message_wrapper': agent_send_message_wrapper,
             'agent_cancel_inference_wrapper': agent_cancel_inference_wrapper,
             'agent_execute_inference_wrapper': agent_execute_inference_wrapper,
             'agent_clear_conversation_wrapper': self.agent_clear_conversation_wrapper,
-            'update_button_state_on_input': update_button_state_on_input,
-            'load_conversation_choices': load_conversation_choices,
-            'update_restore_button_state': update_restore_button_state,
-            'restore_conversation_handler': restore_conversation_handler,
-            'refresh_conversations_and_state': refresh_conversations_and_state
+            'update_button_state_on_input': update_button_state_on_input
         })
 
         
@@ -561,7 +516,7 @@ class PlanDetailChatUI:
         is_valid, plan_id, error_msg = validate_plan_exists(pid)
 
         if not is_valid:
-            button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=False)
+            button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=False)
             return history, gr.update(value=""), gr.update(visible=True, value=f"❌ {error_msg}"), button_states[0], button_states[1], button_states[2]
 
         try:
@@ -569,12 +524,12 @@ class PlanDetailChatUI:
             # 清空聊天历史
             empty_history = []
             status_message = f"✅ {result}"
-            button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=False)
+            button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=False)
             return empty_history, gr.update(value=""), gr.update(visible=True, value=status_message), button_states[0], button_states[1], button_states[2]
 
         except Exception as e:
             logger.error(f"清除对话失败: {e}")
-            button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+            button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=len(history) > 0)
             return history, gr.update(value=""), gr.update(visible=True, value=f"❌ 清除失败: {str(e)}"), button_states[0], button_states[1], button_states[2]
 
     def bind_events(self, components, plan_id_input):
@@ -619,7 +574,7 @@ class PlanDetailChatUI:
             """输入变化时更新按钮状态"""
             has_input = bool(user_input and user_input.strip())
             has_context = bool(history and len(history) > 0)
-            return enhanced_chatbot.update_button_states(False, has_context=has_context, has_input=has_input)
+            return ChatButtonStateManager.update_button_states(False, has_context=has_context, has_input=has_input)
 
         components['agent_user_input'].change(
             fn=update_button_state_on_input,
@@ -627,41 +582,10 @@ class PlanDetailChatUI:
             outputs=[components['agent_send_btn'], components['agent_cancel_btn'], components['agent_execute_inference_btn']]
         )
 
-        # 对话记录相关事件绑定
-        components['conversation_selector'].change(
-            fn=components['update_restore_button_state'],
-            inputs=[components['conversation_selector']],
-            outputs=[components['restore_conversation_btn']]
-        )
-
-        components['restore_conversation_btn'].click(
-            fn=components['restore_conversation_handler'],
-            inputs=[plan_id_input, components['conversation_selector']],
-            outputs=[components['agent_chatbot'], components['agent_send_btn'], components['agent_cancel_btn'], components['agent_execute_inference_btn']]
-        )
-
-        components['refresh_conversations_btn'].click(
-            fn=components['refresh_conversations_and_state'],
-            inputs=[plan_id_input, components['agent_chatbot']],
-            outputs=[components['conversation_selector'], components['agent_send_btn'], components['agent_cancel_btn'], components['agent_execute_inference_btn']]
-        )
+        # 移除重复的对话恢复下拉选择器事件绑定 - 直接使用列表点击恢复功能
 
     def setup_auto_refresh_and_initial_load(self, plan_id_input, components):
-        """设置自动刷新和初始加载"""
-
-        def initialize_conversation_ui(pid):
-            """初始化对话UI，加载对话列表"""
-            choices = self.get_conversation_list_for_selection(pid)
-            return gr.update(choices=choices), gr.update(interactive=False)
-
-        # 绑定初始化函数 - 当页面加载或plan_id变化时调用
-        if hasattr(plan_id_input, 'change'):
-            plan_id_input.change(
-                fn=initialize_conversation_ui,
-                inputs=[plan_id_input],
-                outputs=[components['conversation_selector'], components['restore_conversation_btn']]
-            )
-
+        """设置自动刷新和初始加载（简化版本 - 列表点击恢复无需额外初始化）"""
         return components
 
     def restore_conversation_from_records(self, plan_id: int, conversation_id: int = None):

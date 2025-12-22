@@ -890,14 +890,33 @@ class LangChainAgentService:
 
         return False
 
-    def _build_system_prompt(self, plan: TradingPlan, tools_config: Dict[str, bool]) -> str:
-        """构建系统提示词 - 强制使用计划配置的提示词"""
-        # 强制要求必须配置计划提示词，否则拒绝执行
-        if not plan.agent_prompt:
-            raise ValueError("计划未配置 Agent 提示词，请先在计划设置中配置自定义提示词内容")
+    def _build_system_prompt(self, plan: TradingPlan, tools_config: Dict[str, bool], conversation_type: str = "user_chat") -> str:
+        """构建系统提示词 - 根据对话类型构建不同的提示词"""
 
-        # 直接使用计划配置的提示词，不做任何简化
-        dynamic_prompt = plan.agent_prompt
+        # 根据对话类型构建不同的提示词
+        if conversation_type == "user_chat":
+            # 用户聊天模式：简洁的对话助手提示词
+            dynamic_prompt = """你是一个加密货币交易助手，可以帮助用户查询交易信息、分析市场数据和回答交易相关问题。
+
+你可以：
+- 查询账户余额、持仓、订单信息
+- 获取市场价格和历史数据
+- 分析预测数据和模型结果
+- 回答用户的交易相关问题
+
+请以友好、专业的方式与用户交流，提供有用的信息和建议。"""
+
+        elif conversation_type == "inference_session":
+            # 推理模式：使用完整交易决策提示词
+            if not plan.agent_prompt:
+                raise ValueError("计划未配置 Agent 提示词，请先在计划设置中配置自定义提示词内容")
+            dynamic_prompt = plan.agent_prompt
+
+        else:
+            # 默认使用交易决策提示词
+            if not plan.agent_prompt:
+                raise ValueError("计划未配置 Agent 提示词，请先在计划设置中配置自定义提示词内容")
+            dynamic_prompt = plan.agent_prompt
 
         # 第二部分：可用工具描述
         tools_desc = []
@@ -937,8 +956,23 @@ class LangChainAgentService:
             except:
                 pass
 
-        # 构建完整的系统提示词
-        system_prompt = f"""{dynamic_prompt}
+        # 根据对话类型构建不同的完整提示词
+        if conversation_type == "user_chat":
+            # 用户聊天模式：简洁的提示词
+            system_prompt = f"""{dynamic_prompt}
+
+可用工具：
+{chr(10).join(tools_desc) if tools_desc else "无可用工具"}
+
+交易计划信息：
+- 交易对: {plan.inst_id}
+- 时间周期: {plan.interval}
+
+请根据用户的需求，使用合适的工具来提供帮助。如果用户需要执行交易操作，请确保用户已经了解相关风险。"""
+
+        else:
+            # 推理模式：完整的交易决策提示词
+            system_prompt = f"""{dynamic_prompt}
 
 可用工具：
 {chr(10).join(tools_desc) if tools_desc else "无可用工具"}
@@ -1063,7 +1097,7 @@ class LangChainAgentService:
 
         # 构建系统提示词
         tools_config = plan.agent_tools_config or {}
-        system_prompt = self._build_system_prompt(plan, tools_config)
+        system_prompt = self._build_system_prompt(plan, tools_config, conversation_type)
 
         # 如果是新对话，输出系统提示词
         if is_new_conversation:
@@ -2294,7 +2328,7 @@ class LangChainAgentService:
                         plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
                         if plan:
                             tools_config = plan.agent_tools_config or {}
-                            system_prompt = self._build_system_prompt(plan, tools_config)
+                            system_prompt = self._build_system_prompt(plan, tools_config, "auto_inference")
 
                             # 只输出 system prompt
                             logger.info(f"🔧 [System Prompt] plan_id={plan_id}")
