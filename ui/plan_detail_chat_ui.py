@@ -66,6 +66,7 @@ class PlanDetailChatUI:
     def __init__(self, plan_detail_ui):
         self.plan_detail_ui = plan_detail_ui
         self.current_session_id = None
+        self.current_conversation_id = None  # 当前激活的对话ID
         self.active_tasks = {}  # 简化的任务管理
 
     def _async_to_sync_stream(self, async_func, initial_history=None, **kwargs):
@@ -368,7 +369,8 @@ class PlanDetailChatUI:
                     initial_history=current_history,
                     plan_id=plan_id,
                     user_message=clean_message,
-                    conversation_type="user_chat"
+                    conversation_type="user_chat",
+                    conversation_id=self.current_conversation_id  # 传入当前对话ID
                 ):
                     final_result = result
                     yield result
@@ -520,6 +522,8 @@ class PlanDetailChatUI:
             return history, gr.update(value=""), gr.update(visible=True, value=f"❌ {error_msg}"), button_states[0], button_states[1], button_states[2]
 
         try:
+            # 清除当前对话ID
+            self.current_conversation_id = None
             result = self.plan_detail_ui.clear_agent_records(plan_id)
             # 清空聊天历史
             empty_history = []
@@ -616,6 +620,27 @@ class PlanDetailChatUI:
 
                 if not conversation:
                     return []  # 返回空历史，表示没有对话记录
+
+                # 将该对话设置为 active 状态，并将同类型的其他对话设置为非 active
+                from database.models import now_beijing
+                current_time = now_beijing()
+
+                # 将同类型的其他对话设置为 paused 状态
+                db.query(AgentConversation).filter(
+                    AgentConversation.plan_id == plan_id,
+                    AgentConversation.conversation_type == conversation.conversation_type,
+                    AgentConversation.id != conversation.id,
+                    AgentConversation.status == 'active'
+                ).update({'status': 'paused', 'last_message_at': current_time})
+
+                # 激活当前对话
+                conversation.status = 'active'
+                conversation.last_message_at = current_time
+                db.commit()
+
+                # 保存到实例变量
+                self.current_conversation_id = conversation.id
+                logger.info(f"已激活对话 {conversation.id}，类型: {conversation.conversation_type}")
 
                 # 获取该对话的所有消息，按时间顺序排列
                 messages = db.query(AgentMessage).filter(

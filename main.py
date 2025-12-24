@@ -974,6 +974,8 @@ def create_app():
 
                         # AI Agent 对话界面
                         chat_ui = detail_ui.get_chat_ui_components()
+                        # 保存 chat_ui 引用以便后续使用
+                        detail_ui.chat_ui = chat_ui
 
                         # 直接在界面中构建组件，而不是调用build_ui()
                         with gr.Column():
@@ -1289,7 +1291,6 @@ def create_app():
                             512, 48,  # inference_lookback_window, inference_predict_window
                             1.0, 0.9, 30, 0, "",  # inference_temperature, inference_top_p, inference_sample_count, inference_data_offset, inference_params_status
                             gr.update(), None, "",  # llm_config, prompt_template, agent_prompt
-                            gr.CheckboxGroup(choices=[], value=[]),  # 动态工具选择
                             1000.0, 30.0, 10.0, 20.0,  # 交易限制默认值：quick_usdt_amount, quick_usdt_percentage, quick_avg_orders, quick_stop_loss
                             gr.DataFrame(), gr.Plot(), "", gr.DataFrame(), "请保存推理参数后查看数据范围...", "", gr.DataFrame(), [{"role": "assistant", "content": "请先选择计划"}], "", "", "",  # training_df, kline_chart, probability_indicators_md, inference_df, inference_data_range_info, prediction_data_preview, agent_df, agent_chatbot, agent_user_input, agent_status
                             "### 💰 账户信息\n\n未加载",  # account_status
@@ -1297,7 +1298,7 @@ def create_app():
                             gr.DataFrame(),  # task_executions_df  # task_executions
                             gr.Timer(active=False),  # account_timer
                             None,  # inference_record_id
-                            gr.CheckboxGroup(choices=[], value=[])  # 添加工具配置
+                            gr.update(choices=[], value=[])  # 工具配置
                         )
 
                     def safe_int(value, default=0):
@@ -1458,14 +1459,6 @@ def create_app():
                         tools_selected = []
                         tools_info = "工具配置加载失败"
 
-                    # 创建工具配置组
-                    tools_checkbox_group = gr.CheckboxGroup(
-                        choices=tools_choices,
-                        value=tools_selected,
-                        label="可用工具 (勾选启用工具)",
-                        info=tools_info
-                    )
-
                     return (
                         gr.update(visible=True),   # detail_container
                         gr.update(visible=False),  # no_plan_msg
@@ -1519,7 +1512,7 @@ def create_app():
                         task_executions_df,  # task_executions_df
                         gr.Timer(active=True),  # account_timer - 启动账户定时器
                         get_latest_training_id(int(plan_id)),  # 自动填充最新的训练记录ID
-                        tools_checkbox_group  # 添加工具配置
+                        gr.update(choices=tools_choices, value=tools_selected, info=tools_info)  # 更新工具配置
                     )
 
                 # 保存参数函数
@@ -1800,7 +1793,8 @@ def create_app():
                         agent_chatbot, agent_user_input, agent_status,  # agent_chatbot, agent_user_input, agent_status
                         account_status, order_table, task_executions_df,  # 账户信息、订单记录和任务记录
                         account_timer,  # 定时器
-                        inference_record_id  # 自动填充训练记录ID
+                        inference_record_id,  # 自动填充训练记录ID
+                        tools_checkbox_group  # 工具配置
                     ]
                 ).then(
                     fn=lambda: gr.Tabs(selected=2),  # 切换到详情Tab
@@ -1844,8 +1838,8 @@ def create_app():
                     """刷新计划详情的包装函数，使用原有的load_plan_detail逻辑"""
                     # 直接调用原有的load_plan_detail函数
                     result = load_plan_detail(pid)
-                    # 返回除了detail_container和no_plan_msg之外的所有值，只取前66个
-                    return result[2:68]
+                    # 返回除了detail_container和no_plan_msg之外的所有值（共58个）
+                    return result[2:60]
 
                 detail_refresh_btn.click(
                     fn=refresh_plan_detail_wrapper,

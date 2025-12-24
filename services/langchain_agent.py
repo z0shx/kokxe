@@ -1034,9 +1034,17 @@ class LangChainAgentService:
         self,
         plan_id: int,
         user_message: str,
-        conversation_type: str = "manual_chat"
+        conversation_type: str = "manual_chat",
+        conversation_id: int = None
     ) -> AsyncGenerator[List[Dict[str, str]], None]:
-        """流式对话"""
+        """流式对话
+
+        Args:
+            plan_id: 计划ID
+            user_message: 用户消息
+            conversation_type: 对话类型
+            conversation_id: 可选，指定使用哪个对话（如果提供，则不查找 active 对话）
+        """
         # 获取计划和配置
         with get_db() as db:
             plan = db.query(TradingPlan).filter(TradingPlan.id == plan_id).first()
@@ -1051,7 +1059,16 @@ class LangChainAgentService:
 
             # 创建或获取对话
             # 对于不同类型采用不同策略
-            if conversation_type == 'auto_inference':
+            if conversation_id is not None:
+                # 如果指定了 conversation_id，直接使用该对话
+                conversation = db.query(AgentConversation).filter(
+                    AgentConversation.id == conversation_id,
+                    AgentConversation.plan_id == plan_id
+                ).first()
+                if not conversation:
+                    logger.warning(f"指定的对话 {conversation_id} 不存在，将创建新对话")
+                    conversation = None
+            elif conversation_type == 'auto_inference':
                 # 自动推理总是创建新对话，不复用
                 conversation = None
             elif conversation_type == "inference_session":
