@@ -477,12 +477,147 @@ def process_streaming_messages(messages: List[List[Dict[str, Any]]]) -> List[Dic
     return chatbot_messages
 
 
+def format_agent_message_for_display(msg, include_order_details: bool = True) -> Dict[str, str]:
+    """
+    统一的消息格式化函数，将 AgentMessage 数据库对象转换为 Chatbot 显示格式
+
+    这是核心的统一格式化函数，确保 UI 恢复和 Agent 加载使用相同的格式。
+
+    Args:
+        msg: AgentMessage 数据库对象
+        include_order_details: 是否包含订单详情（需要数据库访问）
+
+    Returns:
+        Dict[str, str]: Chatbot 格式的消息，包含 role 和 content
+    """
+    role = msg.role
+    content = msg.content or ""
+    message_type = msg.message_type or "text"
+
+    # 系统消息 - 统一格式
+    if role == "system":
+        formatted_content = f"💻 **系统提示词**:\n\n{content}"
+        return {"role": "system", "content": formatted_content}
+
+    # 思考过程 - 使用统一的格式化函数
+    if message_type == "thinking":
+        formatted_content = _format_thinking_message(content)
+        return {"role": "assistant", "content": formatted_content}
+
+    # 工具调用 - 使用统一的格式化函数
+    if message_type == "tool_call":
+        # 解析工具参数（可能是字符串或dict）
+        arguments = {}
+        if msg.tool_arguments:
+            if isinstance(msg.tool_arguments, str):
+                try:
+                    arguments = json.loads(msg.tool_arguments)
+                except json.JSONDecodeError:
+                    arguments = {"raw": msg.tool_arguments}
+            elif isinstance(msg.tool_arguments, dict):
+                arguments = msg.tool_arguments
+
+        tool_data = {
+            "tool_name": msg.tool_name or "unknown",
+            "arguments": arguments,
+            "result": {},
+            "status": "calling",
+            "tool_call_id": msg.tool_call_id or ""
+        }
+        tool_content = json.dumps(tool_data, ensure_ascii=False)
+        formatted_content = _format_tool_call_message(tool_content)
+        return {"role": "assistant", "content": formatted_content}
+
+    # 工具结果 - 使用统一的格式化函数，可选包含订单详情
+    if message_type == "tool_result":
+        # 解析工具参数（可能是字符串或dict）
+        arguments = {}
+        if msg.tool_arguments:
+            if isinstance(msg.tool_arguments, str):
+                try:
+                    arguments = json.loads(msg.tool_arguments)
+                except json.JSONDecodeError:
+                    arguments = {"raw": msg.tool_arguments}
+            elif isinstance(msg.tool_arguments, dict):
+                arguments = msg.tool_arguments
+
+        # 解析工具结果（可能是字符串或dict）
+        result = {}
+        if msg.tool_result:
+            if isinstance(msg.tool_result, str):
+                try:
+                    result = json.loads(msg.tool_result)
+                except json.JSONDecodeError:
+                    result = {"raw": msg.tool_result}
+            elif isinstance(msg.tool_result, dict):
+                result = msg.tool_result
+
+        tool_data = {
+            "tool_name": msg.tool_name or "unknown",
+            "arguments": arguments,
+            "result": result,
+            "status": "success" if msg.tool_status == "success" else "failed",
+            "tool_call_id": msg.tool_call_id or ""
+        }
+
+        # 如果需要订单详情且是交易相关工具
+        if include_order_details and msg.related_order_id and tool_data['tool_name'] in ['place_order', 'amend_order', 'cancel_order']:
+            try:
+                from database.db import get_db
+                from database.models import TradeOrder
+                with get_db() as db:
+                    order = db.query(TradeOrder).filter(
+                        TradeOrder.order_id == msg.related_order_id
+                    ).first()
+                    if order:
+                        # 将订单详情添加到结果中
+                        order_info = {
+                            "order_id": order.order_id,
+                            "inst_id": order.inst_id,
+                            "side": order.side,
+                            "order_type": order.order_type,
+                            "size": order.size,
+                            "price": order.price,
+                            "status": order.status,
+                            "filled_size": order.filled_size,
+                            "avg_price": order.avg_price,
+                            "created_at": order.created_at.isoformat() if order.created_at else None
+                        }
+                        # 将订单详情合并到结果中
+                        if isinstance(tool_data['result'], dict):
+                            tool_data['result']['_order_info'] = order_info
+                        else:
+                            tool_data['result'] = {"_order_info": order_info}
+            except Exception as e:
+                # 如果查询订单失败，继续使用原始数据
+                pass
+
+        tool_content = json.dumps(tool_data, ensure_ascii=False)
+        formatted_content = _format_tool_result_message(tool_content)
+        return {"role": "assistant", "content": formatted_content}
+
+    # 投资结果
+    if message_type == "play_result":
+        formatted_content = _format_play_message(content)
+        return {"role": "assistant", "content": formatted_content}
+
+    # 普通消息 - user 和 assistant
+    if role in ["user", "assistant"]:
+        return {"role": role, "content": content}
+
+    # 默认 - 作为 assistant 消息处理
+    return {"role": "assistant", "content": content}
+
+
 def format_conversation_history(messages: List[Dict]) -> List[Dict]:
     """
     格式化对话历史，用于从数据库加载消息后显示
 
+    注意：Gradio Chatbot 在 type="messages" 模式下只渲染 user 和 assistant 角色。
+    其他角色（如 system）会被忽略，因此需要将 system 转换为 assistant 角色。
+
     Args:
-        messages: 数据库消息列表
+        messages: 数据库消息列表 (AgentMessage 对象)
 
     Returns:
         List[Dict]: Chatbot 格式的消息列表，每个消息包含 role 和 content
@@ -490,30 +625,13 @@ def format_conversation_history(messages: List[Dict]) -> List[Dict]:
     chatbot_messages = []
 
     for msg in messages:
-        role = msg.role
-        content = msg.content or ""
+        formatted_msg = format_agent_message_for_display(msg, include_order_details=True)
 
-        # 根据消息类型进行特殊处理
-        if msg.message_type == "thinking":
-            formatted_content = f"💭 **思考过程**:\n{content}"
-            chatbot_messages.append({"role": "assistant", "content": formatted_content})
-        elif msg.message_type in ["tool_call", "tool_result"]:
-            tool_data = {
-                "tool_name": msg.tool_name or "unknown",
-                "arguments": msg.tool_arguments or {},
-                "result": msg.tool_result or {},
-                "status": "success" if msg.message_type == "tool_result" else "calling"
-            }
-            tool_content = json.dumps(tool_data, ensure_ascii=False)
-            chatbot_messages.append({"role": "tool", "content": tool_content})
-        elif msg.message_type == "play_result":
-            chatbot_messages.append({"role": "play", "content": content})
-        elif role == "system":
-            # 确保系统消息显示为系统提示词格式
-            formatted_content = f"💻 **系统提示词**:\n\n{content}"
-            chatbot_messages.append({"role": "system", "content": formatted_content})
-        else:
-            # 普通消息
-            chatbot_messages.append({"role": role, "content": content})
+        # 确保 system 消息也显示：将 system role 转换为 assistant
+        # 但保留 "💻 **系统提示词**:" 格式标识
+        if formatted_msg.get("role") == "system":
+            formatted_msg["role"] = "assistant"
+
+        chatbot_messages.append(formatted_msg)
 
     return chatbot_messages

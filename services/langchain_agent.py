@@ -1130,13 +1130,45 @@ class LangChainAgentService:
             except Exception as e:
                 logger.error(f"保存系统消息失败: {e}")
         else:
-            # 加载历史消息，但要确保包含系统消息
+            # 加载历史消息，但要确保显示最新的系统提示词
             history = await self._load_conversation_history(conversation.id)
 
-            # 检查历史中是否包含系统消息，如果没有，则添加
-            if not any(msg.get("role") == "system" for msg in history):
+            # 检查历史中是否包含系统消息
+            has_system_message = any(msg.get("role") == "system" for msg in history)
+
+            if has_system_message:
+                # 历史中已有系统消息，需要替换为最新的
+                # 1. 先输出最新的系统提示词（用于UI展示）
+                yield [{"role": "system", "content": system_prompt}]
+
+                # 2. 更新数据库中的系统消息为最新版本
+                try:
+                    with get_db() as db:
+                        # 查找并更新系统消息
+                        from database.models import AgentMessage
+                        system_msg = db.query(AgentMessage).filter(
+                            AgentMessage.conversation_id == conversation.id,
+                            AgentMessage.role == "system"
+                        ).first()
+                        if system_msg:
+                            # 检查内容是否不同，避免不必要的更新
+                            if system_msg.content != system_prompt:
+                                system_msg.content = system_prompt
+                                db.commit()
+                                logger.info(f"对话 {conversation.id} 的系统提示词已更新为最新版本")
+                        else:
+                            # 如果没有系统消息（理论上不应该发生，因为 has_system_message 为 True）
+                            await self._save_message(db, conversation.id, "system", system_prompt, "text")
+                except Exception as e:
+                    logger.error(f"更新系统消息失败: {e}")
+
+                # 3. 输出历史消息（排除旧的系统消息，因为已经输出了最新的）
+                non_system_history = [msg for msg in history if msg.get("role") != "system"]
+                if non_system_history:
+                    yield non_system_history
+            else:
+                # 历史中没有系统消息，添加并保存
                 logger.info(f"对话 {conversation.id} 缺少系统消息，添加系统提示词")
-                # 保存系统消息到数据库
                 try:
                     with get_db() as db:
                         await self._save_message(
@@ -1145,10 +1177,10 @@ class LangChainAgentService:
                 except Exception as e:
                     logger.error(f"保存系统消息失败: {e}")
 
-                # 在历史开头添加系统消息
+                # 输出系统消息和历史
                 yield [{"role": "system", "content": system_prompt}]
-            else:
-                yield history
+                if history:
+                    yield history
 
         # 输出用户消息
         yield [{"role": "user", "content": user_message}]
@@ -1602,9 +1634,12 @@ class LangChainAgentService:
             )
             db.add(message)
 
-            # 更新对话的最后消息时间
+            # 更新对话统计信息
             conversation = db.query(AgentConversation).filter(AgentConversation.id == conversation_id).first()
             if conversation:
+                conversation.total_messages += 1
+                if message_type in ["tool_call", "tool_result"]:
+                    conversation.total_tool_calls += 1
                 conversation.last_message_at = now_beijing()
 
             db.commit()
@@ -1614,92 +1649,26 @@ class LangChainAgentService:
             # 不重新抛出异常，避免中断agent执行
 
     async def _load_conversation_history(self, conversation_id: int) -> List[Dict[str, str]]:
-        """加载对话历史消息"""
+        """
+        加载对话历史消息，使用统一的格式化函数
+
+        注意：这里与 UI 层的 format_conversation_history 使用相同的格式化逻辑，
+        确保恢复的对话在 chatbot 和 LLM 上下文中显示一致。
+        """
         try:
-            from database.models import AgentMessage, TradeOrder
+            from database.models import AgentMessage
+            from ui.custom_chatbot import format_agent_message_for_display
+
             with get_db() as db:
                 messages = db.query(AgentMessage).filter(
                     AgentMessage.conversation_id == conversation_id
                 ).order_by(AgentMessage.created_at.asc()).all()
 
-                # 分离系统消息和其他消息
-                system_messages = []
-                other_messages = []
-                for message in messages:
-                    if message.role == "system":
-                        system_messages.append(message)
-                    else:
-                        other_messages.append(message)
-
-                # 系统消息总是放在最前面，按创建时间排序
-                system_messages.sort(key=lambda x: x.created_at)
-                # 其他消息按创建时间排序
-                other_messages.sort(key=lambda x: x.created_at)
-
-                # 合并消息：系统消息在前，其他消息在后
-                ordered_messages = system_messages + other_messages
-
-                # 转换为流式消息格式
+                # 使用统一的格式化函数处理每条消息
                 history_messages = []
-                for message in ordered_messages:
-                    role = message.role
-                    content = message.content
-
-                    # 根据消息类型转换格式
-                    if message.message_type == "thinking":
-                        formatted_content = f"💭 **思考过程**:\\n{content}"
-                        history_messages.append({"role": "assistant", "content": formatted_content})
-                    elif message.message_type in ["tool_call", "tool_result"]:
-                        # 工具消息 - 构造JSON格式
-                        tool_data = {
-                            "tool_name": message.tool_name or "",
-                            "arguments": json.loads(message.tool_arguments) if message.tool_arguments else {},
-                            "result": json.loads(message.tool_result) if message.tool_result else {},
-                            "status": "success" if message.message_type == "tool_result" else "calling",
-                            "tool_call_id": message.tool_call_id or ""
-                        }
-                        tool_content = json.dumps(tool_data, ensure_ascii=False)
-
-                        if message.message_type == "tool_call":
-                            formatted_content = f"🔧 **工具调用**: `{tool_data['tool_name']}`\\n\\n参数: {json.dumps(tool_data.get('arguments', {}), indent=2, ensure_ascii=False)}"
-                        else:
-                            # 对于工具结果，如果有相关的订单ID，显示订单详情
-                            if message.related_order_id and tool_data['tool_name'] in ['place_order', 'amend_order', 'cancel_order']:
-                                try:
-                                    order = db.query(TradeOrder).filter(
-                                        TradeOrder.order_id == message.related_order_id
-                                    ).first()
-                                    if order:
-                                        order_info = {
-                                            "order_id": order.order_id,
-                                            "inst_id": order.inst_id,
-                                            "side": order.side,
-                                            "order_type": order.order_type,
-                                            "size": order.size,
-                                            "price": order.price,
-                                            "status": order.status,
-                                            "created_at": order.created_at.isoformat() if order.created_at else None
-                                        }
-                                        formatted_content = f"✅ **工具完成**: `{tool_data['tool_name']}`\\n\\n订单详情: {json.dumps(order_info, indent=2, ensure_ascii=False)}\\n\\n操作结果: {json.dumps(tool_data.get('result', {}), indent=2, ensure_ascii=False)}"
-                                    else:
-                                        formatted_content = f"✅ **工具完成**: `{tool_data['tool_name']}`\\n\\n结果: {json.dumps(tool_data.get('result', {}), indent=2, ensure_ascii=False)}"
-                                except:
-                                    formatted_content = f"✅ **工具完成**: `{tool_data['tool_name']}`\\n\\n结果: {json.dumps(tool_data.get('result', {}), indent=2, ensure_ascii=False)}"
-                            else:
-                                formatted_content = f"✅ **工具完成**: `{tool_data['tool_name']}`\\n\\n结果: {json.dumps(tool_data.get('result', {}), indent=2, ensure_ascii=False)}"
-
-                        history_messages.append({"role": "assistant", "content": formatted_content})
-                    elif message.message_type == "play_result":
-                        # 投资结果
-                        history_messages.append({"role": "assistant", "content": content})
-                    else:
-                        # 普通消息 - 包括系统消息
-                        if role == "system":
-                            # 系统消息需要特殊格式化显示
-                            formatted_content = f"💻 **系统提示词**:\n\n{content}"
-                            history_messages.append({"role": "system", "content": formatted_content})
-                        else:
-                            history_messages.append({"role": role, "content": content})
+                for message in messages:
+                    formatted_msg = format_agent_message_for_display(message, include_order_details=True)
+                    history_messages.append(formatted_msg)
 
                 return history_messages
 

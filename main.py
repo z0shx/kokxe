@@ -1016,8 +1016,8 @@ def create_app():
                                 """输入变化时更新按钮状态"""
                                 has_input = bool(user_input and user_input.strip())
                                 has_context = bool(history and len(history) > 0)
-                                from ui.enhanced_chatbot import enhanced_chatbot
-                                return enhanced_chatbot.update_button_states(False, has_context=has_context, has_input=has_input)
+                                from ui.plan_detail_chat_ui import ChatButtonStateManager
+                                return ChatButtonStateManager.update_button_states(False, has_context=has_context, has_input=has_input)
 
                             def load_conversation_choices(pid):
                                 """加载对话选择列表"""
@@ -1031,21 +1031,21 @@ def create_app():
                                 """恢复对话处理函数"""
                                 try:
                                     restored_history = chat_ui_instance.restore_selected_conversation(pid, selected_conversation)
-                                    from ui.enhanced_chatbot import enhanced_chatbot
-                                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(restored_history) > 0)
+                                    from ui.plan_detail_chat_ui import ChatButtonStateManager
+                                    button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=len(restored_history) > 0)
                                     return restored_history, button_states[0], button_states[1], button_states[2]
                                 except Exception as e:
-                                    from ui.enhanced_chatbot import enhanced_chatbot
+                                    from ui.plan_detail_chat_ui import ChatButtonStateManager
                                     error_message = [{"role": "assistant", "content": f"❌ 恢复对话失败: {str(e)}"}]
-                                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=False)
+                                    button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=False)
                                     return error_message, button_states[0], button_states[1], button_states[2]
 
                             def refresh_conversations_and_state(pid, current_history):
                                 """刷新对话列表并更新状态"""
                                 choices = chat_ui_instance.get_conversation_list_for_selection(pid)
                                 has_context = bool(current_history and len(current_history) > 0)
-                                from ui.enhanced_chatbot import enhanced_chatbot
-                                button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=has_context)
+                                from ui.plan_detail_chat_ui import ChatButtonStateManager
+                                button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=has_context)
                                 return gr.update(choices=choices), button_states[0], button_states[1], button_states[2]
 
                             # 主要的Agent事件处理函数 - 使用完整实现
@@ -1053,20 +1053,20 @@ def create_app():
                                 """发送消息给AI Agent（支持取消的流式版本）"""
                                 # 验证输入
                                 from utils.common import validate_plan_exists
-                                from ui.enhanced_chatbot import enhanced_chatbot
+                                from ui.plan_detail_chat_ui import ChatButtonStateManager
                                 is_valid, plan_id, clean_message, current_history, error_msg = chat_ui_instance._validate_plan_and_message(pid, user_message, history)
                                 if not is_valid:
-                                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                                    button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=len(history) > 0)
                                     return history + [{"role": "assistant", "content": error_msg}], gr.update(value=""), gr.update(visible=True, value=error_msg), gr.update(visible=False), button_states[0], button_states[1], button_states[2]
 
                                 try:
                                     # 生成会话ID
-                                    chat_ui_instance.current_session_id = enhanced_chatbot.generate_session_id(str(plan_id), clean_message)
+                                    chat_ui_instance.current_session_id = ChatButtonStateManager.generate_session_id(str(plan_id), clean_message)
 
                                     # 使用带取消功能的异步流转同步处理
                                     from services.langchain_agent import agent_service
                                     final_result = None
-                                    for result in enhanced_chatbot.async_to_sync_stream_with_cancel(
+                                    for result in ChatButtonStateManager.async_to_sync_stream(
                                         agent_service.stream_conversation,
                                         session_id=chat_ui_instance.current_session_id,
                                         initial_history=current_history,
@@ -1093,17 +1093,17 @@ def create_app():
                                 except Exception as e:
                                     logger.error(f"发送消息失败: {e}")
                                     error_message = [{"role": "assistant", "content": f"❌ 发送失败: {str(e)}"}]
-                                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(current_history) > 0)
+                                    button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=len(current_history) > 0)
                                     yield current_history + error_message, gr.update(value=""), gr.update(visible=True, value=str(e)), button_states[0], button_states[1], button_states[2]
 
                             def agent_execute_inference_wrapper(pid, history):
                                 """执行AI Agent推理（重置上下文 - 流式版本）"""
                                 # 验证计划存在性
                                 from utils.common import validate_plan_exists
-                                from ui.enhanced_chatbot import enhanced_chatbot
+                                from ui.plan_detail_chat_ui import ChatButtonStateManager
                                 _, plan_id, _, _, error_msg = chat_ui_instance._validate_plan_and_message(pid, "dummy", [])
                                 if error_msg and "计划不存在" in error_msg:
-                                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                                    button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=len(history) > 0)
                                     yield history + [{"role": "assistant", "content": error_msg}], gr.update(visible=True, value=error_msg), button_states[0], button_states[1], button_states[2]
                                     return
 
@@ -1115,14 +1115,14 @@ def create_app():
                                     from services.historical_data_service import historical_data_service
                                     historical_data = historical_data_service.get_optimal_historical_data(plan_id)
                                     if not historical_data:
-                                        button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(empty_history) > 0)
+                                        button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=len(empty_history) > 0)
                                         yield empty_history + [{"role": "assistant", "content": "❌ 未找到可用的历史K线数据"}], gr.update(visible=True, value="未找到可用的历史K线数据"), button_states[0], button_states[1], button_states[2]
                                         return
 
                                     # 获取最新预测交易数据
                                     prediction_data = chat_ui_instance._get_latest_prediction_csv_data(plan_id)
                                     if not prediction_data:
-                                        button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(empty_history) > 0)
+                                        button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=len(empty_history) > 0)
                                         yield empty_history + [{"role": "assistant", "content": "❌ 未找到可用的预测数据，请先执行模型推理"}], gr.update(visible=True, value="未找到可用的预测数据，请先执行模型推理"), button_states[0], button_states[1], button_states[2]
                                         return
 
@@ -1146,7 +1146,7 @@ def create_app():
                                         conversation_type="inference_session"
                                     ):
                                         # 推理函数需要返回完整的5个值：chatbot, status, send_btn, cancel_btn, inference_btn
-                                        button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                                        button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=len(history) > 0)
                                         final_result = (history, status_update, button_states[0], button_states[1], button_states[2])
                                         yield final_result
 
@@ -1165,7 +1165,7 @@ def create_app():
                                 except Exception as e:
                                     logger.error(f"执行推理失败: {e}")
                                     error_message = [{"role": "assistant", "content": f"❌ 执行推理失败: {str(e)}"}]
-                                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                                    button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=len(history) > 0)
                                     yield history + error_message, gr.update(visible=True, value=f"执行推理失败: {str(e)}"), button_states[0], button_states[1], button_states[2]
 
                             def agent_clear_conversation_wrapper(pid, history):
@@ -1174,28 +1174,28 @@ def create_app():
                                 is_valid, plan_id, error_msg = validate_plan_exists(pid)
 
                                 if not is_valid:
-                                    from ui.enhanced_chatbot import enhanced_chatbot
-                                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=False)
+                                    from ui.plan_detail_chat_ui import ChatButtonStateManager
+                                    button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=False)
                                     return history, gr.update(value=""), gr.update(visible=True, value=f"❌ {error_msg}"), button_states[0], button_states[1], button_states[2]
 
                                 try:
                                     result = chat_ui_instance.plan_detail_ui.clear_agent_records(plan_id)
-                                    from ui.enhanced_chatbot import enhanced_chatbot
-                                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=False)
+                                    from ui.plan_detail_chat_ui import ChatButtonStateManager
+                                    button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=False)
                                     return [], gr.update(value=""), gr.update(visible=False, value=result), button_states[0], button_states[1], button_states[2]
 
                                 except Exception as e:
                                     logger.error(f"清除对话记录失败: {e}")
-                                    from ui.enhanced_chatbot import enhanced_chatbot
-                                    button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=False)
+                                    from ui.plan_detail_chat_ui import ChatButtonStateManager
+                                    button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=False)
                                     return history, gr.update(value=""), gr.update(visible=True, value=f"❌ 清除失败: {str(e)}"), button_states[0], button_states[1], button_states[2]
 
                             def agent_cancel_inference_wrapper(pid, history):
                                 """取消推理"""
-                                from ui.enhanced_chatbot import enhanced_chatbot
+                                from ui.plan_detail_chat_ui import ChatButtonStateManager
                                 # 取消当前推理
                                 if chat_ui_instance.current_session_id:
-                                    success = enhanced_chatbot.cancel_task(chat_ui_instance.current_session_id)
+                                    success = ChatButtonStateManager.cancel_task(chat_ui_instance.current_session_id)
                                     if success:
                                         message = "推理已取消"
                                     else:
@@ -1203,7 +1203,7 @@ def create_app():
                                 else:
                                     message = "没有正在进行的推理"
 
-                                button_states = enhanced_chatbot.update_button_states(False, has_input=False, has_context=len(history) > 0)
+                                button_states = ChatButtonStateManager.update_button_states(False, has_input=False, has_context=len(history) > 0)
                                 return history, gr.update(visible=True, value=message), button_states[0], button_states[1], button_states[2]
 
                             return {

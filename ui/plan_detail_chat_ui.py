@@ -59,6 +59,56 @@ class ChatButtonStateManager:
                 return False
         return False
 
+    @staticmethod
+    def async_to_sync_stream(async_func, initial_history=None, **kwargs):
+        """异步流转同步处理的静态方法"""
+        import asyncio
+        import gradio as gr
+
+        try:
+            # 创建新的事件循环
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            current_history = initial_history.copy() if initial_history else []
+
+            async def stream_processor():
+                try:
+                    async for message_batch in async_func(**kwargs):
+                        if isinstance(message_batch, list):
+                            for message in message_batch:
+                                current_history.append(message)
+                                yield current_history.copy(), gr.update(value=""), gr.update(visible=False, value="")
+                        else:
+                            current_history.append(message_batch)
+                            yield current_history.copy(), gr.update(value=""), gr.update(visible=False, value="")
+
+                except Exception as e:
+                    error_message = [{"role": "assistant", "content": f"❌ 流式处理错误: {str(e)}"}]
+                    current_history.extend(error_message)
+                    yield current_history.copy(), gr.update(value=""), gr.update(visible=True, value=f"❌ 流式处理错误: {str(e)}")
+
+            # 运行异步生成器
+            async_gen = stream_processor()
+            try:
+                while True:
+                    result = loop.run_until_complete(async_gen.__anext__())
+                    yield result
+            except StopAsyncIteration:
+                pass
+
+        except Exception as e:
+            # 错误处理
+            current_history = initial_history.copy() if initial_history else []
+            error_message = [{"role": "assistant", "content": f"❌ 异步处理错误: {str(e)}"}]
+            yield current_history + error_message, gr.update(value=""), gr.update(visible=True, value=f"❌ 异步处理错误: {str(e)}")
+
+        finally:
+            try:
+                loop.close()
+            except:
+                pass
+
 
 class PlanDetailChatUI:
     """计划详情页 AI Agent 对话 UI"""

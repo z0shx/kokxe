@@ -119,6 +119,19 @@ class KronosTrainer:
             }
         """
         try:
+            # 训练开始前清理 CUDA 缓存，防止显存碎片累积
+            try:
+                import torch
+                import gc
+                if torch.cuda.is_available():
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    self.logger.info("训练开始前已清理CUDA缓存")
+                    # 显式同步
+                    torch.cuda.synchronize()
+            except Exception as cleanup_error:
+                self.logger.warning(f"清理CUDA缓存失败: {cleanup_error}")
+
             self._report_progress(0.0, 'init', '初始化训练环境...')
 
             # 1. 获取训练参数
