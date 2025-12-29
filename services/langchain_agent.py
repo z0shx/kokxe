@@ -1145,7 +1145,6 @@ class LangChainAgentService:
                 try:
                     with get_db() as db:
                         # 查找并更新系统消息
-                        from database.models import AgentMessage
                         system_msg = db.query(AgentMessage).filter(
                             AgentMessage.conversation_id == conversation.id,
                             AgentMessage.role == "system"
@@ -1490,7 +1489,7 @@ class LangChainAgentService:
                         from database.models import SystemLog
                         error_log = SystemLog(
                             level="WARNING",
-                            category="agent_error",
+                            log_type="agent",
                             message=f"Agent执行异常 - Plan {plan_id}",
                             details={
                                 "error_type": "max_iterations_or_timeout",
@@ -1831,7 +1830,7 @@ class LangChainAgentService:
                 with get_db() as db:
                     error_log = SystemLog(
                         level="WARNING",
-                        category="agent_auto_decision_error",
+                        log_type="agent",
                         message=f"自动决策异常 - Plan {plan_id}",
                         details={
                             "error_type": "auto_decision_failure",
@@ -1920,7 +1919,7 @@ class LangChainAgentService:
                 with get_db() as db:
                     error_log = SystemLog(
                         level="WARNING",
-                        category="agent_manual_inference_error",
+                        log_type="agent",
                         message=f"手动推理异常 - Plan {plan_id}",
                         details={
                             "error_type": "manual_inference_failure",

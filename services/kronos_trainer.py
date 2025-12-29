@@ -419,52 +419,44 @@ class KronosTrainer:
                 train_dataset.set_epoch_seed(epoch_idx * 10000)
 
                 for i, (ori_batch_x, _) in enumerate(train_loader):
-                    # 去掉第一个维度 (batch_size=1)，添加batch维度用于tokenizer
-                    # ori_batch_x: (1, seq_len, 6) -> (seq_len, 6) -> (1, seq_len, 6)
-                    ori_batch_x = ori_batch_x.squeeze(0).to(device, non_blocking=True)
-                    # 为tokenizer添加batch维度: (seq_len, 6) -> (1, seq_len, 6)
-                    ori_batch_x = ori_batch_x.unsqueeze(0)
+                    # 直接将3维数据移到设备，不squeeze
+                    # ori_batch_x: (1, seq_len, 6) -> 保持 (1, seq_len, 6)
+                    ori_batch_x = ori_batch_x.to(device, non_blocking=True)
 
                     # 确保形状正确: (1, seq_len, 6)
-                    if len(ori_batch_x.shape) != 3 or ori_batch_x.shape[0] != 1:
+                    if len(ori_batch_x.shape) != 3:
                         self.logger.error(f"输入数据形状错误: {ori_batch_x.shape}, 期望 (1, seq_len, 6)")
                         continue
 
-                    # --- 梯度累积循环（完全复制kronos逻辑）---
+                    # --- 梯度累积循环 ---
                     current_batch_total_loss = 0.0
-                    # 如果梯度累积>1，需要拆分batch
-                    if accumulation_steps > 1:
-                        # 对于单个样本，拆分sequence维度
-                        seq_len = ori_batch_x.shape[1]
-                        chunk_size = seq_len // accumulation_steps
-                        actual_batch_size = 1
-                    else:
-                        actual_batch_size = 1
 
                     for j in range(accumulation_steps):
-                        if accumulation_steps > 1:
-                            start_idx = j * chunk_size
-                            end_idx = (j + 1) * chunk_size
-                            # 拆分sequence维度： (1, seq_len, 6) -> (1, chunk_size, 6)
-                            batch_x = ori_batch_x[:, start_idx:end_idx, :]
-                        else:
-                            # 不进行梯度累积，直接使用整个batch
-                            batch_x = ori_batch_x
+                        # 按序列维度(1)拆分数据用于梯度累积
+                        # 由于batch_size=1，我们需要按序列长度拆分
+                        seq_len = ori_batch_x.shape[1]
+                        chunk_size = seq_len // accumulation_steps
 
-                        # 前向传播（精确复制kronos逻辑）
+                        start_idx = j * chunk_size
+                        end_idx = (j + 1) * chunk_size if j < accumulation_steps - 1 else seq_len
+                        # 切片保持batch维度: (1, seq_len, 6) -> (1, chunk_size, 6)
+                        batch_x = ori_batch_x[:, start_idx:end_idx, :]
+
+                        # 调试日志：确认batch_x的形状
+                        if i == 0 and j == 0:
+                            self.logger.info(f"DEBUG: ori_batch_x shape: {ori_batch_x.shape}, batch_x shape: {batch_x.shape}")
+
+                        # 前向传播
                         zs, bsq_loss, _, _ = tokenizer(batch_x)
                         z_pre, z = zs
 
-                        # Loss计算（修复负值问题）
+                        # Loss计算
                         recon_loss_pre = F.mse_loss(z_pre, batch_x)
                         recon_loss_all = F.mse_loss(z, batch_x)
                         recon_loss = recon_loss_pre + recon_loss_all
 
-                        # 确保bsq_loss为正值，如果为负则设为0
-                        bsq_loss_positive = torch.clamp(bsq_loss, min=0.0)
-
-                        # 总loss计算
-                        loss = (recon_loss + bsq_loss_positive) / 2  # w_1=w_2=1
+                        # 总loss计算（对齐官方实现，不做clamp）
+                        loss = (recon_loss + bsq_loss) / 2  # w_1=w_2=1
 
                         loss_scaled = loss / accumulation_steps
                         current_batch_total_loss += loss.item()
@@ -486,18 +478,17 @@ class KronosTrainer:
 
                     batch_idx_global += 1
 
-                # --- 验证循环（完全复制kronos逻辑）---
+                # --- 验证循环 ---
                 tokenizer.eval()
                 tot_val_loss_sum = 0.0
                 val_sample_count = 0
                 with torch.no_grad():
                     for ori_batch_x, _ in val_loader:
-                        # 与训练循环相同的维度处理
-                        ori_batch_x = ori_batch_x.squeeze(0).to(device, non_blocking=True)
-                        ori_batch_x = ori_batch_x.unsqueeze(0)
+                        # 直接将3维数据移到设备
+                        ori_batch_x = ori_batch_x.to(device, non_blocking=True)
 
-                        # 确保形状正确
-                        if len(ori_batch_x.shape) != 3 or ori_batch_x.shape[0] != 1:
+                        # 确保形状正确: (1, seq_len, 6)
+                        if len(ori_batch_x.shape) != 3:
                             self.logger.error(f"验证数据形状错误: {ori_batch_x.shape}, 期望 (1, seq_len, 6)")
                             continue
 
@@ -715,19 +706,19 @@ class KronosTrainer:
                 val_dataset.set_epoch_seed(0)  # Keep validation sampling consistent
 
                 for i, (batch_x, batch_x_stamp) in enumerate(train_loader):
-                    # 移动到设备，不进行squeeze操作
+                    # 直接将3维数据移到设备，不squeeze
                     batch_x = batch_x.to(device, non_blocking=True)
                     batch_x_stamp = batch_x_stamp.to(device, non_blocking=True)
 
-                    # 确保形状正确: (batch_size, seq_len, features)
+                    # 确保形状正确: (1, seq_len, 6) 和 (1, seq_len, 5)
                     if len(batch_x.shape) != 3:
-                        self.logger.error(f"Predictor输入数据形状错误: {batch_x.shape}, 期望 (batch_size, seq_len, 6)")
+                        self.logger.error(f"Predictor输入数据形状错误: {batch_x.shape}, 期望 (1, seq_len, 6)")
                         continue
                     if len(batch_x_stamp.shape) != 3:
-                        self.logger.error(f"Predictor时间戳形状错误: {batch_x_stamp.shape}, 期望 (batch_size, seq_len, 5)")
+                        self.logger.error(f"Predictor时间戳形状错误: {batch_x_stamp.shape}, 期望 (1, seq_len, 5)")
                         continue
 
-                    # --- Tokenize输入数据（完全复制kronos逻辑）---
+                    # --- Tokenize输入数据 ---
                     with torch.no_grad():
                         token_seq_0, token_seq_1 = tokenizer.encode(batch_x, half=True)
 
@@ -756,22 +747,22 @@ class KronosTrainer:
 
                     batch_idx_global += 1
 
-                # --- 验证循环（完全复制kronos逻辑）---
+                # --- 验证循环 ---
                 model.eval()
                 tot_val_loss_sum = 0.0
                 val_batches_processed = 0
                 with torch.no_grad():
                     for batch_x, batch_x_stamp in val_loader:
-                        # 移动到设备，不进行squeeze操作
+                        # 直接将3维数据移到设备
                         batch_x = batch_x.to(device, non_blocking=True)
                         batch_x_stamp = batch_x_stamp.to(device, non_blocking=True)
 
-                        # 确保形状正确: (batch_size, seq_len, features)
+                        # 确保形状正确: (1, seq_len, 6) 和 (1, seq_len, 5)
                         if len(batch_x.shape) != 3:
-                            self.logger.error(f"Predictor验证输入形状错误: {batch_x.shape}, 期望 (batch_size, seq_len, 6)")
+                            self.logger.error(f"Predictor验证输入形状错误: {batch_x.shape}, 期望 (1, seq_len, 6)")
                             continue
                         if len(batch_x_stamp.shape) != 3:
-                            self.logger.error(f"Predictor验证时间戳形状错误: {batch_x_stamp.shape}, 期望 (batch_size, seq_len, 5)")
+                            self.logger.error(f"Predictor验证时间戳形状错误: {batch_x_stamp.shape}, 期望 (1, seq_len, 5)")
                             continue
 
                         token_seq_0, token_seq_1 = tokenizer.encode(batch_x, half=True)

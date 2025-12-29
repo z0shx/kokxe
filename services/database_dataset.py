@@ -250,9 +250,9 @@ class DatabaseKlineDataset(Dataset):
         # 提取数据
         sample = self.data.iloc[start_idx:end_idx][self.feature_list].values  # (window, 6)
 
-        # 标准化
+        # 标准化（对齐官方实现，epsilon使用1e-5）
         mean = sample.mean(axis=0, keepdims=True)
-        std = sample.std(axis=0, keepdims=True) + 1e-8
+        std = sample.std(axis=0, keepdims=True) + 1e-5
         sample_normalized = (sample - mean) / std
 
         # 裁剪
