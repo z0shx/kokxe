@@ -2086,26 +2086,6 @@ class LangChainAgentService:
                         ).first().conversation_type if msg.conversation_id else 'unknown'
                     })
 
-                # 2. 从旧的AgentDecision获取历史数据（只读，兼容性）
-                try:
-                    from database.models import AgentDecision
-                    old_decisions = db.query(AgentDecision).filter(
-                        AgentDecision.plan_id == plan_id
-                    ).order_by(AgentDecision.decision_time.desc()).limit(limit).all()
-
-                    for decision in old_decisions:
-                        decisions.append({
-                            'id': decision.id,
-                            'created_at': decision.decision_time,
-                            'content': f"决策类型: {decision.decision_type}\n推理: {decision.reasoning}\n状态: {decision.status}",
-                            'source': 'agent_decision',
-                            'training_id': decision.training_record_id,
-                            'llm_model': decision.llm_model
-                        })
-                except ImportError:
-                    # AgentDecision模型可能已被删除，跳过
-                    pass
-
             # 按时间排序
             decisions.sort(key=lambda x: x['created_at'], reverse=True)
             return decisions[:limit]

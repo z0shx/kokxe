@@ -205,51 +205,6 @@ def _format_tool_result_message(content: str) -> str:
 """
 
 
-def _format_tool_message(content: str) -> str:
-    """格式化工具调用消息"""
-    try:
-        tool_data = json.loads(content)
-        tool_name = tool_data.get("tool_name", "unknown")
-
-        if tool_data.get("status") == "calling":
-            # 工具调用中
-            args = tool_data.get("arguments", {})
-            args_str = ", ".join([f"{k}=`{v}`" for k, v in args.items()])
-            return f"**🔧 调用工具**: `{tool_name}`\n\n**参数**: {args_str}"
-
-        elif tool_data.get("status") in ["success", "error"]:
-            # 工具执行结果
-            args = tool_data.get("arguments", {})
-            result = tool_data.get("result", {})
-
-            status_emoji = "✅" if tool_data.get("status") == "success" else "❌"
-
-            # 格式化参数
-            args_str = ", ".join([f"{k}=`{v}`" for k, v in args.items()])
-
-            # 格式化结果
-            if isinstance(result, dict):
-                result_str = json.dumps(result, indent=2, ensure_ascii=False)
-            else:
-                result_str = str(result)
-
-            return f"""**{status_emoji} 工具执行完成**: `{tool_name}`
-
-**参数**: {args_str}
-
-**结果**:
-```json
-{result_str}
-```"""
-
-        else:
-            return f"**🔧 工具消息**: {tool_name}"
-
-    except (json.JSONDecodeError, Exception):
-        # 如果不是JSON格式，直接显示
-        return f"**🔧 工具消息**: {content}"
-
-
 def _format_play_message(content: str) -> str:
     """格式化投资结果消息"""
     try:
