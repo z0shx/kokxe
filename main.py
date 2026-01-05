@@ -1838,8 +1838,8 @@ def create_app():
                     """刷新计划详情的包装函数，使用原有的load_plan_detail逻辑"""
                     # 直接调用原有的load_plan_detail函数
                     result = load_plan_detail(pid)
-                    # 返回除了detail_container和no_plan_msg之外的所有值（共58个）
-                    return result[2:60]
+                    # 返回除了detail_container和no_plan_msg之外的所有值（共56个）
+                    return result[2:58]
 
                 detail_refresh_btn.click(
                     fn=refresh_plan_detail_wrapper,
